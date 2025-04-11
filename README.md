@@ -43,48 +43,48 @@ LitBlog is a web platform designed for CIT's English Department, allowing studen
 - PostgreSQL 12+
 - Git
 
-## Development Setup
+# Development Setup
 
-### Prerequisites
+## Prerequisites
 
 1. **Install Python 3.10+**
-   # Ubuntu/Debian
+   ### Ubuntu/Debian
    sudo apt update
    sudo apt install python3.10 python3.10-dev python3.10-venv python3-pip
    
 
-   # Ubuntu/Debian
+   ### Ubuntu/Debian
     sudo apt install postgresql postgresql-contrib
 
 
-   # Clone Repository
+   ### Clone Repository
     git clone https://github.com/Atigro09/LitBlog.git
     cd litblogs
 
-   # Create VENV
+   ### Create VENV
     python3 -m venv venv
     source venv/bin/activate
 
-   # Install Python dependencies
+   ### Install Python dependencies
     pip install -r requirements.txt
 
-   # Install Node.js dependencies
+   ### Install Node.js dependencies
     npm install --force
 
 
-  ## DEPLOYMENT GUIDE
-  
-   # Build Node.js files
+## DEPLOYMENT GUIDE
+
+   ### Build Node.js files
     npm run build
 
-   # Start python backend
+   ### Start python backend
     In /litblogs run
     uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
 
    
-  ### Maintinance Guide
+## Maintinance Guide
    
-   ## Updating the Website
+   ### Updating the Website
 
     # Pull the latest changes
     cd /var/www/LitBlog/litblogs
