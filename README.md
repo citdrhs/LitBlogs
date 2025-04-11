@@ -73,7 +73,7 @@ LitBlog is a web platform designed for CIT's English Department, allowing studen
 
 
   ## DEPLOYMENT GUIDE
-    s
+  
    # Build Node.js files
     npm run build
 
