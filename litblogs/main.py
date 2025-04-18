@@ -74,81 +74,77 @@ def verify_password(plain_password: str, hashed_password: str):
 
 # ---------- Authentication Endpoints ----------
 
-@app.post("/api/auth/register", response_model=schemas.UserResponse)
-def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
-    # Check if email or username already exists
-    db_user = db.query(models.User).filter(
-        (models.User.email == user.email) | (models.User.username == user.username)
-    ).first()
-    if db_user:
+@app.post("/api/auth/register")
+async def register(user_data: schemas.UserCreate, db: Session = Depends(get_db)):
+    """Register a new user"""
+    # Check if email already exists
+    existing_user = db.query(models.User).filter(models.User.email == user_data.email).first()
+    if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email or username already registered"
+            detail="Email already registered"
         )
-
-    # Verify access codes based on role (but skip for students)
-    if user.role == models.UserRole.TEACHER:
-        if not user.access_code or user.access_code != os.getenv("TEACHER_ACCESS_CODE"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid teacher code"
-            )
-    elif user.role == models.UserRole.ADMIN:
-        if not user.access_code or user.access_code != os.getenv("ADMIN_ACCESS_CODE"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid admin code"
-            )
-
+    
+    # Validate role
     try:
-        # Create the new user
-        hashed_password = get_password_hash(user.password)
-        new_user = models.User(
-            username=user.username,
-            email=user.email,
-            password=hashed_password,
-            first_name=user.first_name,
-            last_name=user.last_name,
-            role=models.UserRole[user.role],
-            is_admin=(user.role == models.UserRole.ADMIN)
-        )
-        db.add(new_user)
-        db.flush()
-
-        # If the user is a teacher, create a Teacher record
-        if user.role == models.UserRole.TEACHER:
-            new_teacher = models.Teacher(
-                name=f"{user.first_name} {user.last_name}",
-                email=user.email,
-                hashed_password=hashed_password
-            )
-            db.add(new_teacher)
-
-        # Commit all changes
-        db.commit()
-        db.refresh(new_user)
-
-        # Create access token
-        access_token = create_access_token(data={"sub": str(new_user.id)})
-        
-        return {
-            "id": new_user.id,
-            "username": new_user.username,
-            "email": new_user.email,
-            "first_name": new_user.first_name,
-            "last_name": new_user.last_name,
-            "role": new_user.role.value,
-            "is_admin": new_user.is_admin,
-            "created_at": new_user.created_at,
-            "token": access_token
-        }
-
-    except Exception as e:
-        db.rollback()
+        role = models.UserRole[user_data.role]
+    except KeyError:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error creating user: {str(e)}"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid role"
         )
+    
+    # Validate access code for teacher/admin roles
+    if role in [models.UserRole.TEACHER, models.UserRole.ADMIN]:
+        if not user_data.access_code:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{role.name.lower()} access code is required"
+            )
+        
+        # Verify the access code
+        if role == models.UserRole.TEACHER and user_data.access_code != os.getenv("TEACHER_ACCESS_CODE"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid teacher access code"
+            )
+        
+        if role == models.UserRole.ADMIN and user_data.access_code != os.getenv("ADMIN_ACCESS_CODE"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid admin access code"
+            )
+    
+    # Hash the password
+    hashed_password = get_password_hash(user_data.password)
+    
+    # Create new user
+    new_user = models.User(
+        username=user_data.username,
+        email=user_data.email,
+        password=hashed_password,
+        first_name=user_data.first_name,
+        last_name=user_data.last_name,
+        role=role,
+        is_admin=(role == models.UserRole.ADMIN)
+    )
+    
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    # Create access token
+    access_token = create_access_token(data={"sub": str(new_user.id)})
+    
+    return {
+        "id": new_user.id,
+        "username": new_user.username,
+        "email": new_user.email,
+        "first_name": new_user.first_name,
+        "last_name": new_user.last_name,
+        "role": new_user.role.value,
+        "token": access_token
+    }
 
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -847,48 +843,61 @@ async def get_class_details(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    # Get the class details
-    class_details = db.query(models.Class).filter(models.Class.id == class_id).first()
-    if not class_details:
+    """Get detailed information about a class"""
+    # Get the class
+    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
+    if not db_class:
         raise HTTPException(status_code=404, detail="Class not found")
-
-    # Check if user has access to this class
+    
+    # Check if the user is authorized to view this class
+    # Teachers can view their own classes
+    # Students can view classes they're enrolled in
+    is_authorized = False
+    
     if current_user.role == models.UserRole.TEACHER:
-        # Teachers can access classes they created
-        if class_details.teacher_id != current_user.id:
-            raise HTTPException(status_code=403, detail="Not authorized to access this class")
+        # For teachers, check if they own the class
+        is_authorized = db_class.teacher_id == current_user.id
     elif current_user.role == models.UserRole.STUDENT:
-        # Students can access classes they're enrolled in
+        # For students, check if they're enrolled
         enrollment = db.query(models.ClassEnrollment).filter(
             models.ClassEnrollment.student_id == current_user.id,
             models.ClassEnrollment.class_id == class_id
         ).first()
-        if not enrollment:
-            raise HTTPException(status_code=403, detail="Not enrolled in this class")
-    else:
-        raise HTTPException(status_code=403, detail="Not authorized")
-
-    # Get the teacher info
-    teacher = db.query(models.User).filter(models.User.id == class_details.teacher_id).first()
-
+        is_authorized = enrollment is not None
+    elif current_user.role == models.UserRole.ADMIN:
+        # Admins can view all classes
+        is_authorized = True
+    
+    if not is_authorized:
+        # Add debug information
+        print(f"User {current_user.id} with role {current_user.role} tried to access class {class_id}")
+        print(f"Class teacher_id: {db_class.teacher_id}, User id: {current_user.id}")
+        
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not authorized to view this class"
+        )
+    
     # Get enrollment count
     enrollment_count = db.query(models.ClassEnrollment).filter(
         models.ClassEnrollment.class_id == class_id
     ).count()
-
+    
+    # Get post count
+    post_count = db.query(models.Blog).filter(
+        models.Blog.class_id == class_id
+    ).count()
+    
     return {
-        "id": class_details.id,
-        "name": class_details.name,
-        "description": class_details.description,
-        "access_code": class_details.access_code,
-        "teacher": {
-            "id": teacher.id,
-            "name": f"{teacher.first_name} {teacher.last_name}",
-            "email": teacher.email
-        },
-        "created_at": class_details.created_at,
+        "id": db_class.id,
+        "name": db_class.name,
+        "description": db_class.description,
+        "access_code": db_class.access_code,
+        "created_at": db_class.created_at,
+        "teacher_id": db_class.teacher_id,
         "enrollment_count": enrollment_count,
-        "is_teacher": current_user.role == models.UserRole.TEACHER
+        "post_count": post_count,
+        "status": db_class.status
     }
 
 # Add these new models to handle rich content
@@ -1423,9 +1432,9 @@ async def delete_class_post(
     return {"message": "Post deleted successfully"}
 
 # Add this before your app starts
-#@app.on_event("startup")
-#async def startup_event():
-    #reset_database()
+@app.on_event("startup")
+async def startup_event():
+    reset_database()
 
 def generate_unique_code(db: Session, length: int = 6) -> str:
     while True:
