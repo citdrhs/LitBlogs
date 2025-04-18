@@ -2065,7 +2065,7 @@ const ClassFeed = () => {
         userInfo={userInfo}
         onSignOut={handleSignOut}
         darkMode={darkMode}
-        logo="/logo.png"
+        logo="/dren/logo.png"
       />
 
       {/* Side Panel */}
