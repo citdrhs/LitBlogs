@@ -12,10 +12,10 @@ const LitBlogs = () => {
   const [email, setEmail] = useState("");
   const [newsletterMessage, setNewsletterMessage] = useState("");
   const slides = [
-    "/Classroom1.jpeg",
-    "/Classroom2.jpeg",
-    "/Classroom3.jpeg",
-    "/Classroom4.jpeg",
+    "/dren/Classroom1.jpeg",
+    "/dren/Classroom2.jpeg",
+    "/dren/Classroom3.jpeg",
+    "/dren/Classroom4.jpeg",
   ];
 
   // Handle next and previous slides
@@ -89,7 +89,7 @@ const LitBlogs = () => {
       userInfo={userInfo}
       onSignOut={handleSignOut}
       darkMode={darkMode}
-      logo="./logo.png"
+      logo="/dren/logo.png"
       />
       
       {/* Toggle Dark Mode Button */}
