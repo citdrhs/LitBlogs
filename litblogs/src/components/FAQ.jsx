@@ -8,7 +8,7 @@ const FAQ = ({ darkMode }) => {
     {
       question: "How can I join my teacher's class?",
       answer: "Use the provided teacher code in the sign-up menu to join the class.",
-      image: "/faq1.png"
+      image: "/dren/faq1.png"
     },
     {
       question: "How to Sign up?",

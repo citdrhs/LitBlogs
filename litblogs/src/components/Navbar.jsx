@@ -7,7 +7,7 @@ const Navbar = ({
   userInfo, 
   onSignOut, 
   darkMode = false,
-  logo = "/public/logo.png",
+  logo = "/dren/logo.png",
   navLinks = [
     { to: "/", label: "Home" },
     { to: "/tambellini", label: "Ms. Tambellini's English 10" },
