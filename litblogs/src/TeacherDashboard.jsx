@@ -317,7 +317,7 @@ const TeacherDashboard = () => {
         userInfo={userInfo}
         onSignOut={handleSignOut}
         darkMode={darkMode}
-        logo="/logo.png"
+        logo="/dren/logo.png"
       />
       
       {/* Sidebar - Keep it fixed */}
