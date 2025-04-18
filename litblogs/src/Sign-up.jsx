@@ -386,7 +386,7 @@ const SignUp = () => {
           {/* Logo */}
           <Link to="/">
             <motion.img
-              src="/logo.png"
+              src="/dren/logo.png"
               alt="Logo"
               className="h-8 transition-transform duration-300 hover:scale-110 cursor-pointer"
               whileHover={{ scale: 1.1 }}
