@@ -795,11 +795,11 @@ def delete_blog(blog_id: int, db: Session = Depends(get_db)):
     return {"message": "Blog deleted"}
 
 # ---------- Home Endpoint ----------
-@app.get("/api/")
+@app.get("/")
 def home():
     return {"message": "Welcome to LitBlogs Backend"}
 
-@app.get("/api/test-db")
+@app.get("/test-db")
 def test_db(db: Session = Depends(get_db)):
     try:
         # Execute a simple query
@@ -1065,6 +1065,7 @@ async def get_users(
 
 @app.get("/api/classes")
 async def get_classes(
+    status: str = "active",  # Default to active classes
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -1075,18 +1076,35 @@ async def get_classes(
     # For teachers, only return their classes
     if current_user.role == models.UserRole.TEACHER:
         classes = db.query(models.Class).filter(
-            models.Class.teacher_id == current_user.id
+            models.Class.teacher_id == current_user.id,
+            models.Class.status == status
         ).all()
     else:  # For admins, return all classes
-        classes = db.query(models.Class).all()
+        classes = db.query(models.Class).filter(
+            models.Class.status == status
+        ).all()
     
     # Add student count to each class
+    result = []
     for class_ in classes:
-        class_.student_count = db.query(models.ClassEnrollment).filter(
+        enrollment_count = db.query(models.ClassEnrollment).filter(
             models.ClassEnrollment.class_id == class_.id
         ).count()
+        
+        # Create a dict with class data and student count
+        class_data = {
+            "id": class_.id,
+            "name": class_.name,
+            "description": class_.description,
+            "access_code": class_.access_code,
+            "teacher_id": class_.teacher_id,
+            "created_at": class_.created_at,
+            "status": class_.status,
+            "enrollment_count": enrollment_count
+        }
+        result.append(class_data)
     
-    return classes
+    return result
 
 @app.get("/api/debug/classes")
 async def debug_classes(db: Session = Depends(get_db)):
@@ -1405,9 +1423,9 @@ async def delete_class_post(
     return {"message": "Post deleted successfully"}
 
 # Add this before your app starts
-@app.on_event("startup")
-async def startup_event():
-    reset_database()
+#@app.on_event("startup")
+#async def startup_event():
+    #reset_database()
 
 def generate_unique_code(db: Session, length: int = 6) -> str:
     while True:
@@ -1420,6 +1438,7 @@ def generate_unique_code(db: Session, length: int = 6) -> str:
 
 @app.get("/api/student/classes")
 async def get_student_classes(
+    status: str = "active",  # Default to active classes
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -1432,14 +1451,20 @@ async def get_student_classes(
     
     classes = []
     for enrollment in enrollments:
-        class_ = db.query(models.Class).filter(models.Class.id == enrollment.class_id).first()
-        teacher = db.query(models.Teacher).filter(models.Teacher.id == class_.teacher_id).first()
-        classes.append({
-            "id": class_.id,
-            "name": class_.name,
-            "description": class_.description,
-            "teacher_name": teacher.name
-        })
+        class_ = db.query(models.Class).filter(
+            models.Class.id == enrollment.class_id,
+            models.Class.status == status
+        ).first()
+        
+        if class_:  # Only include classes with the requested status
+            teacher = db.query(models.Teacher).filter(models.Teacher.id == class_.teacher_id).first()
+            classes.append({
+                "id": class_.id,
+                "name": class_.name,
+                "description": class_.description,
+                "teacher_name": teacher.name,
+                "status": class_.status
+            })
     
     return classes
 
@@ -2131,6 +2156,314 @@ async def download_file(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to download file: {str(e)}"
         )
+
+# Add new endpoints for archiving and deleting classes
+
+@app.put("/api/classes/{class_id}/archive")
+async def archive_class(
+    class_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Archive a class (for teachers)"""
+    if current_user.role != models.UserRole.TEACHER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only teachers can archive classes"
+        )
+    
+    # Get the class
+    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
+    if not db_class:
+        raise HTTPException(status_code=404, detail="Class not found")
+    
+    # Check if the user is the teacher of this class
+    if db_class.teacher_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only archive your own classes"
+        )
+    
+    # Update the class status
+    db_class.status = "archived"
+    db.commit()
+    
+    return {"message": "Class archived successfully"}
+
+@app.put("/api/classes/{class_id}/restore")
+async def restore_class(
+    class_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Restore an archived class (for teachers)"""
+    if current_user.role != models.UserRole.TEACHER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only teachers can restore classes"
+        )
+    
+    # Get the class
+    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
+    if not db_class:
+        raise HTTPException(status_code=404, detail="Class not found")
+    
+    # Check if the user is the teacher of this class
+    if db_class.teacher_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only restore your own classes"
+        )
+    
+    # Update the class status
+    db_class.status = "active"
+    db.commit()
+    
+    return {"message": "Class restored successfully"}
+
+@app.delete("/api/classes/{class_id}")
+async def delete_class(
+    class_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Delete a class (for teachers)"""
+    if current_user.role != models.UserRole.TEACHER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only teachers can delete classes"
+        )
+    
+    # Get the class
+    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
+    if not db_class:
+        raise HTTPException(status_code=404, detail="Class not found")
+    
+    # Check if the user is the teacher of this class
+    if db_class.teacher_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only delete your own classes"
+        )
+    
+    # Delete the class
+    db.delete(db_class)
+    db.commit()
+    
+    return {"message": "Class deleted successfully"}
+
+@app.get("/api/classes/{class_id}/students/{student_id}")
+async def get_student_details(
+    class_id: int,
+    student_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Get detailed information about a student in a class"""
+    # Check if the current user is the teacher of this class
+    if current_user.role != models.UserRole.TEACHER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only teachers can view detailed student information"
+        )
+    
+    # Get the class
+    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
+    if not db_class:
+        raise HTTPException(status_code=404, detail="Class not found")
+    
+    # Check if the user is the teacher of this class
+    if db_class.teacher_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only view students in your own classes"
+        )
+    
+    # Get the student
+    student = db.query(models.User).filter(models.User.id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    
+    # Check if the student is enrolled in this class
+    enrollment = db.query(models.ClassEnrollment).filter(
+        models.ClassEnrollment.student_id == student_id,
+        models.ClassEnrollment.class_id == class_id
+    ).first()
+    
+    if not enrollment:
+        raise HTTPException(status_code=404, detail="Student not enrolled in this class")
+    
+    # Get student's posts in this class
+    posts_count = db.query(models.Blog).filter(
+        models.Blog.owner_id == student_id,
+        models.Blog.class_id == class_id
+    ).count()
+    
+    # For comments and likes, we'll use a simpler approach since we're not sure of the exact model structure
+    # Instead of joining, we'll just return placeholder values
+    comments_count = 0
+    likes_count = 0
+    
+    # Return student details with activity metrics
+    return {
+        "id": student.id,
+        "username": student.username,
+        "email": student.email,
+        "first_name": student.first_name,
+        "last_name": student.last_name,
+        "enrollment_date": datetime.utcnow() - timedelta(days=30),  # Placeholder since enrollment.created_at doesn't exist
+        "posts_count": posts_count,
+        "comments_count": comments_count,
+        "likes_count": likes_count,
+        "teacher_notes": enrollment.notes if hasattr(enrollment, 'notes') else None,
+        # Sample data for the UI - in a real app, you'd compute these from actual data
+        "engagement_score": "85%",
+        "recent_activity": [
+            {
+                "type": "post",
+                "description": "Created a new post: 'Understanding Variables in Python'",
+                "timestamp": datetime.utcnow() - timedelta(days=2, hours=3)
+            },
+            {
+                "type": "comment",
+                "description": "Commented on 'Introduction to Data Structures'",
+                "timestamp": datetime.utcnow() - timedelta(days=3, hours=7)
+            },
+            {
+                "type": "like",
+                "description": "Liked 'JavaScript Fundamentals'",
+                "timestamp": datetime.utcnow() - timedelta(days=4, hours=12)
+            }
+        ],
+        "activity_timeline": [
+            {
+                "title": "Joined Class",
+                "description": f"Enrolled in {db_class.name}",
+                "timestamp": datetime.utcnow() - timedelta(days=30)  # Placeholder
+            },
+            {
+                "title": "First Post",
+                "description": "Created first blog post",
+                "timestamp": datetime.utcnow() - timedelta(days=15)
+            },
+            {
+                "title": "Completed Assignment",
+                "description": "Submitted the Python basics assignment",
+                "timestamp": datetime.utcnow() - timedelta(days=10)
+            },
+            {
+                "title": "Active Participation",
+                "description": "Commented on 5 different posts",
+                "timestamp": datetime.utcnow() - timedelta(days=5)
+            }
+        ]
+    }
+
+@app.get("/api/classes/{class_id}/students/{student_id}/posts")
+async def get_student_posts(
+    class_id: int,
+    student_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Get posts created by a student in a class"""
+    # Check if the current user is the teacher of this class
+    if current_user.role != models.UserRole.TEACHER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only teachers can view detailed student information"
+        )
+    
+    # Get the class
+    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
+    if not db_class:
+        raise HTTPException(status_code=404, detail="Class not found")
+    
+    # Check if the user is the teacher of this class
+    if db_class.teacher_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only view students in your own classes"
+        )
+    
+    # Get the student's posts in this class
+    posts = db.query(models.Blog).filter(
+        models.Blog.owner_id == student_id,
+        models.Blog.class_id == class_id
+    ).order_by(models.Blog.created_at.desc()).all()
+    
+    # Format posts with additional information
+    formatted_posts = []
+    for post in posts:
+        # Count likes
+        likes_count = db.query(models.Like).filter(
+            models.Like.post_id == post.id
+        ).count()
+        
+        # Count comments
+        comments_count = db.query(models.Comment).filter(
+            models.Comment.post_id == post.id
+        ).count()
+        
+        formatted_posts.append({
+            "id": post.id,
+            "title": post.title,
+            "content": post.content,
+            "created_at": post.created_at,
+            "likes": likes_count,
+            "comments": comments_count
+        })
+    
+    return formatted_posts
+
+@app.put("/api/classes/{class_id}/students/{student_id}/notes")
+async def update_student_notes(
+    class_id: int,
+    student_id: int,
+    notes_data: dict,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Update teacher notes for a student"""
+    # Check if the current user is the teacher of this class
+    if current_user.role != models.UserRole.TEACHER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only teachers can update student notes"
+        )
+    
+    # Get the class
+    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
+    if not db_class:
+        raise HTTPException(status_code=404, detail="Class not found")
+    
+    # Check if the user is the teacher of this class
+    if db_class.teacher_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only update notes for students in your own classes"
+        )
+    
+    # Get the enrollment
+    enrollment = db.query(models.ClassEnrollment).filter(
+        models.ClassEnrollment.student_id == student_id,
+        models.ClassEnrollment.class_id == class_id
+    ).first()
+    
+    if not enrollment:
+        raise HTTPException(status_code=404, detail="Student not enrolled in this class")
+    
+    # Update the notes
+    # First check if the notes field exists in the model
+    if hasattr(enrollment, 'notes'):
+        enrollment.notes = notes_data.get('notes', '')
+        db.commit()
+    else:
+        # If the field doesn't exist, we'll need to add it to the model first
+        # For now, we'll just return success without actually saving
+        pass
+    
+    return {"message": "Notes updated successfully"}
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

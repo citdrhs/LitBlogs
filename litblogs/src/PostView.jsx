@@ -1103,7 +1103,7 @@ const PostView = () => {
     }
   }, [post?.content]);
 
-  // Add this function to directly create and insert video elements
+  // Update the forceRenderVideos function to remove delete buttons
 
   const forceRenderVideos = () => {
     // Get the content container
@@ -1111,6 +1111,12 @@ const PostView = () => {
     if (!contentDiv) return;
     
     console.log("Forcing video rendering...");
+    
+    // First, remove any delete buttons or editor controls
+    const deleteButtons = contentDiv.querySelectorAll('.video-delete-btn, .editor-only-control');
+    deleteButtons.forEach(button => {
+      button.remove();
+    });
     
     // Look for any text that contains video tags (encoded or not)
     const htmlContent = contentDiv.innerHTML;
@@ -1131,71 +1137,91 @@ const PostView = () => {
       
       tempDiv.innerHTML = decodedHtml;
       
-      // Find all video source URLs in the content
-      const videoSources = [];
+      // Remove any delete buttons again (in case they were in the decoded HTML)
+      const moreDeleteButtons = tempDiv.querySelectorAll('.video-delete-btn, .editor-only-control');
+      moreDeleteButtons.forEach(button => {
+        button.remove();
+      });
       
-      // Method 1: Extract from source tags
-      const sourceRegex = /<source\s+src="([^"]+)"\s+type="([^"]+)"/g;
-      let match;
-      while ((match = sourceRegex.exec(decodedHtml)) !== null) {
-        videoSources.push({
-          src: match[1],
-          type: match[2]
-        });
-      }
+      // Find all video elements in the content
+      const videoElements = tempDiv.querySelectorAll('video');
+      console.log("Found video elements:", videoElements.length);
       
-      console.log("Found video sources:", videoSources);
-      
-      // If we found video sources, create new video elements
-      if (videoSources.length > 0) {
-        // Clear the content div
-        contentDiv.innerHTML = '';
-        
-        // Create new video elements for each source
-        videoSources.forEach((source, index) => {
-          // Create container
-          const videoContainer = document.createElement('div');
-          videoContainer.className = 'video-container';
-          videoContainer.style.margin = '20px 0';
+      if (videoElements.length > 0) {
+        // Process each video element without clearing the content
+        videoElements.forEach((video, index) => {
+          // Get the parent element (wrapper or container)
+          const videoParent = video.parentElement;
+          const isWrapper = videoParent.classList.contains('video-wrapper') || 
+                            videoParent.classList.contains('mceNonEditable');
           
-          // Create video element
-          const video = document.createElement('video');
-          video.controls = true;
-          video.width = '100%';
-          video.style.maxWidth = '600px';
-          video.style.display = 'block';
-          video.style.borderRadius = '8px';
-          video.style.backgroundColor = '#000';
+          // Get the source element
+          const source = video.querySelector('source');
+          if (!source) return;
           
-          // Create source element
-          const sourceEl = document.createElement('source');
+          // Get the source URL
+          let srcUrl = source.getAttribute('src');
+          if (!srcUrl) return;
           
           // Fix the source URL if needed
-          let srcUrl = source.src;
           if (srcUrl.startsWith('/uploads/')) {
             srcUrl = `http://localhost:8000${srcUrl}`;
           }
           
-          sourceEl.src = srcUrl;
-          sourceEl.type = source.type;
+          // Get the video type
+          const videoType = source.getAttribute('type') || 'video/mp4';
+          
+          // Create a new video element with proper attributes
+          const newVideo = document.createElement('video');
+          newVideo.controls = true;
+          newVideo.width = '100%';
+          newVideo.style.maxWidth = '600px';
+          newVideo.style.display = 'block';
+          newVideo.style.borderRadius = '8px';
+          newVideo.style.backgroundColor = '#000';
+          newVideo.style.margin = '10px 0';
+          
+          // Create a new source element
+          const newSource = document.createElement('source');
+          newSource.src = srcUrl;
+          newSource.type = videoType;
           
           // Add source to video
-          video.appendChild(sourceEl);
+          newVideo.appendChild(newSource);
           
           // Add fallback text
-          video.appendChild(document.createTextNode('Your browser does not support the video tag.'));
+          newVideo.appendChild(document.createTextNode('Your browser does not support the video tag.'));
           
-          // Add video to container
-          videoContainer.appendChild(video);
+          // Create a container for the video if it's not already in one
+          let newContainer;
+          if (isWrapper) {
+            // If it's already in a wrapper, replace just the video
+            videoParent.replaceChild(newVideo, video);
+            
+            // Remove any delete overlay
+            const deleteOverlay = videoParent.querySelector('.video-delete-overlay');
+            if (deleteOverlay) {
+              deleteOverlay.remove();
+            }
+          } else {
+            // Create a new container
+            newContainer = document.createElement('div');
+            newContainer.className = 'video-container';
+            newContainer.style.margin = '20px 0';
+            newContainer.appendChild(newVideo);
+            
+            // Replace the old video with the new container
+            videoParent.replaceChild(newContainer, video);
+          }
           
-          // Add container to content
-          contentDiv.appendChild(videoContainer);
-          
-          console.log(`Created new video element ${index} with source:`, srcUrl);
+          console.log(`Processed video ${index} with source:`, srcUrl);
           
           // Force the video to load
-          video.load();
+          newVideo.load();
         });
+        
+        // Update the content with the processed HTML
+        contentDiv.innerHTML = tempDiv.innerHTML;
         
         return true; // Videos were rendered
       }
@@ -1294,6 +1320,41 @@ const PostView = () => {
     });
   };
 
+  // Add this to your CSS in PostView.jsx
+  const postViewStyles = `
+    .video-delete-btn, 
+    .editor-only-control,
+    .video-delete-overlay {
+      display: none !important;
+      visibility: hidden !important;
+      opacity: 0 !important;
+      pointer-events: none !important;
+    }
+    
+    .video-container {
+      position: relative;
+      margin: 1rem 0;
+    }
+    
+    video {
+      max-width: 100%;
+      border-radius: 8px;
+    }
+  `;
+
+  // Add this to your useEffect
+  useEffect(() => {
+    // Add the styles to the document
+    const styleElement = document.createElement('style');
+    styleElement.textContent = postViewStyles;
+    document.head.appendChild(styleElement);
+    
+    return () => {
+      // Clean up on unmount
+      styleElement.remove();
+    };
+  }, []);
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -1343,6 +1404,9 @@ const PostView = () => {
                 <h3 className="font-medium text-lg dark:text-white">
                   {post.author ? `${post.author.first_name} ${post.author.last_name}` : 'Unknown Author'}
                 </h3>
+                <span className="text-sm text-gray-500 dark:text-gray-400" data-timestamp={post.created_at}>
+                  {formatRelativeTime(post.created_at)}
+                </span>
               </div>
             </div>
 
@@ -1512,13 +1576,6 @@ const PostView = () => {
                   </motion.div>
                 )}
               </AnimatePresence>
-            </div>
-
-            {/* Timestamp */}
-            <div className="flex justify-end mt-4">
-              <span className="text-sm text-gray-500 dark:text-gray-400" data-timestamp={post.created_at}>
-                {formatRelativeTime(post.created_at)}
-              </span>
             </div>
           </div>
         </motion.div>

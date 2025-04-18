@@ -6,6 +6,38 @@ import { useNavigate } from 'react-router-dom';
 import Loader from './Loader';
 import ReactHtmlParser from 'react-html-parser';
 
+// Format relative time (e.g., "2 hours ago")
+const formatRelativeTime = (dateString) => {
+  if (!dateString) return '';
+  
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffInSeconds = Math.floor((now - date) / 1000);
+  
+  // Define time intervals in seconds
+  const intervals = {
+    year: 31536000,
+    month: 2592000,
+    week: 604800,
+    day: 86400,
+    hour: 3600,
+    minute: 60
+  };
+  
+  // Check each interval
+  for (const [unit, seconds] of Object.entries(intervals)) {
+    const interval = Math.floor(diffInSeconds / seconds);
+    
+    if (interval >= 1) {
+      return interval === 1 
+        ? `1 ${unit} ago` 
+        : `${interval} ${unit}s ago`;
+    }
+  }
+  
+  return 'Just now';
+};
+
 const ClassDetails = ({ classData, darkMode, onBack }) => {
   const [activeTab, setActiveTab] = useState('Overview');
   const [loading, setLoading] = useState(true);
@@ -41,6 +73,7 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
           }
         );
         setStudents(enrollmentResponse.data);
+        setStudentCount(enrollmentResponse.data.length);
         
         // Fetch posts for this class
         const postsResponse = await axios.get(
@@ -81,20 +114,16 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
   };
 
   return (
-    <div className="space-y-6">
-      {/* Header with back button */}
-      <div className="flex items-center justify-between mb-8">
-        <motion.button
-          onClick={onBack}
-          className="flex items-center gap-2 text-blue-500 hover:text-blue-600"
-          whileHover={{ x: -5 }}
-        >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-          </svg>
-          Back to Classes
-        </motion.button>
-      </div>
+    <div className={`p-6 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
+      <button 
+        onClick={onBack}
+        className="mb-4 flex items-center text-blue-500 hover:text-blue-700"
+      >
+        <svg className="w-5 h-5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+        </svg>
+        Back to Classes
+      </button>
 
       {/* Class Title and Code */}
       <div className="flex justify-between items-center">
@@ -174,37 +203,62 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="grid gap-4"
               >
-                <h3 className="text-xl font-semibold mb-4">Students ({studentCount})</h3>
-                
-                {students.length > 0 ? (
-                  students.map((student) => (
-                    <div
-                      key={student.id}
-                      className="p-4 rounded-lg backdrop-blur-md bg-white/50 dark:bg-gray-800/10 border border-white/10 dark:border-gray-700/10"
-                    >
-                      <div className="flex justify-between items-center">
-                        <div className="flex items-center space-x-3">
-                          <div className="w-10 h-10 rounded-full bg-gray-300 dark:bg-gray-700 flex items-center justify-center">
-                            {student.first_name?.[0] || student.username?.[0] || '?'}
-                          </div>
-                          <div>
-                            <h4 className="text-lg font-semibold">{student.first_name} {student.last_name}</h4>
-                            <p className="text-sm text-gray-500">{student.email}</p>
-                          </div>
-                        </div>
-                        <div className="text-sm text-gray-500">
-                          Posts: {student.posts_count || 0}
-                        </div>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="text-center text-gray-500 py-6">
-                    No students enrolled yet
-                  </div>
-                )}
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                    <thead className="bg-gray-50 dark:bg-gray-800">
+                      <tr>
+                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                          Name
+                        </th>
+                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                          Email
+                        </th>
+                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                          Joined
+                        </th>
+                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                          Actions
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-800">
+                      {students.map((student) => (
+                        <tr key={student.id} className="hover:bg-gray-50 dark:hover:bg-gray-800">
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="flex items-center">
+                              <div className="flex-shrink-0 h-10 w-10 rounded-full bg-blue-500 flex items-center justify-center text-white">
+                                {student.first_name?.[0] || student.username?.[0] || '?'}
+                              </div>
+                              <div className="ml-4">
+                                <div className="text-sm font-medium dark:text-white">
+                                  {student.first_name} {student.last_name}
+                                </div>
+                                <div className="text-sm text-gray-500 dark:text-gray-400">
+                                  @{student.username}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm dark:text-gray-300">
+                            {student.email}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                            {new Date(student.created_at).toLocaleDateString()}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm">
+                            <button 
+                              onClick={() => navigate(`/class/${classData.id}/student/${student.id}`)}
+                              className="text-indigo-600 hover:text-indigo-900 dark:text-indigo-400 dark:hover:text-indigo-300"
+                            >
+                              View Details
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </motion.div>
             )}
 
@@ -230,12 +284,12 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
                         {/* Author Info */}
                         <div className="flex justify-between items-start">
                           <div className="flex items-center">
-                            <div className="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center">
-                              {post.author_name?.[0] || '?'}
+                            <div className="w-12 h-12 rounded-full bg-gray-300 flex items-center justify-center">
+                              {post.author?.first_name?.[0] || '?'}
                             </div>
-                            <div className="ml-2">
-                              <h3 className="text-sm font-medium dark:text-white">
-                                {post.author_name || 'Unknown'}
+                            <div>
+                              <h3 className="font-medium text-lg dark:text-white">
+                                {post.author ? `${post.author.first_name} ${post.author.last_name}` : 'Unknown Author'}
                               </h3>
                             </div>
                           </div>

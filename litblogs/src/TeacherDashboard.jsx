@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import axios from 'axios';
 import Navbar from './components/Navbar';
 import ClassDetails from './components/ClassDetails';
+import { toast } from 'react-hot-toast';
 
 const TeacherDashboard = () => {
   const navigate = useNavigate();
@@ -20,6 +21,9 @@ const TeacherDashboard = () => {
   const [userInfo, setUserInfo] = useState(null);
   const [selectedClass, setSelectedClass] = useState(null);
   const [allStudents, setAllStudents] = useState([]);
+  const [archivedClasses, setArchivedClasses] = useState([]);
+  const [classesTab, setClassesTab] = useState('active'); // 'active' or 'archived'
+  const [menuOpen, setMenuOpen] = useState(null);
 
   // Add the toggleDarkMode function
   const toggleDarkMode = () => {
@@ -56,19 +60,27 @@ const TeacherDashboard = () => {
 
     const fetchData = async () => {
       try {
+        setLoading(true);
         const config = {
           headers: { Authorization: `Bearer ${token}` }
         };
 
-        // Fetch teacher dashboard data
+        // Fetch teacher dashboard data with detailed class information
         const response = await axios.get('http://localhost:8000/api/teacher/dashboard', config);
         
-        // Update state with teacher data
-        setClasses(response.data.classes || []);
+        // Fetch detailed class information with student counts
+        const classesResponse = await axios.get('http://localhost:8000/api/classes?status=active', config);
+        const archivedClassesResponse = await axios.get('http://localhost:8000/api/classes?status=archived', config);
+        
+        // Update state with teacher data and classes with student counts
+        setClasses(classesResponse.data || []);
+        setArchivedClasses(archivedClassesResponse.data || []);
+        
         setUserInfo(prev => ({
           ...prev,
           name: response.data.name
         }));
+        
         setLoading(false);
       } catch (error) {
         setError(error.response?.data?.detail || 'Failed to load dashboard data');
@@ -175,6 +187,108 @@ const TeacherDashboard = () => {
   useEffect(() => {
     fetchAllStudents();
   }, [activeTab, classes]);
+
+  // Update the useEffect to fetch both active and archived classes
+  useEffect(() => {
+    const fetchClasses = async () => {
+      try {
+        setLoading(true);
+        const token = localStorage.getItem('token');
+        
+        // Fetch active classes
+        const activeResponse = await axios.get('http://localhost:8000/api/classes?status=active', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        
+        // Fetch archived classes
+        const archivedResponse = await axios.get('http://localhost:8000/api/classes?status=archived', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        
+        setClasses(activeResponse.data);
+        setArchivedClasses(archivedResponse.data);
+        setLoading(false);
+      } catch (error) {
+        console.error('Error fetching classes:', error);
+        setError(error.response?.data?.detail || 'Failed to load classes');
+        setLoading(false);
+      }
+    };
+    
+    fetchClasses();
+  }, []);
+
+  // Add functions to handle archiving, restoring, and deleting classes
+  const handleArchiveClass = async (classId) => {
+    if (!confirm('Are you sure you want to archive this class? Students will no longer be able to access it.')) {
+      return;
+    }
+    
+    try {
+      const token = localStorage.getItem('token');
+      await axios.put(`http://localhost:8000/api/classes/${classId}/archive`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      // Move the class from active to archived
+      const classToArchive = classes.find(c => c.id === classId);
+      if (classToArchive) {
+        setClasses(classes.filter(c => c.id !== classId));
+        setArchivedClasses([...archivedClasses, {...classToArchive, status: 'archived'}]);
+      }
+      
+      toast.success('Class archived successfully');
+    } catch (error) {
+      console.error('Error archiving class:', error);
+      toast.error('Failed to archive class');
+    }
+  };
+
+  const handleRestoreClass = async (classId) => {
+    try {
+      const token = localStorage.getItem('token');
+      await axios.put(`http://localhost:8000/api/classes/${classId}/restore`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      // Move the class from archived to active
+      const classToRestore = archivedClasses.find(c => c.id === classId);
+      if (classToRestore) {
+        setArchivedClasses(archivedClasses.filter(c => c.id !== classId));
+        setClasses([...classes, {...classToRestore, status: 'active'}]);
+      }
+      
+      toast.success('Class restored successfully');
+    } catch (error) {
+      console.error('Error restoring class:', error);
+      toast.error('Failed to restore class');
+    }
+  };
+
+  const handleDeleteClass = async (classId) => {
+    if (!confirm('Are you sure you want to permanently delete this class? This action cannot be undone.')) {
+      return;
+    }
+    
+    try {
+      const token = localStorage.getItem('token');
+      await axios.delete(`http://localhost:8000/api/classes/${classId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      // Remove the class from the appropriate list
+      if (classesTab === 'active') {
+        setClasses(classes.filter(c => c.id !== classId));
+      } else {
+        setArchivedClasses(archivedClasses.filter(c => c.id !== classId));
+      }
+      
+      toast.success('Class deleted successfully');
+    } catch (error) {
+      console.error('Error deleting class:', error);
+      toast.error('Failed to delete class');
+    }
+  };
 
   if (loading) {
     return (
@@ -353,11 +467,43 @@ const TeacherDashboard = () => {
             )}
 
             {activeTab === 'Classes' && (
-              <div className="space-y-6">
-                {!selectedClass ? (
+              <>
+                {selectedClass ? (
+                  <ClassDetails 
+                    classData={selectedClass} 
+                    darkMode={darkMode} 
+                    onBack={() => setSelectedClass(null)}
+                  />
+                ) : (
                   <>
                     <div className="flex justify-between items-center mb-6">
+                      <div>
                       <h2 className="text-2xl font-bold">My Classes</h2>
+                        <div className="mt-2">
+                          <div className="flex space-x-4 border-b border-gray-200 dark:border-gray-700">
+                            <button
+                              onClick={() => setClassesTab('active')}
+                              className={`py-2 px-4 ${
+                                classesTab === 'active'
+                                  ? 'border-b-2 border-blue-500 text-blue-500'
+                                  : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'
+                              }`}
+                            >
+                              Active Classes
+                            </button>
+                            <button
+                              onClick={() => setClassesTab('archived')}
+                              className={`py-2 px-4 ${
+                                classesTab === 'archived'
+                                  ? 'border-b-2 border-blue-500 text-blue-500'
+                                  : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'
+                              }`}
+                            >
+                              Archived Classes
+                            </button>
+                          </div>
+                        </div>
+                      </div>
                       <motion.button
                         onClick={() => setShowClassForm(true)}
                         className="px-4 py-2 rounded-lg text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500"
@@ -369,13 +515,100 @@ const TeacherDashboard = () => {
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                      {classes?.map(cls => (
+                      {(classesTab === 'active' ? classes : archivedClasses).map(cls => (
                         <motion.div 
                           key={cls.id}
-                          className="p-6 rounded-lg backdrop-blur-md bg-white dark:bg-gray-800/10 border border-white/10 dark:border-gray-700/10 shadow-xl cursor-pointer"
+                          className="p-6 rounded-lg backdrop-blur-md bg-white dark:bg-gray-800/10 border border-white/10 dark:border-gray-700/10 shadow-xl relative"
                           whileHover={{ scale: 1.02 }}
-                          onClick={() => setSelectedClass(cls)}
                         >
+                          {/* Class menu (three dots) */}
+                          <div className="absolute top-4 right-4">
+                            <div className="relative">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setMenuOpen(menuOpen === cls.id ? null : cls.id);
+                                }}
+                                className="p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                              >
+                                <svg className="w-5 h-5 text-gray-500 dark:text-gray-400" fill="currentColor" viewBox="0 0 20 20">
+                                  <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" />
+                                </svg>
+                              </button>
+                              
+                              {/* Dropdown menu */}
+                              {menuOpen === cls.id && (
+                                <div 
+                                  className={`absolute right-0 mt-1 w-48 rounded-md shadow-lg z-10 ${
+                                    darkMode ? 'bg-gray-800 border border-gray-700' : 'bg-white border border-gray-200'
+                                  }`}
+                                >
+                                  <div className="py-1" role="menu" aria-orientation="vertical">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setSelectedClass(cls);
+                                        setMenuOpen(null);
+                                      }}
+                                      className={`w-full text-left px-4 py-2 text-sm ${
+                                        darkMode ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-gray-100'
+                                      }`}
+                                      role="menuitem"
+                                    >
+                                      View Details
+                                    </button>
+                                    
+                                    {classesTab === 'active' ? (
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleArchiveClass(cls.id);
+                                          setMenuOpen(null);
+                                        }}
+                                        className={`w-full text-left px-4 py-2 text-sm ${
+                                          darkMode ? 'text-yellow-400 hover:bg-gray-700' : 'text-yellow-600 hover:bg-gray-100'
+                                        }`}
+                                        role="menuitem"
+                                      >
+                                        Archive Class
+                                      </button>
+                                    ) : (
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleRestoreClass(cls.id);
+                                          setMenuOpen(null);
+                                        }}
+                                        className={`w-full text-left px-4 py-2 text-sm ${
+                                          darkMode ? 'text-green-400 hover:bg-gray-700' : 'text-green-600 hover:bg-gray-100'
+                                        }`}
+                                        role="menuitem"
+                                      >
+                                        Restore Class
+                                      </button>
+                                    )}
+                                    
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleDeleteClass(cls.id);
+                                        setMenuOpen(null);
+                                      }}
+                                      className={`w-full text-left px-4 py-2 text-sm ${
+                                        darkMode ? 'text-red-400 hover:bg-gray-700' : 'text-red-600 hover:bg-gray-100'
+                                      }`}
+                                      role="menuitem"
+                                    >
+                                      Delete Class
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          
+                          {/* Class content */}
+                          <div onClick={() => setSelectedClass(cls)} className="cursor-pointer">
                           <h3 className="text-xl font-semibold mb-2">{cls.name}</h3>
                           <p className="mb-4 opacity-80">{cls.description}</p>
                           <div className="flex justify-between items-center">
@@ -383,21 +616,36 @@ const TeacherDashboard = () => {
                               Code: {cls.access_code || cls.joinCode || 'No code available'}
                             </span>
                             <span className="text-sm opacity-80">
-                              {cls.enrollment_count || 0} students
+                                {cls.enrollment_count || 0} students
+                              </span>
+                            </div>
+                            
+                            {/* Status badge for archived classes */}
+                            {cls.status === 'archived' && (
+                              <div className="mt-2">
+                                <span className="px-2 py-1 text-xs rounded-full bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200">
+                                  Archived
                             </span>
+                              </div>
+                            )}
                           </div>
                         </motion.div>
                       ))}
+                      
+                      {/* Empty state */}
+                      {(classesTab === 'active' ? classes : archivedClasses).length === 0 && (
+                        <div className="col-span-full text-center py-12">
+                          <div className="text-gray-500 dark:text-gray-400">
+                            {classesTab === 'active' 
+                              ? "You don't have any active classes yet. Create one to get started!" 
+                              : "You don't have any archived classes."}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </>
-                ) : (
-                  <ClassDetails
-                    classData={selectedClass}
-                    darkMode={darkMode}
-                    onBack={() => setSelectedClass(null)}
-                  />
                 )}
-              </div>
+              </>
             )}
 
             {activeTab === 'Students' && (

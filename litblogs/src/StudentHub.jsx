@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import axios from 'axios';
 import Loader from './components/Loader';
 import Navbar from './components/Navbar';
+import { toast } from 'react-hot-toast';
 
 const StudentHub = () => {
   const navigate = useNavigate();
@@ -18,6 +19,8 @@ const StudentHub = () => {
   const [darkMode, setDarkMode] = useState(() => {
     return JSON.parse(localStorage.getItem('darkMode')) ?? false;
   });
+  const [archivedClasses, setArchivedClasses] = useState([]);
+  const [classesTab, setClassesTab] = useState('active'); // 'active' or 'archived'
 
   useEffect(() => {
     const storedUserInfo = localStorage.getItem('user_info');
@@ -35,23 +38,33 @@ const StudentHub = () => {
   };
 
   useEffect(() => {
+    const fetchClasses = async () => {
+      try {
+        setLoading(true);
+        const token = localStorage.getItem('token');
+        
+        // Fetch active classes
+        const activeResponse = await axios.get('http://localhost:8000/api/student/classes?status=active', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        
+        // Fetch archived classes
+        const archivedResponse = await axios.get('http://localhost:8000/api/student/classes?status=archived', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        
+        setClasses(activeResponse.data);
+        setArchivedClasses(archivedResponse.data);
+        setLoading(false);
+      } catch (error) {
+        console.error('Error fetching classes:', error);
+        setError(error.response?.data?.detail || 'Failed to load classes');
+        setLoading(false);
+      }
+    };
+    
     fetchClasses();
-    fetchUserPosts();
   }, []);
-
-  const fetchClasses = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await axios.get('http://localhost:8000/api/student/classes', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setClasses(response.data);
-      setLoading(false);
-    } catch (error) {
-      setError('Failed to load classes');
-      setLoading(false);
-    }
-  };
 
   const fetchUserPosts = async () => {
     try {
@@ -68,16 +81,27 @@ const StudentHub = () => {
   const joinClass = async (e) => {
     e.preventDefault();
     try {
+      setLoading(true);
       const token = localStorage.getItem('token');
       await axios.post('http://localhost:8000/api/student/join-class', 
         { access_code: classCode },
         { headers: { Authorization: `Bearer ${token}` }}
       );
+      
+      // Fetch the updated list of classes
+      const activeResponse = await axios.get('http://localhost:8000/api/student/classes?status=active', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      setClasses(activeResponse.data);
       setShowJoinForm(false);
       setClassCode('');
-      fetchClasses();
+      setLoading(false);
+      toast.success('Successfully joined class!');
     } catch (error) {
+      setLoading(false);
       setError('Failed to join class');
+      toast.error('Failed to join class. Please check the class code.');
     }
   };
 
@@ -150,24 +174,47 @@ const StudentHub = () => {
         <div className="flex-1 p-8 mt-16">
           {activeTab === 'current' && (
             <div>
-              <h1 className="text-3xl font-bold mb-6">Current Classes</h1>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {classes.map((cls) => (
-                  <motion.div
-                    key={cls.id}
-                    className="p-6 rounded-lg backdrop-blur-md bg-white/70 border dark:bg-slate-800/60 border-white/10 shadow-xl"
-                    whileHover={{ scale: 1.02 }}
-                    onClick={() => navigate(`/class-feed/${cls.id}`)}
-                  >
-                    <h3 className="text-xl font-semibold mb-2">{cls.name}</h3>
-                    <p className="mb-4 opacity-80">{cls.description}</p>
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm opacity-60">
-                        Teacher: {cls.teacher_name}
-                      </span>
+              <div className="flex justify-between items-center mb-6">
+                <h1 className="text-3xl font-bold">My Classes</h1>
+                <motion.button
+                  onClick={() => setShowJoinForm(true)}
+                  className={`px-6 py-2 rounded-lg text-white ${
+                    darkMode 
+                      ? 'bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500' 
+                      : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500'
+                  } transition-all duration-300 shadow-lg hover:shadow-xl`}
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                >
+                  Join Class
+                </motion.button>
+              </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mt-4">
+                {classes.length > 0 ? (
+                  classes.map(cls => (
+                    <motion.div 
+                      key={cls.id}
+                      className="p-6 rounded-lg backdrop-blur-md bg-white dark:bg-gray-800/10 border border-white/10 dark:border-gray-700/10 shadow-xl"
+                      whileHover={{ scale: 1.02 }}
+                      onClick={() => navigate(`/class-feed/${cls.id}`)}
+                    >
+                      <h3 className="text-xl font-semibold mb-2">{cls.name}</h3>
+                      <p className="mb-4 opacity-80">{cls.description}</p>
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm opacity-80">
+                          Teacher: {cls.teacher_name}
+                        </span>
+                      </div>
+                    </motion.div>
+                  ))
+                ) : (
+                  <div className="col-span-full text-center py-12">
+                    <div className="text-gray-500 dark:text-gray-400">
+                      You're not enrolled in any classes yet.
                     </div>
-                  </motion.div>
-                ))}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -175,7 +222,35 @@ const StudentHub = () => {
           {activeTab === 'previous' && (
             <div>
               <h1 className="text-3xl font-bold mb-6">Previous Classes</h1>
-              <p className="text-gray-500">No previous classes found.</p>
+              
+              {archivedClasses.length > 0 ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mt-4">
+                  {archivedClasses.map(cls => (
+                    <motion.div 
+                      key={cls.id}
+                      className="p-6 rounded-lg backdrop-blur-md bg-white dark:bg-gray-800/10 border border-white/10 dark:border-gray-700/10 shadow-xl opacity-75"
+                      whileHover={{ scale: 1.01 }}
+                    >
+                      <h3 className="text-xl font-semibold mb-2">{cls.name}</h3>
+                      <p className="mb-4 opacity-80">{cls.description}</p>
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm opacity-80">
+                          Teacher: {cls.teacher_name}
+                        </span>
+                        <span className="px-2 py-1 text-xs rounded-full bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200">
+                          Archived
+                        </span>
+                      </div>
+                    </motion.div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-12">
+                  <div className="text-gray-500 dark:text-gray-400">
+                    You don't have any previous classes.
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

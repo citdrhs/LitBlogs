@@ -52,6 +52,7 @@ class Class(Base):
     teacher = relationship("Teacher", back_populates="classes")
     students = relationship("ClassEnrollment", back_populates="class_")
     blogs = relationship("Blog", back_populates="class_")
+    status = Column(String, default="active")  # 'active', 'archived', or 'deleted'
 
 class ClassEnrollment(Base):
     __tablename__ = "class_enrollments"
