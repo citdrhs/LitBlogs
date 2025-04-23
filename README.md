@@ -5,7 +5,6 @@ A modern blogging platform for educational institutions, designed for teachers a
 ## Table of Contents
 - [Overview](#overview)
 - [System Requirements](#system-requirements)
-- [Development Setup](#development-setup)
 - [Production Deployment](#production-deployment)
 - [Maintenance Guide](#maintenance-guide)
 ## Overview
@@ -29,7 +28,7 @@ The platform supports role-based access (students, teachers, admins), class mana
 - 2GB RAM minimum (4GB recommended)
 - 20GB storage minimum
 
-## Development Setup
+## Production Deployment
 
 ### Prerequisites
 1. Python 3.10+
@@ -144,8 +143,8 @@ server {
     # For React Router (SPA) at /dren path
     location / {
             rewrite ^/dren(.*)$ /$1 last;
-            #try_files $uri $uri/ /index.html;
-            try_files $uri $uri/ /dren/$uri =404;
+            try_files $uri $uri/ /dren/index.html;
+            #try_files $uri $uri/ /dren/$uri =404;
     }
 
     #location ~* \.(js|mjs|css|json|webmanifest|map)$ {
