@@ -12,6 +12,8 @@ import AdminDashboard from "./AdminDashboard";
 import PostView from "./PostView";
 import StudentHub from "./StudentHub";
 import Profile from "./Profile";
+import ForgotPassword from "./ForgotPassword";
+import ResetPassword from "./ResetPassword";
 import StudentDetails from "./components/StudentDetails";
 import { useState, useEffect } from 'react';
 
@@ -55,6 +57,8 @@ function App() {
       <Route path="/class/:classId/student/:studentId" element={<StudentDetails darkMode={darkMode} />} />
       <Route path="/student-hub" element={<StudentHub />} />
       <Route path="/Profile" element={<Profile/>}/>
+      <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
     </Routes>
   );
 }

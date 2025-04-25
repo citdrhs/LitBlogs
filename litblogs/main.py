@@ -1,13 +1,14 @@
  # main.py
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, APIRouter
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import engine, get_db, reset_database
 from base import Base
 import models
+from models import User, Teacher, PasswordReset
 import schemas
+from pydantic import BaseModel, EmailStr
 from typing import List
-from pydantic import BaseModel
 from passlib.context import CryptContext
 import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,13 +32,16 @@ from msal import ConfidentialClientApplication  # Add this import
 from sqlalchemy.orm import relationship
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 app = FastAPI()
 
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://drhscit.org:7001", "http://www.drhscit.org:7001"],  # Add your frontend URL
+    allow_origins=["http://127.0.0.1:5500", "https://drhscit.org"],  # Add your frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1432,9 +1436,9 @@ async def delete_class_post(
     return {"message": "Post deleted successfully"}
 
 # Add this before your app starts
-@app.on_event("startup")
-async def startup_event():
-    reset_database()
+#@app.on_event("startup")
+#async def startup_event():
+#    reset_database()
 
 def generate_unique_code(db: Session, length: int = 6) -> str:
     while True:
@@ -2473,6 +2477,127 @@ async def update_student_notes(
         pass
     
     return {"message": "Notes updated successfully"}
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://127.0.0.1:5500/")
+EMAIL_HOST = os.getenv("EMAIL_HOST")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
+EMAIL_USERNAME = os.getenv("EMAIL_USERNAME")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+EMAIL_FROM = os.getenv("EMAIL_FROM")
+
+def send_password_reset_email(email: str, token: str):
+    """Send password reset email with reset link"""
+    
+    reset_url = f"{FRONTEND_URL}/reset-password?token={token}"
+    
+    message = MIMEMultipart("alternative")
+    message["Subject"] = "Reset Your LitBlog Password"
+    message["From"] = EMAIL_FROM
+    message["To"] = email
+    
+    # Create HTML version of the message
+    html = f"""
+    <html>
+      <head></head>
+      <body>
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2>Reset Your Password</h2>
+          <p>We received a request to reset your password. Click the button below to set a new password:</p>
+          <a href="{reset_url}" style="display: inline-block; background-color: #4F46E5; color: white; text-decoration: none; padding: 10px 20px; border-radius: 5px; margin: 20px 0;">Reset Password</a>
+          <p>If you didn't request a password reset, you can safely ignore this email.</p>
+          <p>This link will expire in 1 hour.</p>
+        </div>
+      </body>
+    </html>
+    """
+    
+    # Attach HTML part
+    part = MIMEText(html, "html")
+    message.attach(part)
+    
+    # Send email
+    try:
+        server = smtplib.SMTP(EMAIL_HOST, EMAIL_PORT)
+        server.starttls()
+        server.login(EMAIL_USERNAME, EMAIL_PASSWORD)
+        server.sendmail(EMAIL_FROM, email, message.as_string())
+        server.quit()
+        return True
+    except Exception as e:
+        print(f"Error sending email: {e}")
+        return False
+
+@app.post("/api/auth/forgot-password")
+async def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """Request a password reset token"""
+    
+    # Find user by email
+    user = db.query(User).filter(User.email == request.email).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="No account found with this email address")
+    
+    # Create a secure token
+    token = secrets.token_urlsafe(32)
+    expires_at = datetime.utcnow() + timedelta(hours=1)
+    
+    # Store token in database
+    password_reset = PasswordReset(
+        user_id=user.id,
+        token=token,
+        expires_at=expires_at
+    )
+    
+    db.add(password_reset)
+    db.commit()
+    
+    # Send email
+    if not send_password_reset_email(user.email, token):
+        db.delete(password_reset)
+        db.commit()
+        raise HTTPException(status_code=500, detail="Failed to send password reset email")
+    
+    return {"message": "Password reset instructions sent to your email"}
+
+@app.post("/api/auth/reset-password")
+async def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db)):
+    """Reset a password using a valid token"""
+    
+    # Find token in database
+    password_reset = db.query(PasswordReset).filter(
+        PasswordReset.token == request.token,
+        PasswordReset.expires_at > datetime.utcnow(),
+        PasswordReset.used == False
+    ).first()
+    
+    if not password_reset:
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+    
+    # Get the user
+    user = db.query(User).filter(User.id == password_reset.user_id).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Hash the new password
+    hashed_password = pwd_context.hash(request.new_password)
+    
+    # Update the user's password
+    user.password = hashed_password
+    
+    # Mark the token as used
+    password_reset.used = True
+    
+    db.commit()
+    
+    return {"message": "Password reset successfully"}
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
