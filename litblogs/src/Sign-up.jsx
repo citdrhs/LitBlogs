@@ -28,6 +28,14 @@ const SignUp = () => {
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [successData, setSuccessData] = useState(null);
 
+  // Add this state for password strength
+  const [passwordStrength, setPasswordStrength] = useState({
+    score: 0,
+    label: "Poor",
+    color: "red-500",
+    percent: 0
+  });
+
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
@@ -71,6 +79,80 @@ const SignUp = () => {
     }
   }, [darkMode]);
 
+  
+  // Add this function to your Sign-up.jsx file
+  const validatePassword = (password) => {
+    // Check minimum length
+    if (password.length < 8) {
+      return "Password must be at least 8 characters long";
+    }
+    
+    // Check for uppercase letter
+    if (!/[A-Z]/.test(password)) {
+      return "Password must contain at least one uppercase letter";
+    }
+    
+    // Check for lowercase letter
+    if (!/[a-z]/.test(password)) {
+      return "Password must contain at least one lowercase letter";
+    }
+    
+    // Check for number
+    if (!/[0-9]/.test(password)) {
+      return "Password must contain at least one number";
+    }
+    
+    // Check for special character
+    if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)) {
+      return "Password must contain at least one special character";
+    }
+    
+    return null; // Password is valid
+  };
+
+  // Add this function and call it when the password changes
+  const checkPasswordStrength = (password) => {
+    let score = 0;
+    
+    // Basic requirements
+    if (password.length >= 8) score++;
+    if (/[A-Z]/.test(password)) score++;
+    if (/[a-z]/.test(password)) score++;
+    if (/[0-9]/.test(password)) score++;
+    if (/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)) score++;
+    
+    // Extra points for stronger passwords
+    if (password.length >= 12) score++; // Bonus for longer passwords
+    if (/(?=.*[0-9].*[0-9])/.test(password)) score++; // Bonus for multiple numbers
+    if (/(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?].*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?])/.test(password)) score++; // Bonus for multiple special chars
+    
+    // Determine strength label and color
+    let label, color;
+    switch (true) {
+      case (score < 5): // Doesn't meet minimum requirements
+        label = "Poor";
+        color = "red-500";
+        break;
+      case (score === 5): // Meets minimum requirements
+        label = "Good";
+        color = "green-400";
+        break;
+      case (score === 6):
+        label = "Strong";
+        color = "green-500";
+        break;
+      case (score >= 7):
+        label = "Excellent";
+        color = "green-700";
+        break;
+      default:
+        label = "Poor";
+        color = "red-500";
+    }
+    
+    setPasswordStrength({ score, label, color, percent: Math.min(100, (score / 8) * 100) });
+  };
+
   // Form submission handler
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -91,6 +173,13 @@ const SignUp = () => {
       // Check if passwords match
       if (password !== confirmPassword) {
         setErrorMessage("Passwords do not match");
+        return;
+      }
+
+      // Validate password strength
+      const passwordError = validatePassword(password);
+      if (passwordError) {
+        setErrorMessage(passwordError);
         return;
       }
 
@@ -534,10 +623,38 @@ const SignUp = () => {
               className={`w-full p-4 border rounded-lg ${darkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'} focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all duration-300 transform focus:scale-105`}
               placeholder="Enter your password"
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(e) => {
+                setPassword(e.target.value);
+                checkPasswordStrength(e.target.value);
+              }}
               required
             />
+            <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+              Password must be at least 8 characters long and include uppercase, lowercase, number, and special character.
+            </p>
           </motion.div>
+
+          {/* Add this right after the password input field */}
+          {password && (
+            <div className="mt-2 mb-2">
+              <div className="flex justify-between items-center mb-1">
+                <span className={`text-xs font-medium text-${passwordStrength.color}`}>
+                  Strength: {passwordStrength.label}
+                </span>
+              </div>
+              <div className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                <div 
+                  className={`h-full bg-${passwordStrength.color} transition-all duration-300 ease-in-out`} 
+                  style={{ width: `${passwordStrength.percent}%` }}
+                ></div>
+              </div>
+              {passwordStrength.score >= 7 && (
+                <p className="text-xs mt-1 text-green-700 dark:text-green-400">
+                  Excellent! This password provides very strong security.
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Confirm Password Input */}
           <motion.div

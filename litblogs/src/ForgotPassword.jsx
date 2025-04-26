@@ -56,8 +56,19 @@ const ForgotPassword = () => {
     }
   }, [darkMode]);
 
+    // In your forms, e.g., ForgotPassword.jsx
+  const validateEmail = (email) => {
+    const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!re.test(email)) {
+      setMessage("Please enter a valid email address");
+      return false;
+    }
+    return true;
+  };
+  
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!validateEmail(email)) return;
     setIsLoading(true);
     setMessage("");
     setIsSuccess(false);

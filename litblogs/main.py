@@ -1,5 +1,6 @@
  # main.py
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, APIRouter
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
+from fastapi.middleware.csrf import CSRFMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import engine, get_db, reset_database
@@ -40,11 +41,13 @@ app = FastAPI()
 
 # Add CORS middleware
 app.add_middleware(
+    CSRFMiddleware,
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5500", "https://drhscit.org"],  # Add your frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    safe_methods=("GET", "HEAD", "OPTIONS", "TRACE")
 )
 
 pwd_context = CryptContext(
@@ -2569,6 +2572,10 @@ async def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(
 @app.post("/api/auth/reset-password")
 async def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db)):
     """Reset a password using a valid token"""
+
+    token = request.get("token")
+    if not token:
+        raise HTTPException(status_code=400, detail="Token is required")
     
     # Find token in database
     password_reset = db.query(PasswordReset).filter(

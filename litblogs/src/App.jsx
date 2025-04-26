@@ -7,7 +7,6 @@ import SignIn from "./Sign-in";
 import SignUp from "./Sign-up";
 import TeacherDashboard from "./TeacherDashboard";
 import ClassFeed from "./ClassFeed";
-import RoleSelection from "./RoleSelection";
 import AdminDashboard from "./AdminDashboard";
 import PostView from "./PostView";
 import StudentHub from "./StudentHub";
@@ -48,7 +47,6 @@ function App() {
       <Route path="/help" element={<Help />} />
       <Route path="/sign-in" element={<SignIn />} />
       <Route path="/sign-up" element={<SignUp />} />
-      <Route path="/role-selection" element={<RoleSelection />} />
       <Route path="/teacher-dashboard" element={<TeacherDashboard />} />
       <Route path="/class-feed" element={<ClassFeed />} />
       <Route path="/class-feed/:classId" element={<ClassFeed />} />
