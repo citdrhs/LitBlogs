@@ -47,11 +47,16 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
   const [posts, setPosts] = useState([]);
   const [studentCount, setStudentCount] = useState(0);
   const [postCount, setPostCount] = useState(0);
+  const [isTeacher, setIsTeacher] = useState(false);
   const navigate = useNavigate();
 
   const tabs = ['Overview', 'Students', 'Blogs', 'Analytics'];
 
   useEffect(() => {
+    // Get user info from localStorage
+    const userInfo = JSON.parse(localStorage.getItem('user_info') || '{}');
+    setIsTeacher(userInfo?.role === 'TEACHER');
+
     const fetchClassDetails = async () => {
       try {
         const token = localStorage.getItem('token');
@@ -322,6 +327,19 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
                           </div>
                         </div>
                       </div>
+
+                      {isTeacher && post.ai_detection && (
+                        <div className={`absolute top-2 right-2 px-3 py-1 rounded-full text-xs font-medium ${
+                          post.ai_detection.status === 'pending' ? 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300' :
+                          post.ai_detection.is_ai ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200' : 
+                          'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
+                        }`}>
+                          {post.ai_detection.status === 'pending' ? 'Analyzing...' :
+                           post.ai_detection.is_ai ? 
+                           `AI (${Math.round(post.ai_detection.ai_probability * 100)}%)` : 
+                           `Human (${Math.round(post.ai_detection.human_probability * 100)}%)`}
+                        </div>
+                      )}
                     </motion.div>
                   ))
                 ) : (
@@ -354,4 +372,4 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
   );
 };
 
-export default ClassDetails; 
+export default ClassDetails;

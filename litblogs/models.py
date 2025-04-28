@@ -75,6 +75,7 @@ class Blog(Base):
     class_ = relationship("Class", back_populates="blogs")
     likes = relationship("PostLike", back_populates="post", cascade="all, delete-orphan")
     comments = relationship("Comment", back_populates="blog")
+    ai_detection = relationship("AIDetectionResult", back_populates="post", uselist=False, cascade="all, delete-orphan")
 
 class PostLike(Base):
     __tablename__ = "post_likes"
@@ -141,3 +142,18 @@ class PasswordReset(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     expires_at = Column(DateTime(timezone=True), nullable=False)
     used = Column(Boolean, default=False)
+
+class AIDetectionResult(Base):
+    __tablename__ = "ai_detection_results"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    post_id = Column(Integer, ForeignKey("blogs.id", ondelete="CASCADE"), nullable=False)
+    is_ai = Column(Boolean, nullable=True)  # Null means pending or failed
+    ai_probability = Column(Float, nullable=True)
+    human_probability = Column(Float, nullable=True)
+    detailed_analysis = Column(Text, nullable=True)
+    sentence_analysis = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relationship to post
+    post = relationship("Blog", back_populates="ai_detection")

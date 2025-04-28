@@ -518,6 +518,9 @@ const PostView = () => {
   const [commentSubmitting, setCommentSubmitting] = useState(false);
   const contentRef = useRef(null);
 
+  // Add this state
+  const [isTeacher, setIsTeacher] = useState(false);
+
   const toggleDarkMode = () => {
     setDarkMode((prevDarkMode) => {
       const newDarkMode = !prevDarkMode;
@@ -856,8 +859,134 @@ const PostView = () => {
       padding: 10px;
       margin: 10px 0;
       border: 1px solid #e0e0e0;
-      border-radius: 8px;
-      background-color: #f9f9f9;
+      border-radius:background-color: #f9f9f9;
+    }
+    
+    .dark .file-attachment {
+      background-color: rgba(255, 255, 255, 0.05);
+      border-color: rgba(255, 255, 255, 0.1);
+    }
+    
+    .file-attachment .file-icon {
+      margin-right: 12px;
+      font-size: 24px;
+      color: #4a5568;
+    }
+    
+    .file-attachment .file-info {
+      flex-grow: 1;
+    }
+    
+    .file-attachment .file-name {
+      font-weight: 500;
+      margin-bottom: 2px;
+    }
+    
+    .file-attachment .file-size {
+      font-size: 12px;
+      color: #718096;
+    }
+    
+    .file-attachment .file-actions {
+      display: flex;
+      gap: 8px;
+    }
+    
+    .file-attachment .file-actions button {
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    
+    .file-attachment .preview-btn {
+      background-color: #ebf8ff;
+      color: #3182ce;
+      border: 1px solid #bee3f8;
+    }
+    
+    .file-attachment .download-btn {
+      background-color: #e6fffa;
+      color: #319795;
+      border: 1px solid #b2f5ea;
+    }
+    
+    .dark .file-attachment .preview-btn {
+      background-color: rgba(49, 130, 206, 0.2);
+      border-color: rgba(190, 227, 248, 0.3);
+    }
+    
+    .dark .file-attachment .download-btn {
+      background-color: rgba(49, 151, 149, 0.2);
+      border-color: rgba(178, 245, 234, 0.3);
+    }
+
+    /* Image alignment classes */
+    img.float-left {
+      float: left;
+      margin-right: 1rem;
+      margin-bottom: 0.5rem;
+    }
+    
+    img.float-right {
+      float: right;
+      margin-left: 1rem;
+      margin-bottom: 0.5rem;
+    }
+    
+    img.mx-auto.d-block {
+      display: block;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    
+    /* Clear floats after images */
+    .html-content::after {
+      content: "";
+      clear: both;
+      display: table;
+    }
+    
+    /* Preserve width/height attributes */
+    img[width], img[height] {
+      width: auto;
+      height: auto;
+      max-width: 100%;
+    }
+    
+    /* Preserve inline styles */
+    img[style] {
+      /* This ensures inline styles take precedence */
+    }
+
+    /* Video styles */
+    .html-content video {
+      max-width: 600px !important;
+      width: 100% !important;
+      border-radius: 8px !important;
+      margin: 20px 0 !important;
+      display: block !important;
+      background-color: #000 !important;
+    }
+    
+    .html-content .video-container {
+      margin: 20px 0 !important;
+      position: relative !important;
+    }
+    
+    /* Force controls to be visible */
+    .html-content video::-webkit-media-controls {
+      display: flex !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+    }
+    
+    .html-content video::-webkit-media-controls-enclosure {
+      display: flex !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+8px;
+background-color: #f9f9f9;
     }
     
     .dark .file-attachment {
@@ -1338,8 +1467,8 @@ const PostView = () => {
     
     video {
       max-width: 100%;
-      border-radius: 8px;
-    }
+            border-radius: 8px;
+      }
   `;
 
   // Add this to your useEffect
@@ -1354,6 +1483,69 @@ const PostView = () => {
       styleElement.remove();
     };
   }, []);
+
+  useEffect(() => {
+    // Get user info from localStorage
+    const userInfo = JSON.parse(localStorage.getItem('user_info') || '{}');
+    setIsTeacher(userInfo?.role === 'TEACHER');
+    
+    // Only fetch AI detection for teachers
+    if (userInfo?.role === 'TEACHER') {
+      fetchAiDetection();
+    }
+    
+    // Rest of your existing code...
+  }, [postId, classId]);
+
+  // Update the AI detection UI section
+  {isTeacher && aiDetection && (
+    <div className="mb-4">
+      <div className="flex justify-between items-center">
+        <h3 className="text-lg font-semibold">AI Detection Results</h3>
+        <button
+          onClick={() => setShowAiAnalysis(!showAiAnalysis)}
+          className="text-blue-500 hover:text-blue-700"
+        >
+          {showAiAnalysis ? "Hide Analysis" : "Show Analysis"}
+        </button>
+      </div>
+      
+      <div className={`flex items-center mt-2 ${
+        aiDetection.status === 'pending' ? 'text-gray-500' :
+        aiDetection.is_ai ? 'text-red-600' : 'text-green-600'
+      }`}>
+        <div className={`w-3 h-3 rounded-full mr-2 ${
+          aiDetection.status === 'pending' ? 'bg-gray-400' :
+          aiDetection.is_ai ? 'bg-red-500' : 'bg-green-500'
+        }`}></div>
+        <span>
+          {aiDetection.status === 'pending' ? 'Analysis in progress...' :
+           aiDetection.is_ai ? 
+           `AI-generated content (${Math.round(aiDetection.ai_probability * 100)}% certainty)` : 
+           `Human-written content (${Math.round(aiDetection.human_probability * 100)}% certainty)`}
+        </span>
+      </div>
+      
+      {showAiAnalysis && aiDetection.status === 'completed' && (
+        <div className="mt-4 space-y-4">
+          <div className="border dark:border-gray-700 rounded-lg p-4">
+            <h4 className="text-sm font-medium mb-2">Detailed Analysis</h4>
+            <div 
+              className="prose dark:prose-invert text-sm" 
+              dangerouslySetInnerHTML={{ __html: aiDetection.detailed_analysis }}
+            ></div>
+          </div>
+          
+          <div className="border dark:border-gray-700 rounded-lg p-4">
+            <h4 className="text-sm font-medium mb-2">Sentence-by-Sentence Analysis</h4>
+            <pre className="text-xs overflow-x-auto whitespace-pre-wrap bg-gray-50 dark:bg-gray-800 p-3 rounded">
+              {aiDetection.sentence_analysis}
+            </pre>
+          </div>
+        </div>
+      )}
+    </div>
+  )}
 
   if (loading) {
     return (
@@ -1584,4 +1776,4 @@ const PostView = () => {
   );
 };
 
-export default PostView; 
+export default PostView;

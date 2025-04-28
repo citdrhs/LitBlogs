@@ -306,6 +306,59 @@ const TeacherDashboard = () => {
     );
   }
 
+  // Add this state
+  const [aiStats, setAiStats] = useState({
+    totalPosts: 0,
+    aiPosts: 0,
+    humanPosts: 0,
+    pendingPosts: 0
+  });
+
+  // Add this function
+  const fetchAiStats = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) return;
+      
+      let stats = { totalPosts: 0, aiPosts: 0, humanPosts: 0, pendingPosts: 0 };
+      
+      // Fetch stats for each class
+      for (const cls of classes) {
+        const response = await axios.get(
+          `http://localhost:8000/api/classes/${cls.id}/posts`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        
+        stats.totalPosts += response.data.length;
+        
+        response.data.forEach(post => {
+          if (post.ai_detection) {
+            if (post.ai_detection.status === 'pending') {
+              stats.pendingPosts++;
+            } else if (post.ai_detection.is_ai) {
+              stats.aiPosts++;
+            } else {
+              stats.humanPosts++;
+            }
+          } else {
+            stats.pendingPosts++;
+          }
+        });
+      }
+      
+      setAiStats(stats);
+    } catch (error) {
+      console.error("Error fetching AI stats:", error);
+    }
+  };
+
+  // Call this in useEffect after fetching classes
+  useEffect(() => {
+    if (classes.length > 0) {
+      fetchAiStats();
+    }
+  }, [classes]);
+
   return (
     <div className={`min-h-screen transition-all duration-500 ${
       darkMode 
@@ -462,6 +515,29 @@ const TeacherDashboard = () => {
                       </motion.button>
                     </div>
                   </motion.div>
+                </div>
+
+                {/* Add this to your Dashboard tab */}
+                <div className="mt-6 bg-white dark:bg-gray-800 rounded-xl p-6 shadow-md">
+                  <h3 className="text-lg font-semibold mb-4">AI Detection Summary</h3>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="bg-blue-50 dark:bg-blue-900/30 p-4 rounded-lg">
+                      <p className="text-sm text-blue-600 dark:text-blue-300">Total Posts</p>
+                      <p className="text-2xl font-bold">{aiStats.totalPosts}</p>
+                    </div>
+                    <div className="bg-green-50 dark:bg-green-900/30 p-4 rounded-lg">
+                      <p className="text-sm text-green-600 dark:text-green-300">Human Content</p>
+                      <p className="text-2xl font-bold">{aiStats.humanPosts}</p>
+                    </div>
+                    <div className="bg-red-50 dark:bg-red-900/30 p-4 rounded-lg">
+                      <p className="text-sm text-red-600 dark:text-red-300">AI Content</p>
+                      <p className="text-2xl font-bold">{aiStats.aiPosts}</p>
+                    </div>
+                    <div className="bg-gray-50 dark:bg-gray-700/50 p-4 rounded-lg">
+                      <p className="text-sm text-gray-600 dark:text-gray-300">Pending Analysis</p>
+                      <p className="text-2xl font-bold">{aiStats.pendingPosts}</p>
+                    </div>
+                  </div>
                 </div>
               </>
             )}

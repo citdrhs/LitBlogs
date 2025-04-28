@@ -965,10 +965,112 @@ def sanitize_html(content: str) -> str:
     
     return sanitized_content
 
+# Add this function
+
+def extract_text_from_html(html_content):
+    """Extract plain text from HTML content for AI detection"""
+    if not html_content:
+        return ""
+    
+    # Parse HTML with BeautifulSoup
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    # Extract text and remove excessive whitespace
+    text = soup.get_text(separator=' ', strip=True)
+    
+    # Clean up whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    return text
+
+# Add this function
+
+async def detect_ai_content(post_id: int, content: str, db_url: str):
+    """Background task to detect AI-generated content"""
+    try:
+        # Create a new DB session for this background task
+        engine = create_engine(db_url)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        db = SessionLocal()
+        
+        # Extract plain text from HTML content
+        text_content = extract_text_from_html(content)
+        
+        if not text_content or len(text_content) < 50:
+            # Not enough text to analyze
+            ai_result = AIDetectionResult(
+                post_id=post_id,
+                is_ai=None,
+                ai_probability=None,
+                human_probability=None,
+                detailed_analysis="Insufficient text for analysis",
+                sentence_analysis="Text too short for analysis"
+            )
+            db.add(ai_result)
+            db.commit()
+            db.close()
+            return
+        
+        # Initialize Gradio client
+        client = Client("ApsidalSolid4/CITProjectAIDetector")
+        
+        # Call the API with detailed mode
+        result = client.predict(
+            text=text_content[:5000],  # Limit text length to avoid issues
+            mode="detailed",
+            api_name="/predict"
+        )
+        
+        # Parse the results
+        highlighted_analysis = result[0]
+        sentence_analysis = result[1]
+        overall_result = result[2]
+        
+        # Extract probability from overall result
+        # Example format: "AI-GENERATED (93.7% certainty)" or "HUMAN (89.2% certainty)"
+        probability_match = re.search(r"(\d+\.\d+)%", overall_result)
+        probability = float(probability_match.group(1)) / 100 if probability_match else 0.5
+        
+        is_ai = "AI-GENERATED" in overall_result
+        
+        # Create and save the detection result
+        ai_result = AIDetectionResult(
+            post_id=post_id,
+            is_ai=is_ai,
+            ai_probability=probability if is_ai else 1.0 - probability,
+            human_probability=1.0 - probability if is_ai else probability,
+            detailed_analysis=highlighted_analysis,
+            sentence_analysis=sentence_analysis
+        )
+        
+        db.add(ai_result)
+        db.commit()
+        db.close()
+        
+    except Exception as e:
+        print(f"AI detection error: {str(e)}")
+        try:
+            # Log the error in the database
+            ai_result = AIDetectionResult(
+                post_id=post_id,
+                is_ai=None,
+                ai_probability=None,
+                human_probability=None,
+                detailed_analysis=f"Error: {str(e)}",
+                sentence_analysis="Analysis failed"
+            )
+            db.add(ai_result)
+            db.commit()
+        except Exception:
+            pass
+        finally:
+            db.close()
+
 @app.post("/api/classes/{class_id}/posts", response_model=schemas.BlogResponse)
 async def create_class_post(
     class_id: int,
     post: schemas.BlogCreate,
+    background_tasks: BackgroundTasks,
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -1019,6 +1121,11 @@ async def create_class_post(
     db.add(new_post)
     db.commit()
     db.refresh(new_post)
+
+    # Schedule AI detection task in the background
+    # Get the database URL from environment
+    db_url = os.getenv("DATABASE_URL")
+    background_tasks.add_task(detect_ai_content, new_post.id, content, db_url)
     
     return {
         "id": new_post.id,
@@ -1030,6 +1137,44 @@ async def create_class_post(
         "author": f"{current_user.first_name} {current_user.last_name}",
         "likes": len(new_post.likes) if hasattr(new_post, 'likes') else 0,
         "comments": len(new_post.comments) if hasattr(new_post, 'comments') else 0
+    }
+
+# Modify the get_ai_detection endpoint
+
+@app.get("/api/classes/{class_id}/posts/{post_id}/ai-detection")
+async def get_ai_detection(
+    class_id: int,
+    post_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Get AI detection results for a post - TEACHERS ONLY"""
+    # Check if user is a teacher
+    if current_user.role != models.UserRole.TEACHER:
+        raise HTTPException(status_code=403, detail="Only teachers can access AI detection results")
+    
+    # Check if teacher has access to this class
+    class_details = db.query(models.Class).filter(models.Class.id == class_id).first()
+    if not class_details or class_details.teacher_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this class")
+    
+    # Get the AI detection result
+    result = db.query(AIDetectionResult).filter(AIDetectionResult.post_id == post_id).first()
+    
+    if not result:
+        return {
+            "status": "pending",
+            "message": "AI detection is in progress or not yet started"
+        }
+    
+    return {
+        "status": "completed" if result.is_ai is not None else "failed",
+        "is_ai": result.is_ai,
+        "ai_probability": result.ai_probability,
+        "human_probability": result.human_probability,
+        "detailed_analysis": result.detailed_analysis,
+        "sentence_analysis": result.sentence_analysis,
+        "created_at": result.created_at
     }
 
 @app.get("/api/classes/{class_id}/posts")
@@ -1056,15 +1201,32 @@ async def get_class_posts(
     formatted_posts = []
     for post in posts:
         author = db.query(models.User).filter(models.User.id == post.owner_id).first()
-        formatted_posts.append({
+        
+        post_data = {
             "id": post.id,
             "title": post.title,
-            "content": post.content,  # Whitespace will be preserved
+            "content": post.content,
             "created_at": post.created_at,
             "author": f"{author.first_name} {author.last_name}" if author else "Unknown Author",
             "likes": len(post.likes) if hasattr(post, 'likes') else 0,
             "comments": len(post.comments) if hasattr(post, 'comments') else 0
-        })
+        }
+        
+        # Only include AI detection data for teachers
+        if current_user.role == models.UserRole.TEACHER:
+            detection = db.query(AIDetectionResult).filter(
+                AIDetectionResult.post_id == post.id
+            ).first()
+            
+            if detection:
+                post_data["ai_detection"] = {
+                    "status": "completed" if detection.is_ai is not None else "pending",
+                    "is_ai": detection.is_ai,
+                    "ai_probability": detection.ai_probability,
+                    "human_probability": detection.human_probability
+                }
+        
+        formatted_posts.append(post_data)
     
     return formatted_posts
 
