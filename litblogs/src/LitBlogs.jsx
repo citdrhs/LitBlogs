@@ -309,6 +309,8 @@ const LitBlogs = () => {
               <h3 className="text-lg font-semibold mb-4">Company</h3>
               <ul className="space-y-2 text-gray-400">
                 <li><a href="#" className="hover:text-blue-400">About</a></li>
+                <li><Link to="/privacy-policy" className="hover:underline">Privacy Policy</Link></li>
+                <li><Link to="/terms" className="hover:underline">Terms of Service</Link></li>
               </ul>
             </div>
           </div>

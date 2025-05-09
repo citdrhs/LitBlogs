@@ -14,6 +14,8 @@ import Profile from "./Profile";
 import ForgotPassword from "./ForgotPassword";
 import ResetPassword from "./ResetPassword";
 import StudentDetails from "./components/StudentDetails";
+import PrivacyPolicy from './PrivacyPolicy';
+import TermsOfService from './TermsOfService';
 import { useState, useEffect } from 'react';
 
 function App() {
@@ -57,6 +59,8 @@ function App() {
       <Route path="/Profile" element={<Profile/>}/>
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
+      <Route path="/privacy-policy" element={<PrivacyPolicy />} />
+      <Route path="/terms" element={<TermsOfService />} />
     </Routes>
   );
 }
