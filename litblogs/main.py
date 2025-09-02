@@ -798,11 +798,11 @@ def delete_blog(blog_id: int, db: Session = Depends(get_db)):
     return {"message": "Blog deleted"}
 
 # ---------- Home Endpoint ----------
-@app.get("/")
+@app.get("/api/")
 def home():
     return {"message": "Welcome to LitBlogs Backend"}
 
-@app.get("/test-db")
+@app.get("/api/test-db")
 def test_db(db: Session = Depends(get_db)):
     try:
         # Execute a simple query
