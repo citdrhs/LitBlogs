@@ -1,6 +1,6 @@
- # main.py
+# main.py
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
-from fastapi.middleware.csrf import CSRFMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import engine, get_db, reset_database
@@ -39,15 +39,19 @@ from email.mime.multipart import MIMEMultipart
 
 app = FastAPI()
 
-# Add CORS middleware
+# Fix CORS middleware setup
 app.add_middleware(
-    CSRFMiddleware,
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5500", "https://drhscit.org"],  # Add your frontend URL
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5500",
+        "http://127.0.0.1:5500",
+        "https://drhscit.org",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    safe_methods=("GET", "HEAD", "OPTIONS", "TRACE")
 )
 
 pwd_context = CryptContext(
