@@ -95,11 +95,11 @@ Then exit psql:
 \q
 ```
 Or type exit
-Then go back to /var/www/LitBlogs/litblogs
+Then run the service called blog to start the backend(service was already created)
 
 5. Run the backend server:
 ```bash
-uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
+sudo systemctl start blog
 ```
 
 ### Frontend Setup
@@ -190,15 +190,25 @@ server {
 
 1. Check if the backend is running:
 ```bash
-ps aux | grep uvicorn
+sudo systemctl status blog
 ```
 
-2. Restart nginx:
+2. Restart blog service:
+```bash
+sudo systemctl restart blog
+```
+
+3. View logs of blog service:
+```bash
+sudo journalctl -xeu blog.service
+```
+
+4. Restart nginx:
 ```bash
 sudo systemctl restart nginx
 ```
 
-3. Check if nginx is running:
+5. Check if nginx is running:
 ```bash
 sudo systemctl status nginx
 ```
