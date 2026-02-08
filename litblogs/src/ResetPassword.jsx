@@ -3,6 +3,7 @@ import { Link, useNavigate, useLocation } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import axios from 'axios';
 import Loader from './components/Loader';
+import Footer from './components/Footer';
 
 const ResetPassword = () => {
   const [password, setPassword] = useState("");
@@ -12,6 +13,12 @@ const ResetPassword = () => {
   const [message, setMessage] = useState("");
   const [isSuccess, setIsSuccess] = useState(false);
   const [token, setToken] = useState("");
+  const [passwordStrength, setPasswordStrength] = useState({
+    score: 0,
+    label: "Poor",
+    color: "red-500",
+    percent: 0
+  });
   const dropdownRef = useRef(null);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const navigate = useNavigate();
@@ -73,6 +80,51 @@ const ResetPassword = () => {
     }
   }, [darkMode]);
 
+  const strengthColorMap = {
+    "red-500": { text: "text-red-500", bg: "bg-red-500" },
+    "green-400": { text: "text-green-400", bg: "bg-green-400" },
+    "green-500": { text: "text-green-500", bg: "bg-green-500" },
+    "green-700": { text: "text-green-700", bg: "bg-green-700" }
+  };
+
+  const checkPasswordStrength = (value) => {
+    let score = 0;
+    if (value.length >= 8) score++;
+    if (/[A-Z]/.test(value)) score++;
+    if (/[a-z]/.test(value)) score++;
+    if (/[0-9]/.test(value)) score++;
+    if (/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(value)) score++;
+    if (value.length >= 12) score++;
+    if (/(?=.*[0-9].*[0-9])/.test(value)) score++;
+    if (/(?=.*[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?].*[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?])/.test(value)) score++;
+
+    let label;
+    let color;
+    switch (true) {
+      case (score < 5):
+        label = "Poor";
+        color = "red-500";
+        break;
+      case (score === 5):
+        label = "Good";
+        color = "green-400";
+        break;
+      case (score === 6):
+        label = "Strong";
+        color = "green-500";
+        break;
+      case (score >= 7):
+        label = "Excellent";
+        color = "green-700";
+        break;
+      default:
+        label = "Poor";
+        color = "red-500";
+    }
+
+    setPasswordStrength({ score, label, color, percent: Math.min(100, (score / 8) * 100) });
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     
@@ -122,15 +174,16 @@ const ResetPassword = () => {
   };
 
   return (
-    <div className={`min-h-screen flex items-center justify-center transition-all duration-500 ${darkMode ? 'bg-gradient-to-r from-slate-800 to-gray-950 text-gray-200' : 'bg-gradient-to-r from-indigo-100 to-pink-100 text-gray-900'}`}>
+    <div className={`min-h-screen flex flex-col transition-all duration-500 ${darkMode ? 'bg-gradient-to-r from-slate-800 to-gray-950 text-gray-200' : 'bg-gradient-to-r from-indigo-100 to-pink-100 text-gray-900'}`}>
       {/* Navbar */}
       <motion.nav 
-        className="navbar z-50 fixed top-2 left-470 transform -translate-x-1/2 w-auto bg-white/80 dark:bg-gray-800/80 backdrop-blur-md py-2 px-6 rounded-xl shadow-lg border border-gray-200/50 dark:border-gray-700/50"
+        className="navbar z-50 fixed top-2 inset-x-0 flex justify-center"
         initial={{ opacity: 0, y: -30 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6, ease: "easeOut" }}
       >
-        <div className="flex items-center gap-6 whitespace-nowrap">
+        <div className="w-fit bg-white/80 dark:bg-gray-800/80 backdrop-blur-md py-2 px-6 rounded-xl shadow-lg border border-gray-200/50 dark:border-gray-700/50">
+          <div className="flex items-center gap-6 whitespace-nowrap">
           {/* Logo */}
           <Link to="/">
             <motion.img
@@ -193,14 +246,16 @@ const ResetPassword = () => {
             </AnimatePresence>
           </div>
         </div>
+        </div>
       </motion.nav>
-      
-      <motion.div
-        className="max-w-md w-full mt-16 mb-16 p-8 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 top-5"
-        initial={{ opacity: 0, y: 30 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.8, ease: "easeOut" }}
-      >
+
+      <main className="flex-1 flex items-center justify-center px-4 pt-24 pb-12">
+        <motion.div
+          className="max-w-md w-full p-8 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700"
+          initial={{ opacity: 0, y: 30 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.8, ease: "easeOut" }}
+        >
         {/* Reset Password Form */}
         <motion.h2
           className="text-3xl font-semibold text-center mb-6 dark:bg-gray-800"
@@ -271,10 +326,31 @@ const ResetPassword = () => {
                 className={`w-full p-4 border rounded-lg ${darkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'} focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all duration-300 transform focus:scale-105`}
                 placeholder="Enter your new password"
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  checkPasswordStrength(e.target.value);
+                }}
                 required
                 minLength={8}
               />
+              <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                Password must be at least 8 characters and include uppercase, lowercase, number, and special character.
+              </p>
+              {password && (
+                <div className="mt-2">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className={`text-xs font-medium ${strengthColorMap[passwordStrength.color]?.text || "text-red-500"}`}>
+                      Strength: {passwordStrength.label}
+                    </span>
+                  </div>
+                  <div className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full ${strengthColorMap[passwordStrength.color]?.bg || "bg-red-500"} transition-all duration-300 ease-in-out`}
+                      style={{ width: `${passwordStrength.percent}%` }}
+                    ></div>
+                  </div>
+                </div>
+              )}
             </motion.div>
 
             <motion.div
@@ -327,7 +403,8 @@ const ResetPassword = () => {
             </Link>
           </div>
         )}
-      </motion.div>
+        </motion.div>
+      </main>
       
       <motion.div
         className="absolute top-6 right-6 z-10"
@@ -354,6 +431,7 @@ const ResetPassword = () => {
           </motion.div>
         )}
       </AnimatePresence>
+      <Footer darkMode={darkMode} />
     </div>
   );
 };

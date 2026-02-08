@@ -87,9 +87,45 @@ class ClassResponse(ClassBase):
     access_code: str
     teacher_id: int
     created_at: datetime
+    posts_visibility: str | None = None
 
     class Config:
         orm_mode = True
+
+class AssignmentCreate(BaseModel):
+    title: str
+    description: str | None = None
+    due_date: datetime
+    allow_late: bool | None = True
+    visibility: str | None = "class"
+
+class AssignmentResponse(BaseModel):
+    id: int
+    class_id: int
+    title: str
+    description: str | None = None
+    due_date: datetime
+    created_at: datetime
+    created_by: int
+    allow_late: bool
+    visibility: str
+
+    class Config:
+        from_attributes = True
+
+class AssignmentSubmissionCreate(BaseModel):
+    content: str | None = None
+
+class AssignmentSubmissionResponse(BaseModel):
+    id: int
+    assignment_id: int
+    student_id: int
+    submitted_at: datetime
+    content: str | None = None
+    is_late: bool
+
+    class Config:
+        from_attributes = True
 
 class TeacherBase(BaseModel):
     id: int

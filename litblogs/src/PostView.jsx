@@ -18,6 +18,7 @@ import { IoMdHeart, IoMdHeartEmpty } from 'react-icons/io';
 import toast from 'react-hot-toast';
 import CommentThread from './components/CommentThread';
 import { formatRelativeTime, setupTimeUpdater } from './utils/timeUtils';
+import Footer from './components/Footer';
 
 // Function to determine file type from URL
 const getFileTypeFromUrl = (url) => {
@@ -1580,6 +1581,7 @@ const PostView = () => {
           </div>
         </motion.div>
       </div>
+      <Footer darkMode={darkMode} />
     </div>
   );
 };

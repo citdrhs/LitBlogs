@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import Navbar from './components/Navbar';
+import Footer from './components/Footer';
 import './LitBlogs.css'; // Import your styles
 
 const LitBlogs = () => {
@@ -198,128 +199,146 @@ const LitBlogs = () => {
         </motion.div>
       </div>
 
-      {/* Teachers Section */}
-      <section className="bg-gray-100 dark:bg-gray-800 mt-20">
-          <motion.div
-            className="pt-12 text-4xl font-bold"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{
-              scale: { type: "spring", stiffness: 500, damping: 50 },
-              opacity: { duration: 0.8, delay: 0.4 },
-              y: { duration: 0.8, delay: 0.4 }
-            }}
-          >
-            <div className="text-center">Meet the Teachers</div>
-          </motion.div>
-  </section>
-      <section className="p-10 bg-gray-100 dark:bg-gray-800">
-        {[{ name: "Ms. Tambellini", img: "/tambellini.jpg", class: "10A CIT English" }, { name: "Ms. Musk", img: "/musk.jpg", class: "9A CIT English" }].map((teacher, index) => (
-          <motion.div
-            key={index}
-            className="flex flex-col md:flex-row items-center gap-8 mb-12 bg-white dark:bg-gray-900 p-6 rounded-xl shadow-lg"
-            whileHover={{
-              scale: 1.05,
-              transition: { duration: 0.1 } // Fast transition for hover
-            }}
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{
-              scale: { type: "spring", stiffness: 500, damping: 50 }, // Set transition for scaling
-              opacity: { duration: 0.8, delay: 0.4 },
-              y: { duration: 0.8, delay: 0.4 }
-            }}
-          >
-            <img src={teacher.img} alt={teacher.name} className="h-32 w-32 object-cover rounded-lg shadow-md transition-all" />
-            <div>
-              <h2 className="text-2xl font-bold text-gray-900 dark:text-white">{teacher.name}</h2>
-              <p className="text-lg text-gray-700 dark:text-gray-300 mt-2">{teacher.class}</p>
-            </div>
-          </motion.div>
-        ))}
-      </section>
-
-      {/* Newsletter Section */}
+      {/* Feature Highlights */}
       <motion.section
-        className={`py-8 ${darkMode ? 'bg-gray-800' : 'bg-gray-100'} text-${darkMode ? 'white' : 'gray-900'} rounded-3xl`}
+        className="mt-20 px-6"
         initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.8 }}
+        whileInView={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.6 }}
+        viewport={{ once: true }}
       >
-        <div className="max-w-4xl mx-auto text-center">
-          <h2 className="text-3xl font-bold mb-6">Join Our Writing Community</h2>
-          <p className={`text-${darkMode ? 'gray-400' : 'gray-600'} mb-8`}>
-            Get weekly writing tips and help from professionals
-          </p>
-          <motion.button
-                type="submit"
-                className={`px-8 py-3 ${darkMode ? 'bg-blue-600 hover:bg-blue-700' : 'bg-blue-600 hover:bg-blue-700'} text-white rounded-full transition-colors`}
-                onClick={() => window.open('https://drhswritingcenter.com/', '_blank')}
-                whileHover={{
-                  scale: 1.05,
-                  backgroundColor: "#1d4ed8",
-                  transition: { duration: 0.2 } // Fast transition for hover
-                }}
-                whileTap={{
-                  scale: 0.95,
-                  transition: { duration: 0.1 } // Fast transition for tap
-                }}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{
-                  scale: { type: "spring", stiffness: 500, damping: 50 }, // Set transition for scaling
-                  opacity: { duration: 0.8, delay: 0.4 },
-                  y: { duration: 0.8, delay: 0.4 }
-                }}
-          >
-              Subscribe
-            </motion.button>
-          {newsletterMessage && (
-            <motion.p
-              className={`mt-4 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5 }}
-            >
-              {newsletterMessage}
-            </motion.p>
-          )}
+        <div className="max-w-6xl mx-auto">
+          <div className="text-center mb-12">
+            <h2 className="text-4xl font-bold">Everything students and teachers need</h2>
+            <p className="text-gray-600 dark:text-gray-400 mt-3 max-w-3xl mx-auto">
+              Streamline publishing, feedback, and classroom collaboration with tools designed for schools.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            {[
+              {
+                title: "Assignments & submissions",
+                text: "Create prompts, set due dates, and review student work in one place.",
+              },
+              {
+                title: "Class feeds & discussions",
+                text: "Keep conversations organized with threaded comments and class visibility.",
+              },
+              {
+                title: "Analytics that matter",
+                text: "Track engagement and activity to support every learner.",
+              },
+            ].map((feature) => (
+              <div
+                key={feature.title}
+                className={`rounded-2xl p-6 shadow-lg border ${darkMode ? "bg-gray-900/60 border-gray-700" : "bg-white border-gray-200"}`}
+              >
+                <div className="flex items-center gap-3 mb-3">
+                  <span className="text-2xl">✨</span>
+                  <h3 className="text-xl font-semibold">{feature.title}</h3>
+                </div>
+                <p className="text-gray-600 dark:text-gray-400">{feature.text}</p>
+              </div>
+            ))}
+          </div>
         </div>
       </motion.section>
-      {/* Footer */}
-      <footer className={`mt-12 transition-all duration-300 ${darkMode ? 'bg-gray-900 text-gray-300' : 'bg-gradient-to-r from-gray-100 to-gray-100 text-gray-900'}`}>
-        <div className="container mx-auto px-4 py-12">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-8 text-center md:text-left">
-            {/* LitBlog Info */}
+
+      {/* Stats */}
+      <motion.section
+        className="mt-16 px-6"
+        initial={{ opacity: 0, y: 20 }}
+        whileInView={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.6 }}
+        viewport={{ once: true }}
+      >
+        <div className={`max-w-6xl mx-auto rounded-3xl p-10 ${darkMode ? "bg-gray-900/60" : "bg-white/80"} shadow-xl border ${darkMode ? "border-gray-700" : "border-gray-200"}`}>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 text-center">
             <div>
-              <h3 className="text-lg font-semibold mb-4">LitBlog</h3>
-              <p className="text-gray-400">Connecting writers and readers worldwide</p>
+              <p className="text-4xl font-bold">100+</p>
+              <p className="text-gray-600 dark:text-gray-400 mt-2">Active classes</p>
             </div>
-            {/* Resources */}
             <div>
-              <h3 className="text-lg font-semibold mb-4">Resources</h3>
-              <ul className="space-y-2 text-gray-400">
-                <li><a href="#" className="hover:text-blue-400">Blog</a></li>
-                <li><a href="#" className="hover:text-blue-400">Guides</a></li>
-                <li><a href="#" className="hover:text-blue-400">Tutorials</a></li>
-              </ul>
+              <p className="text-4xl font-bold">4.8/5</p>
+              <p className="text-gray-600 dark:text-gray-400 mt-2">Teacher satisfaction</p>
             </div>
-            {/* Company */}
             <div>
-              <h3 className="text-lg font-semibold mb-4">Company</h3>
-              <ul className="space-y-2 text-gray-400">
-                <li><a href="#" className="hover:text-blue-400">About</a></li>
-                <li><Link to="/privacy-policy" className="hover:underline">Privacy Policy</Link></li>
-                <li><Link to="/terms" className="hover:underline">Terms of Service</Link></li>
-              </ul>
+              <p className="text-4xl font-bold">10k+</p>
+              <p className="text-gray-600 dark:text-gray-400 mt-2">Student posts</p>
             </div>
-          </div>
-          {/* Copyright */}
-          <div className="border-t border-gray-800 mt-8 pt-6 text-center text-gray-400">
-            &copy; 2025 LitBlogs. All rights reserved.
           </div>
         </div>
-      </footer>
+      </motion.section>
+
+      {/* Testimonials */}
+      <motion.section
+        className="mt-16 px-6"
+        initial={{ opacity: 0, y: 20 }}
+        whileInView={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.6 }}
+        viewport={{ once: true }}
+      >
+        <div className="max-w-6xl mx-auto">
+          <div className="text-center mb-10">
+            <h2 className="text-4xl font-bold">Loved by classrooms</h2>
+            <p className="text-gray-600 dark:text-gray-400 mt-3">Teachers and students share stories together.</p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            {[
+              {
+                quote: "My students actually look forward to publishing. Feedback is quick and meaningful.",
+                name: "English Teacher",
+              },
+              {
+                quote: "I can track engagement without chasing spreadsheets. It saves me hours each week.",
+                name: "ELA Department Lead",
+              },
+              {
+                quote: "Assignments and posts are all in one place, so I know exactly what to work on.",
+                name: "Student Writer",
+              },
+            ].map((testimonial) => (
+              <div
+                key={testimonial.quote}
+                className={`rounded-2xl p-6 shadow-lg border ${darkMode ? "bg-gray-900/60 border-gray-700" : "bg-white border-gray-200"}`}
+              >
+                <p className="text-gray-700 dark:text-gray-300">“{testimonial.quote}”</p>
+                <p className="mt-4 text-sm font-semibold text-blue-500">{testimonial.name}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </motion.section>
+
+      {/* Call to Action */}
+      <motion.section
+        className="mt-16 px-6"
+        initial={{ opacity: 0, y: 20 }}
+        whileInView={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.6 }}
+        viewport={{ once: true }}
+      >
+        <div className={`max-w-5xl mx-auto rounded-3xl p-10 text-center bottom-5 shadow-xl border ${darkMode ? "bg-gradient-to-r from-gray-900/70 to-slate-900/70 border-gray-700" : "bg-gradient-to-r from-white to-indigo-50 border-gray-200"}`}>
+          <h2 className="text-4xl font-bold mb-4">Ready to launch your class community?</h2>
+          <p className="text-gray-600 dark:text-gray-400 mb-8">
+            Create a class, assign a prompt, and watch students publish with confidence.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-4 justify-center">
+            <Link to="/sign-up">
+              <button className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-full font-semibold shadow-lg">
+                Create an account
+              </button>
+            </Link>
+            <Link to="/sign-in">
+              <button className={`px-8 py-3 rounded-full font-semibold border ${darkMode ? "border-gray-600 text-gray-200 hover:bg-gray-800" : "border-gray-300 text-gray-700 hover:bg-gray-100"}`}>
+                Sign in
+              </button>
+            </Link>
+          </div>
+        </div>
+      </motion.section>
+
+      <Footer darkMode={darkMode} />
     </div>
   );
 };

@@ -1,11 +1,12 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Link, useNavigate } from "react-router-dom"
+import { Link, useNavigate, useParams } from "react-router-dom"
 import { motion } from "framer-motion"
 import axios from "axios"
 import Navbar from "./components/Navbar"
 import Loader from "./components/Loader"
+import Footer from "./components/Footer"
 
 // Animated avatar options
 const AVATAR_OPTIONS = [
@@ -55,10 +56,10 @@ const AVATAR_OPTIONS = [
 
 // Background options
 const BACKGROUND_OPTIONS = [
-  "https://images.unsplash.com/photo-1513506003901-1e6a229e2d15?ixlib=rb-4.0.3&auto=format&fit=crop&w=1200&q=80",
-  "https://images.unsplash.com/photo-1557683316-973673baf926?ixlib=rb-4.0.3&auto=format&fit=crop&w=1200&q=80",
-  "https://images.unsplash.com/photo-1497436072909-60f360e1d4b1?ixlib=rb-4.0.3&auto=format&fit=crop&w=1200&q=80",
-  "https://images.unsplash.com/photo-1486520299386-6d106b22014b?ixlib=rb-4.0.3&auto=format&fit=crop&w=1200&q=80",
+  "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?ixlib=rb-4.0.3&auto=format&fit=crop&w=1200&q=80",
+  "https://images.unsplash.com/photo-1441974231531-c6227db76b6e?ixlib=rb-4.0.3&auto=format&fit=crop&w=1200&q=80",
+  "https://images.unsplash.com/photo-1506744038136-46273834b3fb?ixlib=rb-4.0.3&auto=format&fit=crop&w=1200&q=80",
+  "https://images.unsplash.com/photo-1470770841072-f978cf4d019e?ixlib=rb-4.0.3&auto=format&fit=crop&w=1200&q=80",
 ]
 
 // Custom animation styles
@@ -95,7 +96,7 @@ const StudentProfile = () => {
   const [name, setName] = useState("")
   const [firstName, setFirstName] = useState("")
   const [lastName, setLastName] = useState("")
-  const [bio, setBio] = useState("Share a little about yourself...")
+  const [bio, setBio] = useState("")
   const [image, setImage] = useState(null)
   const [coverImage, setCoverImage] = useState(null)
   const [isEditing, setIsEditing] = useState(false)
@@ -111,52 +112,53 @@ const StudentProfile = () => {
   const [avatarColor, setAvatarColor] = useState("bg-blue-500")
 
   const navigate = useNavigate()
+  const { userId } = useParams()
   const [userInfo, setUserInfo] = useState(null)
+  const [viewerInfo, setViewerInfo] = useState(null)
+  const [isOwnProfile, setIsOwnProfile] = useState(true)
+  const [viewerClassIds, setViewerClassIds] = useState([])
   const [darkMode, setDarkMode] = useState(false)
-  const [useMockData, setUseMockData] = useState(true)
 
-  // Mock data for testing without database
-  const MOCK_USER = {
-    username: "student_username",
-    first_name: "Student",
-    last_name: "Name",
-    bio: "Student bio placeholder. This is where the student's description would appear.",
-    role: "STUDENT",
-    profile_image: null,
-    cover_image: null,
-    avatar_id: "robot",
-    avatar_color: "bg-blue-500",
+  const getUserId = (user) => user?.id || user?.username || user?.email
+
+  const getClassIds = (classInfo) => {
+    if (Array.isArray(classInfo)) {
+      return classInfo.map((entry) => entry?.class_id || entry?.id || entry).filter(Boolean)
+    }
+
+    if (classInfo && typeof classInfo === "object") {
+      const possibleId = classInfo.class_id || classInfo.id
+      return possibleId ? [possibleId] : []
+    }
+
+    return []
   }
 
-  const MOCK_POSTS = [
-    {
-      id: 1,
-      title: "Post 1",
-      created_at: "2023-09-15T14:30:00Z",
-      class_name: "Class A",
-      class_id: "class_a",
-      likes: 24,
-      comments: 8,
-    },
-    {
-      id: 2,
-      title: "Post 2",
-      created_at: "2023-10-02T09:15:00Z",
-      class_name: "Class B",
-      class_id: "class_b",
-      likes: 17,
-      comments: 5,
-    },
-    {
-      id: 3,
-      title: "Post 3",
-      created_at: "2023-10-20T16:45:00Z",
-      class_name: "Class C",
-      class_id: "class_c",
-      likes: 32,
-      comments: 12,
-    },
-  ]
+  const normalizeRole = (role) => (role || "STUDENT").toString().toUpperCase()
+
+  const getRoleTabs = (role, isOwn) => {
+    if (!isOwn) {
+      return [{ key: "posts", label: "Shared Posts" }]
+    }
+
+    switch (normalizeRole(role)) {
+      case "TEACHER":
+        return [
+          { key: "classes", label: "Classes" },
+          { key: "students", label: "Students" },
+        ]
+      case "ADMIN":
+        return [
+          { key: "users", label: "Users" },
+          { key: "reports", label: "Reports" },
+        ]
+      default:
+        return [
+          { key: "posts", label: "Posts" },
+          { key: "saved", label: "Saved" },
+        ]
+    }
+  }
 
   // Toggle dark mode
   const toggleDarkMode = () => {
@@ -165,16 +167,6 @@ const StudentProfile = () => {
       localStorage.setItem("darkMode", JSON.stringify(newDarkMode))
       return newDarkMode
     })
-  }
-
-  // Toggle mock data
-  const toggleMockData = () => {
-    setUseMockData((prev) => !prev)
-    setLoading(true)
-    // Reload data with new setting
-    setTimeout(() => {
-      loadUserData()
-    }, 500)
   }
 
   // Load dark mode preference from localStorage
@@ -197,6 +189,20 @@ const StudentProfile = () => {
     }
   }, [darkMode])
 
+  useEffect(() => {
+    if (!isOwnProfile) {
+      setIsEditing(false)
+      setActiveTab("posts")
+    }
+  }, [isOwnProfile])
+
+  useEffect(() => {
+    const tabs = getRoleTabs(userInfo?.role, isOwnProfile)
+    if (tabs.length && !tabs.some((tab) => tab.key === activeTab)) {
+      setActiveTab(tabs[0].key)
+    }
+  }, [userInfo?.role, isOwnProfile])
+
   // Add custom animation styles to document head
   useEffect(() => {
     const styleElement = document.createElement("style")
@@ -208,108 +214,30 @@ const StudentProfile = () => {
     }
   }, [])
 
-  // Load saved mock data from localStorage if available
-  const loadSavedMockData = () => {
-    const savedMockData = localStorage.getItem("mock_user_data")
-    if (savedMockData) {
-      return JSON.parse(savedMockData)
+  const applyProfileData = (profileData) => {
+    setUserInfo(profileData)
+    const fullName = `${profileData?.first_name || ""} ${profileData?.last_name || ""}`.trim()
+    const fallbackName = profileData?.name || profileData?.full_name || profileData?.display_name
+    setName(fullName || fallbackName || profileData?.username || profileData?.email || "")
+    setFirstName(profileData?.first_name || "")
+    setLastName(profileData?.last_name || "")
+    setBio(profileData?.bio || "")
+    setImage(profileData?.profile_image || null)
+    setCoverImage(profileData?.cover_image || null)
+
+    if (profileData?.avatar_id) {
+      const avatar = AVATAR_OPTIONS.find((a) => a.id === profileData.avatar_id) || AVATAR_OPTIONS[0]
+      setSelectedAvatar(avatar)
     }
-    return MOCK_USER
-  }
-
-  // Load user data function
-  const loadUserData = () => {
-    if (useMockData) {
-      // Use mock data with any saved changes
-      const mockUserData = loadSavedMockData()
-      setUserInfo(mockUserData)
-      setName(`${mockUserData.first_name} ${mockUserData.last_name}`)
-      setFirstName(mockUserData.first_name)
-      setLastName(mockUserData.last_name)
-      setBio(mockUserData.bio)
-      setImage(mockUserData.profile_image)
-      setCoverImage(mockUserData.cover_image)
-
-      // Set avatar if available
-      if (mockUserData.avatar_id) {
-        const avatar = AVATAR_OPTIONS.find((a) => a.id === mockUserData.avatar_id) || AVATAR_OPTIONS[0]
-        setSelectedAvatar(avatar)
-      }
-      if (mockUserData.avatar_color) {
-        setAvatarColor(mockUserData.avatar_color)
-      }
-
-      setUserPosts(MOCK_POSTS)
-      setLoading(false)
-      return
-    }
-
-    const storedUserInfo = localStorage.getItem("user_info")
-    if (storedUserInfo) {
-      const parsedUserInfo = JSON.parse(storedUserInfo)
-      setUserInfo(parsedUserInfo)
-
-      // Use stored user info directly
-      if (parsedUserInfo.first_name && parsedUserInfo.last_name) {
-        setName(`${parsedUserInfo.first_name} ${parsedUserInfo.last_name}`)
-        setFirstName(parsedUserInfo.first_name)
-        setLastName(parsedUserInfo.last_name)
-      } else if (parsedUserInfo.username) {
-        setName(parsedUserInfo.username)
-      }
-
-      if (parsedUserInfo.bio) {
-        setBio(parsedUserInfo.bio)
-      }
-
-      if (parsedUserInfo.profile_image) {
-        setImage(parsedUserInfo.profile_image)
-      }
-
-      if (parsedUserInfo.cover_image) {
-        setCoverImage(parsedUserInfo.cover_image)
-      }
-
-      // Set avatar if available
-      if (parsedUserInfo.avatar_id) {
-        const avatar = AVATAR_OPTIONS.find((a) => a.id === parsedUserInfo.avatar_id) || AVATAR_OPTIONS[0]
-        setSelectedAvatar(avatar)
-      }
-      if (parsedUserInfo.avatar_color) {
-        setAvatarColor(parsedUserInfo.avatar_color)
-      }
-
-      // Fetch user's posts
-      fetchUserPosts(parsedUserInfo)
-      setLoading(false)
-    } else {
-      // Instead of redirecting, use mock data
-      const mockUserData = loadSavedMockData()
-      setUserInfo(mockUserData)
-      setName(`${mockUserData.first_name} ${mockUserData.last_name}`)
-      setFirstName(mockUserData.first_name)
-      setLastName(mockUserData.last_name)
-      setBio(mockUserData.bio)
-      setImage(mockUserData.profile_image)
-      setCoverImage(mockUserData.cover_image)
-
-      // Set avatar if available
-      if (mockUserData.avatar_id) {
-        const avatar = AVATAR_OPTIONS.find((a) => a.id === mockUserData.avatar_id) || AVATAR_OPTIONS[0]
-        setSelectedAvatar(avatar)
-      }
-      if (mockUserData.avatar_color) {
-        setAvatarColor(mockUserData.avatar_color)
-      }
-
-      setUserPosts(MOCK_POSTS)
-      setLoading(false)
+    if (profileData?.avatar_color) {
+      setAvatarColor(profileData.avatar_color)
     }
   }
 
-  // Load user info and fetch posts
-  useEffect(() => {
-    const fetchProfileData = async () => {
+  const loadProfileData = async ({ isOwn, targetUserId }) => {
+    setLoading(true)
+
+    if (isOwn) {
       try {
         const token = localStorage.getItem("token")
         if (!token) {
@@ -317,7 +245,6 @@ const StudentProfile = () => {
           return
         }
 
-        // Fetch user profile data with Bearer token
         const response = await axios.get("/api/user/profile", {
           headers: {
             Authorization: `Bearer ${token}`,
@@ -326,58 +253,105 @@ const StudentProfile = () => {
         })
 
         const profileData = response.data
-        setUserInfo(profileData)
-        setName(`${profileData.first_name || ""} ${profileData.last_name || ""}`)
-        setFirstName(profileData.first_name || "")
-        setLastName(profileData.last_name || "")
-        setBio(profileData.bio || "Share a little about yourself...")
-        setImage(profileData.profile_image)
-        setCoverImage(profileData.cover_image)
-
-        // Set avatar if available
-        if (profileData.avatar_id) {
-          const avatar = AVATAR_OPTIONS.find((a) => a.id === profileData.avatar_id) || AVATAR_OPTIONS[0]
-          setSelectedAvatar(avatar)
-        }
-        if (profileData.avatar_color) {
-          setAvatarColor(profileData.avatar_color)
-        }
-
-        // Don't fetch posts yet since that endpoint isn't ready
+        applyProfileData(profileData)
         setLoading(false)
+        return profileData
       } catch (error) {
         console.error("Error fetching profile:", error)
-        // If we have userInfo in localStorage, use that as fallback
-        const storedUserInfo = localStorage.getItem("user_info")
-        if (storedUserInfo) {
-          const parsedUserInfo = JSON.parse(storedUserInfo)
-          setUserInfo(parsedUserInfo)
-          setName(`${parsedUserInfo.first_name || ""} ${parsedUserInfo.last_name || ""}`)
-          setFirstName(parsedUserInfo.first_name || "")
-          setLastName(parsedUserInfo.last_name || "")
-          setBio(parsedUserInfo.bio || "Share a little about yourself...")
-          setImage(parsedUserInfo.profile_image)
-          setCoverImage(parsedUserInfo.cover_image)
-
-          // Set avatar if available
-          if (parsedUserInfo.avatar_id) {
-            const avatar = AVATAR_OPTIONS.find((a) => a.id === parsedUserInfo.avatar_id) || AVATAR_OPTIONS[0]
-            setSelectedAvatar(avatar)
-          }
-          if (parsedUserInfo.avatar_color) {
-            setAvatarColor(parsedUserInfo.avatar_color)
-          }
-        }
         setError("Failed to load profile data")
         setLoading(false)
+        return null
       }
     }
 
-    fetchProfileData()
-  }, [navigate])
+    try {
+      const token = localStorage.getItem("token")
+      const response = await axios.get(`/api/user/profile/${targetUserId}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      })
+
+      const profileData = response.data
+      applyProfileData(profileData)
+      setLoading(false)
+      return profileData
+    } catch (error) {
+      console.error("Error fetching profile:", error)
+      setError("Failed to load profile data")
+      setLoading(false)
+      return null
+    }
+  }
+
+  const fetchViewerContext = async () => {
+    const token = localStorage.getItem("token")
+    if (!token) {
+      navigate("/sign-in")
+      return { viewer: null, classIds: [] }
+    }
+
+    const profileResponse = await axios.get("/api/user/profile", {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+    })
+
+    const viewerProfile = profileResponse.data
+    setViewerInfo(viewerProfile)
+
+    try {
+      const classesResponse = await axios.get("/api/student/classes", {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const classIds = getClassIds(classesResponse.data)
+      setViewerClassIds(classIds)
+      return { viewer: viewerProfile, classIds }
+    } catch (error) {
+      try {
+        const classesResponse = await axios.get("/api/classes", {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        const classIds = getClassIds(classesResponse.data)
+        setViewerClassIds(classIds)
+        return { viewer: viewerProfile, classIds }
+      } catch (innerError) {
+        setViewerClassIds([])
+        return { viewer: viewerProfile, classIds: [] }
+      }
+    }
+  }
+
+  // Load viewer info and profile data
+  useEffect(() => {
+    const initProfile = async () => {
+      const { viewer } = await fetchViewerContext()
+      const viewerId = getUserId(viewer)
+      const targetUserId = userId || viewerId
+      const isOwn = !userId || (viewerId && userId === viewerId)
+      setIsOwnProfile(isOwn)
+
+      if (!targetUserId) {
+        navigate("/sign-in")
+        return
+      }
+
+      const profileData = await loadProfileData({ isOwn, targetUserId })
+      const profileRole = normalizeRole(profileData?.role)
+      if (profileRole === "STUDENT") {
+        await fetchUserPosts({ isOwn, targetUserId })
+      } else {
+        setUserPosts([])
+      }
+    }
+
+    initProfile()
+  }, [navigate, userId])
 
   // Fetch user's posts
-  const fetchUserPosts = async () => {
+  const fetchUserPosts = async ({ isOwn, targetUserId }) => {
     try {
       const token = localStorage.getItem("token")
       if (!token) {
@@ -385,7 +359,8 @@ const StudentProfile = () => {
         return
       }
 
-      const response = await axios.get("/api/user/posts", {
+      const endpoint = isOwn ? "/api/user/posts" : `/api/user/${targetUserId}/posts`
+      const response = await axios.get(endpoint, {
         headers: { Authorization: `Bearer ${token}` },
       })
 
@@ -398,6 +373,9 @@ const StudentProfile = () => {
 
   // Handle profile updates
   const handleProfileUpdate = async () => {
+    if (!isOwnProfile) {
+      return
+    }
     if (!isEditing) {
       setIsEditing(true)
       return
@@ -408,7 +386,7 @@ const StudentProfile = () => {
       const token = localStorage.getItem("token")
 
       // Update profile information
-      await axios.post(
+      const response = await axios.post(
         "/api/user/update-profile",
         {
           first_name: firstName,
@@ -422,33 +400,25 @@ const StudentProfile = () => {
         },
       )
 
-      // Update the displayed name
-      setName(`${firstName} ${lastName}`)
-      setIsEditing(false)
-      setSaving(false)
-
-      // Update local userInfo state
-      setUserInfo((prev) => ({
-        ...prev,
-        first_name: firstName,
-        last_name: lastName,
-        bio: bio,
-        avatar_id: selectedAvatar.id,
-        avatar_color: avatarColor,
-      }))
-
-      // Save to localStorage for mock data persistence
-      if (useMockData) {
-        const updatedMockUser = {
-          ...userInfo,
+      if (response?.data?.profile) {
+        applyProfileData(response.data.profile)
+        setViewerInfo(response.data.profile)
+      } else {
+        // Update the displayed name
+        setName(`${firstName} ${lastName}`)
+        setUserInfo((prev) => ({
+          ...prev,
           first_name: firstName,
           last_name: lastName,
           bio: bio,
           avatar_id: selectedAvatar.id,
           avatar_color: avatarColor,
-        }
-        localStorage.setItem("mock_user_data", JSON.stringify(updatedMockUser))
+        }))
       }
+
+      setIsEditing(false)
+      setSaving(false)
+
     } catch (error) {
       console.error("Error updating profile:", error)
       setSaving(false)
@@ -536,59 +506,39 @@ const StudentProfile = () => {
     setImage(imageUrl)
     setShowProfileOptions(false)
 
-    // Save to localStorage for mock data persistence
-    if (useMockData) {
-      const updatedMockUser = {
-        ...userInfo,
-        profile_image: imageUrl,
-      }
-      localStorage.setItem("mock_user_data", JSON.stringify(updatedMockUser))
-      setUserInfo(updatedMockUser)
-    }
+    setUserInfo((prev) => ({
+      ...prev,
+      profile_image: imageUrl,
+    }))
   }
 
   const selectCoverImage = (imageUrl) => {
     setCoverImage(imageUrl)
     setShowCoverOptions(false)
 
-    // Save to localStorage for mock data persistence
-    if (useMockData) {
-      const updatedMockUser = {
-        ...userInfo,
-        cover_image: imageUrl,
-      }
-      localStorage.setItem("mock_user_data", JSON.stringify(updatedMockUser))
-      setUserInfo(updatedMockUser)
-    }
+    setUserInfo((prev) => ({
+      ...prev,
+      cover_image: imageUrl,
+    }))
   }
 
   const selectAvatar = (avatar) => {
     setSelectedAvatar(avatar)
     setShowProfileOptions(false)
 
-    // Save to localStorage for mock data persistence
-    if (useMockData) {
-      const updatedMockUser = {
-        ...userInfo,
-        avatar_id: avatar.id,
-      }
-      localStorage.setItem("mock_user_data", JSON.stringify(updatedMockUser))
-      setUserInfo(updatedMockUser)
-    }
+    setUserInfo((prev) => ({
+      ...prev,
+      avatar_id: avatar.id,
+    }))
   }
 
   const selectAvatarColor = (color) => {
     setAvatarColor(color)
 
-    // Save to localStorage for mock data persistence
-    if (useMockData) {
-      const updatedMockUser = {
-        ...userInfo,
-        avatar_color: color,
-      }
-      localStorage.setItem("mock_user_data", JSON.stringify(updatedMockUser))
-      setUserInfo(updatedMockUser)
-    }
+    setUserInfo((prev) => ({
+      ...prev,
+      avatar_color: color,
+    }))
   }
 
   const handleSignOut = () => {
@@ -596,22 +546,16 @@ const StudentProfile = () => {
     localStorage.removeItem("user_info")
     localStorage.removeItem("class_info")
     setUserInfo(null)
+    setViewerInfo(null)
     navigate("/")
   }
-
-  useEffect(() => {
-    const storedUserInfo = localStorage.getItem("user_info")
-    if (storedUserInfo) {
-      setUserInfo(JSON.parse(storedUserInfo))
-    }
-  }, [])
 
   if (loading) {
     return (
       <div
         className={`min-h-screen transition-all duration-500 ${darkMode ? "bg-gradient-to-r from-slate-800 to-gray-950 text-gray-200" : "bg-gradient-to-r from-indigo-100 to-pink-100 text-gray-900"}`}
       >
-        <Navbar userInfo={userInfo} onSignOut={handleSignOut} darkMode={darkMode} logo="./logo.png" />
+        <Navbar userInfo={viewerInfo || userInfo} onSignOut={handleSignOut} darkMode={darkMode} logo="./logo.png" />
         <div className="flex justify-center items-center h-screen">
           <Loader />
         </div>
@@ -639,12 +583,28 @@ const StudentProfile = () => {
     }
   }
 
+  const profileRole = normalizeRole(userInfo?.role)
+  const isStudentProfile = profileRole === "STUDENT"
+  const isTeacherProfile = profileRole === "TEACHER"
+  const isAdminProfile = profileRole === "ADMIN"
+
+  const profileClassIds = getClassIds(userInfo?.class_ids || userInfo?.classes || null)
+  const sharedClassIds = profileClassIds.filter((classId) => viewerClassIds.includes(classId))
+  const visiblePosts = isStudentProfile
+    ? isOwnProfile
+      ? userPosts
+      : userPosts.filter((post) => viewerClassIds.includes(post.class_id))
+    : []
+  const hiddenPostsCount = isStudentProfile
+    ? Math.max(userPosts.length - visiblePosts.length, 0)
+    : 0
+
   return (
     <div
       className={`min-h-screen transition-all duration-500 ${darkMode ? "bg-gradient-to-r from-slate-800 to-gray-950 text-gray-200" : "bg-gradient-to-r from-indigo-100 to-pink-100 text-gray-900"}`}
     >
       {/* Navbar */}
-      <Navbar userInfo={userInfo} onSignOut={handleSignOut} darkMode={darkMode} logo="./logo.png" />
+      <Navbar userInfo={viewerInfo || userInfo} onSignOut={handleSignOut} darkMode={darkMode} logo="./logo.png" />
 
       {/* Toggle Dark Mode Button */}
       <motion.div
@@ -702,13 +662,13 @@ const StudentProfile = () => {
             <img
               src={
                 coverImage ||
-                "https://images.unsplash.com/photo-1513506003901-1e6a229e2d15?ixlib=rb-4.0.3&ixid=MnwxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8&auto=format&fit=crop&w=1200&q=80" ||
+                BACKGROUND_OPTIONS[0] ||
                 "/placeholder.svg"
               }
               alt="Cover"
               className="w-full h-full object-cover transition-transform duration-700 hover:scale-105"
             />
-            {isEditing && (
+            {isEditing && isOwnProfile && (
               <div className="absolute bottom-4 right-4 flex gap-2">
                 <button
                   onClick={() => setShowCoverOptions(!showCoverOptions)}
@@ -815,7 +775,7 @@ const StudentProfile = () => {
                   )}
                 </div>
 
-                {isEditing && (
+                {isEditing && isOwnProfile && (
                   <div className="absolute bottom-0 right-0 flex">
                     <button
                       onClick={() => setShowProfileOptions(!showProfileOptions)}
@@ -939,6 +899,11 @@ const StudentProfile = () => {
                 <p className={`text-sm ${darkMode ? "text-gray-400" : "text-gray-500"}`}>
                   @{userInfo?.username || "username"}
                 </p>
+                {!isOwnProfile && (
+                  <p className={`text-xs mt-1 ${darkMode ? "text-gray-500" : "text-gray-400"}`}>
+                    Viewing shared profile
+                  </p>
+                )}
 
                 {/* Role Badge */}
                 <div className="mt-2">
@@ -983,61 +948,179 @@ const StudentProfile = () => {
               )}
             </div>
 
-            {/* Stats Section - Removed followers/following, only showing posts */}
+            {/* Stats Section */}
             <div className="mb-6 text-center">
-              <div
-                className={`p-4 rounded-xl ${darkMode ? "bg-gray-700/50" : "bg-blue-50"} transition-transform duration-200 transform hover:scale-105 inline-block min-w-[120px]`}
-              >
-                <div className={`text-2xl font-bold ${darkMode ? "text-white" : "text-gray-800"}`}>
-                  {userPosts.length}
-                </div>
-                <div className={`text-sm ${darkMode ? "text-gray-400" : "text-gray-500"}`}>Posts</div>
+              <div className="flex flex-wrap justify-center gap-4">
+                {isStudentProfile && (
+                  <>
+                    <div
+                      className={`p-4 rounded-xl ${darkMode ? "bg-gray-700/50" : "bg-blue-50"} transition-transform duration-200 transform hover:scale-105 min-w-[120px]`}
+                    >
+                      <div className={`text-2xl font-bold ${darkMode ? "text-white" : "text-gray-800"}`}>
+                        {isOwnProfile ? userPosts.length : visiblePosts.length}
+                      </div>
+                      <div className={`text-sm ${darkMode ? "text-gray-400" : "text-gray-500"}`}>
+                        {isOwnProfile ? "Posts" : "Shared Posts"}
+                      </div>
+                    </div>
+
+                    {!isOwnProfile && (
+                      <>
+                        <div
+                          className={`p-4 rounded-xl ${darkMode ? "bg-gray-700/50" : "bg-blue-50"} transition-transform duration-200 transform hover:scale-105 min-w-[120px]`}
+                        >
+                          <div className={`text-2xl font-bold ${darkMode ? "text-white" : "text-gray-800"}`}>
+                            {sharedClassIds.length}
+                          </div>
+                          <div className={`text-sm ${darkMode ? "text-gray-400" : "text-gray-500"}`}>
+                            Shared Classes
+                          </div>
+                        </div>
+                        {hiddenPostsCount > 0 && (
+                          <div
+                            className={`p-4 rounded-xl ${darkMode ? "bg-gray-700/50" : "bg-blue-50"} transition-transform duration-200 transform hover:scale-105 min-w-[120px]`}
+                          >
+                            <div className={`text-2xl font-bold ${darkMode ? "text-white" : "text-gray-800"}`}>
+                              {hiddenPostsCount}
+                            </div>
+                            <div className={`text-sm ${darkMode ? "text-gray-400" : "text-gray-500"}`}>
+                              Hidden Posts
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </>
+                )}
+
+                {isTeacherProfile && (
+                  <>
+                    <div
+                      className={`p-4 rounded-xl ${darkMode ? "bg-gray-700/50" : "bg-blue-50"} transition-transform duration-200 transform hover:scale-105 min-w-[120px]`}
+                    >
+                      <div className={`text-2xl font-bold ${darkMode ? "text-white" : "text-gray-800"}`}>
+                        {profileClassIds.length}
+                      </div>
+                      <div className={`text-sm ${darkMode ? "text-gray-400" : "text-gray-500"}`}>
+                        Classes
+                      </div>
+                    </div>
+                    <div
+                      className={`p-4 rounded-xl ${darkMode ? "bg-gray-700/50" : "bg-blue-50"} transition-transform duration-200 transform hover:scale-105 min-w-[120px]`}
+                    >
+                      <div className={`text-2xl font-bold ${darkMode ? "text-white" : "text-gray-800"}`}>
+                        View
+                      </div>
+                      <div className={`text-sm ${darkMode ? "text-gray-400" : "text-gray-500"}`}>
+                        Students
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {isAdminProfile && (
+                  <>
+                    <div
+                      className={`p-4 rounded-xl ${darkMode ? "bg-gray-700/50" : "bg-blue-50"} transition-transform duration-200 transform hover:scale-105 min-w-[120px]`}
+                    >
+                      <div className={`text-2xl font-bold ${darkMode ? "text-white" : "text-gray-800"}`}>
+                        Manage
+                      </div>
+                      <div className={`text-sm ${darkMode ? "text-gray-400" : "text-gray-500"}`}>
+                        Users
+                      </div>
+                    </div>
+                    <div
+                      className={`p-4 rounded-xl ${darkMode ? "bg-gray-700/50" : "bg-blue-50"} transition-transform duration-200 transform hover:scale-105 min-w-[120px]`}
+                    >
+                      <div className={`text-2xl font-bold ${darkMode ? "text-white" : "text-gray-800"}`}>
+                        View
+                      </div>
+                      <div className={`text-sm ${darkMode ? "text-gray-400" : "text-gray-500"}`}>
+                        Reports
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 
             {/* Action Buttons */}
-            <div className="flex flex-col sm:flex-row gap-3 justify-center">
-              <motion.button
-                className={`px-6 py-3 rounded-full font-medium ${
-                  darkMode
-                    ? isEditing
-                      ? "bg-green-600 hover:bg-green-700"
-                      : "bg-blue-600 hover:bg-blue-700"
-                    : isEditing
-                      ? "bg-green-500 hover:bg-green-600"
-                      : "bg-blue-500 hover:bg-blue-600"
-                } text-white flex items-center justify-center shadow-lg transition-all duration-200`}
-                onClick={isEditing ? handleProfileUpdate : () => setIsEditing(true)}
-                disabled={saving}
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-              >
-                {saving ? (
-                  <span className="flex items-center">
-                    <svg
-                      className="animate-spin -ml-1 mr-3 h-5 w-5 text-white"
-                      xmlns="http://www.w3.org/2000/svg"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                    >
-                      <circle
-                        className="opacity-25"
-                        cx="12"
-                        cy="12"
-                        r="10"
+            {isOwnProfile ? (
+              <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                <motion.button
+                  className={`px-6 py-3 rounded-full font-medium ${
+                    darkMode
+                      ? isEditing
+                        ? "bg-green-600 hover:bg-green-700"
+                        : "bg-blue-600 hover:bg-blue-700"
+                      : isEditing
+                        ? "bg-green-500 hover:bg-green-600"
+                        : "bg-blue-500 hover:bg-blue-600"
+                  } text-white flex items-center justify-center shadow-lg transition-all duration-200`}
+                  onClick={isEditing ? handleProfileUpdate : () => setIsEditing(true)}
+                  disabled={saving}
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                >
+                  {saving ? (
+                    <span className="flex items-center">
+                      <svg
+                        className="animate-spin -ml-1 mr-3 h-5 w-5 text-white"
+                        xmlns="http://www.w3.org/2000/svg"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                      >
+                        <circle
+                          className="opacity-25"
+                          cx="12"
+                          cy="12"
+                          r="10"
+                          stroke="currentColor"
+                          strokeWidth="4"
+                        ></circle>
+                        <path
+                          className="opacity-75"
+                          fill="currentColor"
+                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                        ></path>
+                      </svg>
+                      Saving...
+                    </span>
+                  ) : (
+                    <>
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
                         stroke="currentColor"
-                        strokeWidth="4"
-                      ></circle>
-                      <path
-                        className="opacity-75"
-                        fill="currentColor"
-                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                      ></path>
-                    </svg>
-                    Saving...
-                  </span>
-                ) : (
-                  <>
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="mr-2"
+                      >
+                        {isEditing ? (
+                          <path d="M5 13l4 4L19 7"></path>
+                        ) : (
+                          <path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
+                        )}
+                      </svg>
+                      {isEditing ? "Save Changes" : "Edit Profile"}
+                    </>
+                  )}
+                </motion.button>
+
+                {isEditing && (
+                  <motion.button
+                    className={`px-6 py-3 rounded-full font-medium ${
+                      darkMode ? "bg-red-600 hover:bg-red-700" : "bg-red-500 hover:bg-red-600"
+                    } text-white flex items-center justify-center shadow-lg transition-all duration-200`}
+                    onClick={() => setIsEditing(false)}
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                  >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
                       width="16"
@@ -1050,93 +1133,78 @@ const StudentProfile = () => {
                       strokeLinejoin="round"
                       className="mr-2"
                     >
-                      {isEditing ? (
-                        <path d="M5 13l4 4L19 7"></path>
-                      ) : (
-                        <path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
-                      )}
+                      <line x1="18" y1="6" x2="6" y2="18"></line>
+                      <line x1="6" y1="6" x2="18" y2="18"></line>
                     </svg>
-                    {isEditing ? "Save Changes" : "Edit Profile"}
-                  </>
+                    Cancel
+                  </motion.button>
                 )}
-              </motion.button>
-
-              {isEditing && (
+              </div>
+            ) : (
+              <div className="flex flex-col sm:flex-row gap-3 justify-center">
                 <motion.button
                   className={`px-6 py-3 rounded-full font-medium ${
-                    darkMode ? "bg-red-600 hover:bg-red-700" : "bg-red-500 hover:bg-red-600"
+                    darkMode ? "bg-blue-600 hover:bg-blue-700" : "bg-blue-500 hover:bg-blue-600"
                   } text-white flex items-center justify-center shadow-lg transition-all duration-200`}
-                  onClick={() => setIsEditing(false)}
+                  onClick={() => document.getElementById("posts-section")?.scrollIntoView({ behavior: "smooth" })}
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
                 >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    className="mr-2"
-                  >
-                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                  </svg>
-                  Cancel
+                  View Shared Posts
                 </motion.button>
-              )}
-            </div>
+                <Link to="/student-hub">
+                  <motion.button
+                    className={`px-6 py-3 rounded-full font-medium ${
+                      darkMode ? "bg-gray-700 hover:bg-gray-600" : "bg-white hover:bg-gray-100"
+                    } ${darkMode ? "text-white" : "text-gray-800"} flex items-center justify-center shadow-lg transition-all duration-200`}
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                  >
+                    Back to Hub
+                  </motion.button>
+                </Link>
+              </div>
+            )}
           </div>
         </motion.div>
 
         {/* Content Tabs */}
         <div className="mb-6">
           <div className={`flex border-b ${darkMode ? "border-gray-700" : "border-gray-200"}`}>
-            <button
-              className={`py-3 px-6 font-medium transition-all duration-200 ${
-                activeTab === "posts"
-                  ? darkMode
-                    ? "text-white border-b-2 border-blue-500"
-                    : "text-blue-600 border-b-2 border-blue-500"
-                  : darkMode
-                    ? "text-gray-400 hover:text-gray-300"
-                    : "text-gray-500 hover:text-gray-700"
-              }`}
-              onClick={() => setActiveTab("posts")}
-            >
-              Posts
-            </button>
-            <button
-              className={`py-3 px-6 font-medium transition-all duration-200 ${
-                activeTab === "saved"
-                  ? darkMode
-                    ? "text-white border-b-2 border-blue-500"
-                    : "text-blue-600 border-b-2 border-blue-500"
-                  : darkMode
-                    ? "text-gray-400 hover:text-gray-300"
-                    : "text-gray-500 hover:text-gray-700"
-              }`}
-              onClick={() => setActiveTab("saved")}
-            >
-              Saved
+            {getRoleTabs(userInfo?.role, isOwnProfile).map((tab) => (
+              <button
+                key={tab.key}
+                className={`py-3 px-6 font-medium transition-all duration-200 ${
+                  activeTab === tab.key
+                    ? darkMode
+                      ? "text-white border-b-2 border-blue-500"
+                      : "text-blue-600 border-b-2 border-blue-500"
+                    : darkMode
+                      ? "text-gray-400 hover:text-gray-300"
+                      : "text-gray-500 hover:text-gray-700"
+                }`}
+                onClick={() => setActiveTab(tab.key)}
+              >
+                {tab.label}
               </button>
+            ))}
           </div>
         </div>
         
         {/* Recent Posts Section */}
-        {activeTab === "posts" && (
+        {activeTab === "posts" && isStudentProfile && (
           <motion.div
+            id="posts-section"
             className={`rounded-2xl shadow-2xl overflow-hidden p-8 ${darkMode ? "bg-gray-800" : "bg-white"}`}
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.2 }}
           >
-            <h2 className={`text-2xl font-bold mb-6 ${darkMode ? "text-white" : "text-gray-800"}`}>Your Posts</h2>
+            <h2 className={`text-2xl font-bold mb-6 ${darkMode ? "text-white" : "text-gray-800"}`}>
+              {isOwnProfile ? "Your Posts" : "Shared Posts"}
+            </h2>
 
-            {userPosts.length === 0 ? (
+            {visiblePosts.length === 0 ? (
               // Empty State
               <div className={`text-center py-12 px-4 rounded-xl ${darkMode ? "bg-gray-700/50" : "bg-blue-50"}`}>
                 <svg
@@ -1157,27 +1225,43 @@ const StudentProfile = () => {
                   <line x1="9" y1="15" x2="15" y2="15"></line>
                 </svg>
                 <h3 className={`text-xl font-semibold mb-2 ${darkMode ? "text-white" : "text-gray-800"}`}>
-                  No Posts Yet
+                  {isOwnProfile ? "No Posts Yet" : "No Shared Posts"}
                 </h3>
                 <p className={`mb-6 ${darkMode ? "text-gray-400" : "text-gray-600"}`}>
-                  Share your first literary creation with the community!
+                  {isOwnProfile
+                    ? "Share your first literary creation with the community!"
+                    : "You can only see posts from classes you share with this student."}
                 </p>
-                <Link to="/student-hub">
-                  <motion.button
-                    className={`px-6 py-3 rounded-full font-medium ${
-                      darkMode ? "bg-blue-600 hover:bg-blue-700" : "bg-blue-500 hover:bg-blue-600"
-                    } text-white shadow-lg transition-all duration-200`}
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                  >
-                    Create Your First Post
-                  </motion.button>
-                </Link>
+                {isOwnProfile ? (
+                  <Link to="/student-hub">
+                    <motion.button
+                      className={`px-6 py-3 rounded-full font-medium ${
+                        darkMode ? "bg-blue-600 hover:bg-blue-700" : "bg-blue-500 hover:bg-blue-600"
+                      } text-white shadow-lg transition-all duration-200`}
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                    >
+                      Create Your First Post
+                    </motion.button>
+                  </Link>
+                ) : (
+                  <Link to="/student-hub">
+                    <motion.button
+                      className={`px-6 py-3 rounded-full font-medium ${
+                        darkMode ? "bg-blue-600 hover:bg-blue-700" : "bg-blue-500 hover:bg-blue-600"
+                      } text-white shadow-lg transition-all duration-200`}
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                    >
+                      Browse Classes
+                    </motion.button>
+                  </Link>
+                )}
               </div>
             ) : (
               // User posts list
               <div className="space-y-4">
-                {userPosts.map((post) => (
+                {visiblePosts.map((post) => (
                   <motion.div
                     key={post.id}
                     className={`p-5 rounded-xl border ${darkMode ? "bg-gray-700 border-gray-600" : "bg-white border-gray-200"} hover:shadow-lg transition-all duration-200`}
@@ -1237,7 +1321,7 @@ const StudentProfile = () => {
         )}
 
         {/* Saved Content Section */}
-        {activeTab === "saved" && (
+        {activeTab === "saved" && isStudentProfile && isOwnProfile && (
           <motion.div
             className={`rounded-2xl shadow-2xl overflow-hidden p-8 ${darkMode ? "bg-gray-800" : "bg-white"}`}
             initial={{ opacity: 0, y: 20 }}
@@ -1282,33 +1366,141 @@ const StudentProfile = () => {
             </div>
           </motion.div>
         )}
+
+        {/* Teacher: Classes Section */}
+        {activeTab === "classes" && isTeacherProfile && (
+          <motion.div
+            className={`rounded-2xl shadow-2xl overflow-hidden p-8 ${darkMode ? "bg-gray-800" : "bg-white"}`}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.2 }}
+          >
+            <h2 className={`text-2xl font-bold mb-4 ${darkMode ? "text-white" : "text-gray-800"}`}>Your Classes</h2>
+            <p className={`${darkMode ? "text-gray-300" : "text-gray-600"} mb-6`}>
+              You’re assigned to {profileClassIds.length} class{profileClassIds.length === 1 ? "" : "es"}. Manage
+              rosters, access codes, and class settings from your dashboard.
+            </p>
+            <Link to="/teacher-dashboard">
+              <motion.button
+                className={`px-6 py-3 rounded-full font-medium ${
+                  darkMode ? "bg-blue-600 hover:bg-blue-700" : "bg-blue-500 hover:bg-blue-600"
+                } text-white shadow-lg transition-all duration-200`}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+              >
+                Open Teacher Dashboard
+              </motion.button>
+            </Link>
+          </motion.div>
+        )}
+
+        {/* Teacher: Students Section */}
+        {activeTab === "students" && isTeacherProfile && (
+          <motion.div
+            className={`rounded-2xl shadow-2xl overflow-hidden p-8 ${darkMode ? "bg-gray-800" : "bg-white"}`}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.2 }}
+          >
+            <h2 className={`text-2xl font-bold mb-4 ${darkMode ? "text-white" : "text-gray-800"}`}>Students</h2>
+            <p className={`${darkMode ? "text-gray-300" : "text-gray-600"} mb-6`}>
+              Review student participation, posts, and class enrollment from your dashboard.
+            </p>
+            <Link to="/teacher-dashboard">
+              <motion.button
+                className={`px-6 py-3 rounded-full font-medium ${
+                  darkMode ? "bg-blue-600 hover:bg-blue-700" : "bg-blue-500 hover:bg-blue-600"
+                } text-white shadow-lg transition-all duration-200`}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+              >
+                Manage Students
+              </motion.button>
+            </Link>
+          </motion.div>
+        )}
+
+        {/* Admin: Users Section */}
+        {activeTab === "users" && isAdminProfile && (
+          <motion.div
+            className={`rounded-2xl shadow-2xl overflow-hidden p-8 ${darkMode ? "bg-gray-800" : "bg-white"}`}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.2 }}
+          >
+            <h2 className={`text-2xl font-bold mb-4 ${darkMode ? "text-white" : "text-gray-800"}`}>Users</h2>
+            <p className={`${darkMode ? "text-gray-300" : "text-gray-600"} mb-6`}>
+              Manage user access, roles, and account details from the admin dashboard.
+            </p>
+            <Link to="/admin-dashboard">
+              <motion.button
+                className={`px-6 py-3 rounded-full font-medium ${
+                  darkMode ? "bg-blue-600 hover:bg-blue-700" : "bg-blue-500 hover:bg-blue-600"
+                } text-white shadow-lg transition-all duration-200`}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+              >
+                Open Admin Dashboard
+              </motion.button>
+            </Link>
+          </motion.div>
+        )}
+
+        {/* Admin: Reports Section */}
+        {activeTab === "reports" && isAdminProfile && (
+          <motion.div
+            className={`rounded-2xl shadow-2xl overflow-hidden p-8 ${darkMode ? "bg-gray-800" : "bg-white"}`}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.2 }}
+          >
+            <h2 className={`text-2xl font-bold mb-4 ${darkMode ? "text-white" : "text-gray-800"}`}>Reports</h2>
+            <p className={`${darkMode ? "text-gray-300" : "text-gray-600"} mb-6`}>
+              Review platform activity, class performance, and moderation reports.
+            </p>
+            <Link to="/admin-dashboard">
+              <motion.button
+                className={`px-6 py-3 rounded-full font-medium ${
+                  darkMode ? "bg-blue-600 hover:bg-blue-700" : "bg-blue-500 hover:bg-blue-600"
+                } text-white shadow-lg transition-all duration-200`}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+              >
+                View Reports
+              </motion.button>
+            </Link>
+          </motion.div>
+        )}
       </main>
 
       {/* Floating Action Button */}
-      <motion.div className="fixed bottom-8 right-8" whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}>
-        <Link to="/student-hub">
-          <button 
-            className={`w-14 h-14 rounded-full shadow-xl flex items-center justify-center ${
-              darkMode ? "bg-blue-600 hover:bg-blue-700" : "bg-blue-500 hover:bg-blue-600"
-            } text-white transition-all duration-200 transform hover:-translate-y-1`}
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="24"
-              height="24"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+      {isOwnProfile && isStudentProfile && (
+        <motion.div className="fixed bottom-8 right-8" whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}>
+          <Link to="/student-hub">
+            <button 
+              className={`w-14 h-14 rounded-full shadow-xl flex items-center justify-center ${
+                darkMode ? "bg-blue-600 hover:bg-blue-700" : "bg-blue-500 hover:bg-blue-600"
+              } text-white transition-all duration-200 transform hover:-translate-y-1`}
             >
-              <line x1="12" y1="5" x2="12" y2="19"></line>
-              <line x1="5" y1="12" x2="19" y2="12"></line>
-            </svg>
-          </button>
-        </Link>
-      </motion.div>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="24"
+                height="24"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+            </button>
+          </Link>
+        </motion.div>
+      )}
+      <Footer darkMode={darkMode} />
     </div>
   )
 }

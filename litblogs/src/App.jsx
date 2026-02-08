@@ -1,7 +1,5 @@
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import LitBlogs from "./LitBlogs";
-import Tambellini from "./Tambellini";
-import Musk from "./Musk";
 import Help from "./Help";
 import SignIn from "./Sign-in";
 import SignUp from "./Sign-up";
@@ -44,8 +42,6 @@ function App() {
   return (
     <Routes>
       <Route path="/" element={<LitBlogs darkMode={darkMode} toggleDarkMode={toggleDarkMode} />} />
-      <Route path="/tambellini" element={<Tambellini />} />
-      <Route path="/musk" element={<Musk />} />
       <Route path="/help" element={<Help />} />
       <Route path="/sign-in" element={<SignIn />} />
       <Route path="/sign-up" element={<SignUp />} />
@@ -56,7 +52,8 @@ function App() {
       <Route path="/class/:classId/post/:postId" element={<PostView />} />
       <Route path="/class/:classId/student/:studentId" element={<StudentDetails darkMode={darkMode} />} />
       <Route path="/student-hub" element={<StudentHub />} />
-      <Route path="/Profile" element={<Profile/>}/>
+      <Route path="/profile" element={<Profile />} />
+      <Route path="/profile/:userId" element={<Profile />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/privacy-policy" element={<PrivacyPolicy />} />

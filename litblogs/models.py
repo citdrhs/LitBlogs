@@ -24,12 +24,15 @@ class User(Base):
     bio = Column(String(500), nullable=True)
     profile_image = Column(String(255), nullable=True)
     cover_image = Column(String(255), nullable=True)
+    avatar_id = Column(String(50), nullable=True)
+    avatar_color = Column(String(50), nullable=True)
     # For students: the classes they're enrolled in
     enrolled_classes = relationship("ClassEnrollment", back_populates="student")
     blogs = relationship("Blog", back_populates="owner")
     likes = relationship("PostLike", back_populates="user", cascade="all, delete-orphan")
     comments = relationship("Comment", back_populates="user", cascade="all, delete-orphan")
     comment_likes = relationship("CommentLike", back_populates="user", cascade="all, delete-orphan")
+    assignment_submissions = relationship("AssignmentSubmission", back_populates="student", cascade="all, delete-orphan")
 
 class Teacher(Base):
     __tablename__ = "teachers"
@@ -52,7 +55,36 @@ class Class(Base):
     teacher = relationship("Teacher", back_populates="classes")
     students = relationship("ClassEnrollment", back_populates="class_")
     blogs = relationship("Blog", back_populates="class_")
+    assignments = relationship("Assignment", back_populates="class_", cascade="all, delete-orphan")
     status = Column(String, default="active")  # 'active', 'archived', or 'deleted'
+    posts_visibility = Column(String, default="class")  # 'class' or 'private'
+
+class Assignment(Base):
+    __tablename__ = "assignments"
+    id = Column(Integer, primary_key=True, index=True)
+    class_id = Column(Integer, ForeignKey("classes.id"), nullable=False)
+    title = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    due_date = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    allow_late = Column(Boolean, default=True)
+    visibility = Column(String, default="class")  # 'class' or 'private'
+
+    class_ = relationship("Class", back_populates="assignments")
+    submissions = relationship("AssignmentSubmission", back_populates="assignment", cascade="all, delete-orphan")
+
+class AssignmentSubmission(Base):
+    __tablename__ = "assignment_submissions"
+    id = Column(Integer, primary_key=True, index=True)
+    assignment_id = Column(Integer, ForeignKey("assignments.id"), nullable=False)
+    student_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    submitted_at = Column(DateTime(timezone=True), server_default=func.now())
+    content = Column(Text, nullable=True)
+    is_late = Column(Boolean, default=False)
+
+    assignment = relationship("Assignment", back_populates="submissions")
+    student = relationship("User", back_populates="assignment_submissions")
 
 class ClassEnrollment(Base):
     __tablename__ = "class_enrollments"

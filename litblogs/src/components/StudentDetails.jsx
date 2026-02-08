@@ -6,6 +6,7 @@ import Loader from './Loader';
 import ReactHtmlParser from 'react-html-parser';
 import { formatRelativeTime } from '../utils/timeUtils';
 import { toast } from 'react-hot-toast';
+import Footer from './Footer';
 
 const StudentDetails = ({ darkMode }) => {
   const { classId, studentId } = useParams();
@@ -389,6 +390,7 @@ const StudentDetails = ({ darkMode }) => {
           </motion.div>
         )}
       </div>
+      <Footer darkMode={darkMode} />
     </div>
   );
 };

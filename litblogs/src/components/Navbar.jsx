@@ -10,8 +10,6 @@ const Navbar = ({
   logo = "/dren/logo.png",
   navLinks = [
     { to: "/", label: "Home" },
-    { to: "/tambellini", label: "Ms. Tambellini's English 10" },
-    { to: "/musk", label: "Ms. Musk's English 9" },
     { to: "/help", label: "Help" },
 
   ]
@@ -127,9 +125,15 @@ const Navbar = ({
           <div className="relative" ref={dropdownRef}>
             <button
               onClick={() => setShowUserDropdown(!showUserDropdown)}
-              className="w-10 h-10 rounded-full bg-blue-500 text-white flex items-center justify-center hover:bg-blue-600 transition-colors duration-300"
+              className="w-10 h-10 rounded-full bg-blue-500 text-white flex items-center justify-center hover:bg-blue-600 transition-colors duration-300 overflow-hidden"
             >
-              {userInfo.firstName?.[0]?.toUpperCase() || '?'}
+              {userInfo.profile_image ? (
+                <img src={userInfo.profile_image} alt="Profile" className="w-full h-full object-cover" />
+              ) : (
+                <span>
+                  {userInfo.first_name?.[0]?.toUpperCase() || userInfo.firstName?.[0]?.toUpperCase() || userInfo.username?.[0]?.toUpperCase() || '?'}
+                </span>
+              )}
             </button>
 
             <AnimatePresence>

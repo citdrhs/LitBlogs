@@ -5,6 +5,7 @@ import axios from 'axios';
 import Navbar from './components/Navbar';
 import ClassDetails from './components/ClassDetails';
 import { toast } from 'react-hot-toast';
+import Footer from './components/Footer';
 
 const TeacherDashboard = () => {
   const navigate = useNavigate();
@@ -24,6 +25,7 @@ const TeacherDashboard = () => {
   const [archivedClasses, setArchivedClasses] = useState([]);
   const [classesTab, setClassesTab] = useState('active'); // 'active' or 'archived'
   const [menuOpen, setMenuOpen] = useState(null);
+  const [analytics, setAnalytics] = useState(null);
 
   // Add the toggleDarkMode function
   const toggleDarkMode = () => {
@@ -66,15 +68,17 @@ const TeacherDashboard = () => {
         };
 
         // Fetch teacher dashboard data with detailed class information
-        const response = await axios.get('http://localhost:8000/api/teacher/dashboard', config);
-        
-        // Fetch detailed class information with student counts
-        const classesResponse = await axios.get('http://localhost:8000/api/classes?status=active', config);
-        const archivedClassesResponse = await axios.get('http://localhost:8000/api/classes?status=archived', config);
+        const [response, classesResponse, archivedClassesResponse, analyticsResponse] = await Promise.all([
+          axios.get('http://localhost:8000/api/teacher/dashboard', config),
+          axios.get('http://localhost:8000/api/classes?status=active', config),
+          axios.get('http://localhost:8000/api/classes?status=archived', config),
+          axios.get('http://localhost:8000/api/teacher/analytics', config)
+        ]);
         
         // Update state with teacher data and classes with student counts
         setClasses(classesResponse.data || []);
         setArchivedClasses(archivedClassesResponse.data || []);
+        setAnalytics(analyticsResponse.data || null);
         
         setUserInfo(prev => ({
           ...prev,
@@ -94,6 +98,19 @@ const TeacherDashboard = () => {
     fetchData();
   }, [navigate]);
 
+  const analyticsTotals = analytics?.totals || {
+    classes: 0,
+    students: 0,
+    posts: 0,
+    assignments: 0,
+    submissions: 0,
+    on_time: 0,
+    late: 0,
+    missing: 0,
+    active_today: 0,
+    average_engagement: 0
+  };
+
   // Stats for the dashboard
   const stats = [
     {
@@ -112,17 +129,21 @@ const TeacherDashboard = () => {
     },
     {
       title: "Active Today",
-      value: "85%",
+      value: `${analyticsTotals.active_today || 0}`,
       color: "from-purple-600 to-pink-600",
       icon: "📊"
     },
     {
       title: "Average Engagement",
-      value: "92%",
+      value: `${analyticsTotals.average_engagement || 0}%`,
       color: "from-orange-500 to-yellow-500",
       icon: "⭐"
     }
   ];
+
+  const onTimeRate = analyticsTotals.submissions
+    ? Math.round((analyticsTotals.on_time / analyticsTotals.submissions) * 100)
+    : 0;
 
   const createClass = async () => {
     try {
@@ -357,9 +378,9 @@ const TeacherDashboard = () => {
       </motion.div>
 
       {/* Main Content - Add margin-left for sidebar and padding-top for navbar */}
-      <div className="ml-64 pt-20">
+      <div className="ml-64 pt-20 flex flex-col min-h-[calc(100vh-5rem)]">
         <motion.div 
-          className="p-8"
+          className="p-8 flex-1"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
         >
@@ -440,6 +461,7 @@ const TeacherDashboard = () => {
                         Create New Class
                       </motion.button>
                       <motion.button
+                        onClick={() => setActiveTab('Analytics')}
                         className="p-4 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-medium"
                         whileHover={{ scale: 1.02 }}
                         whileTap={{ scale: 0.98 }}
@@ -447,6 +469,7 @@ const TeacherDashboard = () => {
                         View Reports
                       </motion.button>
                       <motion.button
+                        onClick={() => setActiveTab('Students')}
                         className="p-4 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600 text-white font-medium"
                         whileHover={{ scale: 1.02 }}
                         whileTap={{ scale: 0.98 }}
@@ -454,6 +477,7 @@ const TeacherDashboard = () => {
                         Send Message
                       </motion.button>
                       <motion.button
+                        onClick={() => setActiveTab('Classes')}
                         className="p-4 rounded-lg bg-gradient-to-r from-orange-500 to-yellow-500 text-white font-medium"
                         whileHover={{ scale: 1.02 }}
                         whileTap={{ scale: 0.98 }}
@@ -715,6 +739,149 @@ const TeacherDashboard = () => {
                 )}
               </motion.div>
             )}
+
+            {activeTab === 'Analytics' && (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="space-y-6"
+              >
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                  {[
+                    { label: 'Classes', value: analyticsTotals.classes },
+                    { label: 'Students', value: analyticsTotals.students },
+                    { label: 'Assignments', value: analyticsTotals.assignments },
+                    { label: 'Submissions', value: analyticsTotals.submissions },
+                  ].map((card) => (
+                    <div
+                      key={card.label}
+                      className={`p-6 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'} shadow-xl`}
+                    >
+                      <p className="text-sm text-gray-500 dark:text-gray-400">{card.label}</p>
+                      <p className="text-3xl font-bold mt-2">{card.value}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  <div className={`p-6 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'} shadow-xl`}>
+                    <h3 className="text-xl font-semibold mb-4">Submission Health</h3>
+                    <div className="space-y-4">
+                      {[
+                        { label: 'On Time', value: analyticsTotals.on_time, color: 'bg-emerald-500' },
+                        { label: 'Late', value: analyticsTotals.late, color: 'bg-yellow-500' },
+                        { label: 'Missing', value: analyticsTotals.missing, color: 'bg-rose-500' },
+                      ].map((item) => (
+                        <div key={item.label}>
+                          <div className="flex items-center justify-between text-sm mb-2">
+                            <span>{item.label}</span>
+                            <span className="text-gray-500 dark:text-gray-400">{item.value}</span>
+                          </div>
+                          <div className="h-2 rounded-full bg-gray-200 dark:bg-gray-700">
+                            <div
+                              className={`h-2 rounded-full ${item.color}`}
+                              style={{
+                                width: analyticsTotals.submissions
+                                  ? `${Math.round((item.value / analyticsTotals.submissions) * 100)}%`
+                                  : '0%'
+                              }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-6 text-sm text-gray-500 dark:text-gray-400">
+                      On-time rate: {onTimeRate}%
+                    </div>
+                  </div>
+
+                  <div className={`p-6 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'} shadow-xl`}>
+                    <h3 className="text-xl font-semibold mb-4">Posts & Participation</h3>
+                    <div className="space-y-3 text-sm text-gray-500 dark:text-gray-400">
+                      <div className="flex items-center justify-between">
+                        <span>Total Posts</span>
+                        <span className="font-semibold text-gray-900 dark:text-gray-100">{analyticsTotals.posts}</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span>Average submissions per class</span>
+                        <span className="font-semibold text-gray-900 dark:text-gray-100">
+                          {analyticsTotals.classes ? Math.round(analyticsTotals.submissions / analyticsTotals.classes) : 0}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span>Average students per class</span>
+                        <span className="font-semibold text-gray-900 dark:text-gray-100">
+                          {analyticsTotals.classes ? Math.round(analyticsTotals.students / analyticsTotals.classes) : 0}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className={`p-6 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'} shadow-xl`}>
+                  <h3 className="text-xl font-semibold mb-4">Engagement by Class</h3>
+                  <div className="space-y-4">
+                    {(analytics?.classes || []).map((row) => (
+                      <div key={row.class_id}>
+                        <div className="flex items-center justify-between text-sm mb-2">
+                          <span>{row.class_name}</span>
+                          <span className="text-gray-500 dark:text-gray-400">{row.average_engagement}%</span>
+                        </div>
+                        <div className="h-2 rounded-full bg-gray-200 dark:bg-gray-700">
+                          <div
+                            className="h-2 rounded-full bg-blue-500"
+                            style={{ width: `${row.average_engagement}%` }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                    {(!analytics || (analytics?.classes || []).length === 0) && (
+                      <div className="text-sm text-gray-500 dark:text-gray-400">No class data yet.</div>
+                    )}
+                  </div>
+                </div>
+
+                <div className={`p-6 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'} shadow-xl`}>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-xl font-semibold">Class Reports</h3>
+                    <span className="text-sm text-gray-500 dark:text-gray-400">
+                      {analytics?.classes?.length || 0} classes
+                    </span>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                      <thead className="bg-gray-50 dark:bg-gray-700/40">
+                        <tr>
+                          <th className="px-4 py-3 text-left text-xs font-medium uppercase">Class</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium uppercase">Students</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium uppercase">Assignments</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium uppercase">Submissions</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium uppercase">On Time</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium uppercase">Missing</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
+                        {(analytics?.classes || []).map((row) => (
+                          <tr key={row.class_id} className="hover:bg-gray-50 dark:hover:bg-gray-700/40">
+                            <td className="px-4 py-3 font-medium">{row.class_name}</td>
+                            <td className="px-4 py-3">{row.students}</td>
+                            <td className="px-4 py-3">{row.assignments}</td>
+                            <td className="px-4 py-3">{row.submissions}</td>
+                            <td className="px-4 py-3">{row.on_time}</td>
+                            <td className="px-4 py-3">{row.missing}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {(!analytics || (analytics?.classes || []).length === 0) && (
+                      <div className="text-sm text-gray-500 dark:text-gray-400 py-6 text-center">
+                        No analytics yet. Create assignments to start tracking submissions.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </motion.div>
+            )}
           </motion.div>
         </motion.div>
       </div>
@@ -816,6 +983,9 @@ const TeacherDashboard = () => {
           </motion.div>
         )}
       </AnimatePresence>
+      <div className="ml-64">
+        <Footer darkMode={darkMode} />
+      </div>
     </div>
   );
 };

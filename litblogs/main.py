@@ -1,5 +1,8 @@
 # main.py
+# To run locally run:
+# uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
+from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -37,7 +40,12 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    reset_database()
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 # Fix CORS middleware setup
 app.add_middleware(
@@ -59,6 +67,23 @@ pwd_context = CryptContext(
     deprecated="auto",
     bcrypt__rounds=12
 )
+
+def _is_admin_role(role) -> bool:
+    if role is None:
+        return False
+    if isinstance(role, models.UserRole):
+        return role == models.UserRole.ADMIN
+    if hasattr(role, "value"):
+        return str(role.value).upper() == "ADMIN"
+    return str(role).upper() == "ADMIN"
+
+def _sync_admin_flag(db: Session, user: models.User) -> models.User:
+    should_be_admin = _is_admin_role(user.role)
+    if user.is_admin != should_be_admin:
+        user.is_admin = should_be_admin
+        db.commit()
+        db.refresh(user)
+    return user
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
@@ -320,6 +345,7 @@ async def google_signup(token_data: dict, db: Session = Depends(get_db)):
         # Check if user already exists
         user = db.query(models.User).filter(models.User.email == idinfo['email']).first()
         if user:
+            user = _sync_admin_flag(db, user)
             # Generate token for existing user
             access_token = create_access_token(data={"sub": str(user.id)})
             return {
@@ -346,7 +372,8 @@ async def google_signup(token_data: dict, db: Session = Depends(get_db)):
             first_name=idinfo.get('given_name', ''),
             last_name=idinfo.get('family_name', ''),
             password=get_password_hash(secrets.token_urlsafe(32)),
-            role=user_role  # Use the selected role
+            role=user_role,  # Use the selected role
+            is_admin=_is_admin_role(user_role)
         )
         
         db.add(new_user)
@@ -495,6 +522,8 @@ async def microsoft_login(microsoft_data: dict, db: Session = Depends(get_db)):
                 detail="User not found. Please sign up and choose a role first."
             )
         
+        user = _sync_admin_flag(db, user)
+
         # Generate token
         access_token = create_access_token(data={"sub": str(user.id)})
         
@@ -709,7 +738,7 @@ async def microsoft_signup(microsoft_data: dict, db: Session = Depends(get_db)):
                 "last_name": existing_user.last_name,
                 "role": existing_user.role,
                 "token": access_token,
-                "is_admin": existing_user.is_admin,
+                "is_admin": _sync_admin_flag(db, existing_user).is_admin,
                 "created_at": existing_user.created_at
             }
         
@@ -727,7 +756,8 @@ async def microsoft_signup(microsoft_data: dict, db: Session = Depends(get_db)):
             password=hashed_password,
             first_name=first_name,
             last_name=last_name,
-            role=role
+            role=role,
+            is_admin=_is_admin_role(role)
             # Do NOT include microsoft_id or access_code here
         )
         
@@ -759,7 +789,7 @@ async def microsoft_signup(microsoft_data: dict, db: Session = Depends(get_db)):
             detail=f"Failed to process Microsoft sign-up: {str(e)}"
         )
 
-@app.get("/api/user/{user_id}")
+@app.get("/api/user/id/{user_id}")
 async def get_user_info(
     user_id: int,
     db: Session = Depends(get_db),
@@ -838,6 +868,7 @@ async def update_role(
 ):
     user = db.query(models.User).filter(models.User.id == current_user.id).first()
     user.role = role_data["role"]
+    user.is_admin = _is_admin_role(role_data["role"])
     
     if role_data["role"] == models.UserRole.STUDENT and "classCode" in role_data:
         class_ = db.query(models.Class).filter(models.Class.access_code == role_data["classCode"]).first()
@@ -855,39 +886,7 @@ async def get_class_details(
     current_user: models.User = Depends(get_current_user)
 ):
     """Get detailed information about a class"""
-    # Get the class
-    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
-    if not db_class:
-        raise HTTPException(status_code=404, detail="Class not found")
-    
-    # Check if the user is authorized to view this class
-    # Teachers can view their own classes
-    # Students can view classes they're enrolled in
-    is_authorized = False
-    
-    if current_user.role == models.UserRole.TEACHER:
-        # For teachers, check if they own the class
-        is_authorized = db_class.teacher_id == current_user.id
-    elif current_user.role == models.UserRole.STUDENT:
-        # For students, check if they're enrolled
-        enrollment = db.query(models.ClassEnrollment).filter(
-            models.ClassEnrollment.student_id == current_user.id,
-            models.ClassEnrollment.class_id == class_id
-        ).first()
-        is_authorized = enrollment is not None
-    elif current_user.role == models.UserRole.ADMIN:
-        # Admins can view all classes
-        is_authorized = True
-    
-    if not is_authorized:
-        # Add debug information
-        print(f"User {current_user.id} with role {current_user.role} tried to access class {class_id}")
-        print(f"Class teacher_id: {db_class.teacher_id}, User id: {current_user.id}")
-        
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not authorized to view this class"
-        )
+    db_class = _ensure_class_access(db, current_user, class_id)
     
     # Get enrollment count
     enrollment_count = db.query(models.ClassEnrollment).filter(
@@ -910,6 +909,7 @@ async def get_class_details(
         "post_count": post_count,
         "status": db_class.status
     }
+
 
 # Add these new models to handle rich content
 class PostContent(BaseModel):
@@ -1042,14 +1042,7 @@ async def get_class_posts(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    # Check if user has access to this class
-    if current_user.role == models.UserRole.STUDENT:
-        enrollment = db.query(models.ClassEnrollment).filter(
-            models.ClassEnrollment.student_id == current_user.id,
-            models.ClassEnrollment.class_id == class_id
-        ).first()
-        if not enrollment:
-            raise HTTPException(status_code=403, detail="Not enrolled in this class")
+    db_class = _ensure_class_access(db, current_user, class_id)
     
     # Get posts with author information
     posts = db.query(models.Blog).filter(
@@ -1095,10 +1088,14 @@ async def get_classes(
     
     # For teachers, only return their classes
     if current_user.role == models.UserRole.TEACHER:
-        classes = db.query(models.Class).filter(
-            models.Class.teacher_id == current_user.id,
-            models.Class.status == status
-        ).all()
+        teacher = _get_teacher_record(db, current_user)
+        if not teacher:
+            classes = []
+        else:
+            classes = db.query(models.Class).filter(
+                models.Class.teacher_id == teacher.id,
+                models.Class.status == status
+            ).all()
     else:  # For admins, return all classes
         classes = db.query(models.Class).filter(
             models.Class.status == status
@@ -1217,9 +1214,13 @@ async def get_teacher_dashboard(
     
     try:
         # Get classes taught by this teacher
-        classes = db.query(models.Class).filter(
-            models.Class.teacher_id == current_user.id
-        ).all()
+        teacher = _get_teacher_record(db, current_user)
+        if not teacher:
+            classes = []
+        else:
+            classes = db.query(models.Class).filter(
+                models.Class.teacher_id == teacher.id
+            ).all()
         
         classes_data = []
         for class_ in classes:
@@ -1336,6 +1337,388 @@ async def create_class(
             detail=f"Failed to create class: {str(e)}"
         )
 
+@app.post("/api/classes/{class_id}/assignments")
+async def create_assignment(
+    class_id: int,
+    assignment: schemas.AssignmentCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    if current_user.role not in [models.UserRole.TEACHER, models.UserRole.ADMIN]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    db_class = _get_class_or_404(db, class_id)
+    if current_user.role == models.UserRole.TEACHER:
+        teacher = _get_teacher_record(db, current_user)
+        if not teacher or db_class.teacher_id != teacher.id:
+            raise HTTPException(status_code=403, detail="Not authorized")
+
+    visibility = assignment.visibility or "class"
+    if visibility not in ["class", "private"]:
+        raise HTTPException(status_code=400, detail="Invalid assignment visibility")
+
+    new_assignment = models.Assignment(
+        class_id=class_id,
+        title=assignment.title,
+        description=assignment.description,
+        due_date=assignment.due_date,
+        created_by=current_user.id,
+        allow_late=assignment.allow_late if assignment.allow_late is not None else True,
+        visibility=visibility
+    )
+    db.add(new_assignment)
+    db.commit()
+    db.refresh(new_assignment)
+
+    return {
+        "id": new_assignment.id,
+        "class_id": new_assignment.class_id,
+        "title": new_assignment.title,
+        "description": new_assignment.description,
+        "due_date": new_assignment.due_date,
+        "created_at": new_assignment.created_at,
+        "created_by": new_assignment.created_by,
+        "allow_late": new_assignment.allow_late,
+        "visibility": new_assignment.visibility
+    }
+
+@app.get("/api/classes/{class_id}/assignments")
+async def list_assignments(
+    class_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    db_class = _ensure_class_access(db, current_user, class_id)
+    assignments = db.query(models.Assignment).filter(
+        models.Assignment.class_id == class_id
+    ).order_by(models.Assignment.due_date.asc()).all()
+
+    total_students = _get_class_student_count(db, class_id)
+    response = []
+
+    for assignment in assignments:
+        stats = _get_assignment_stats(db, assignment, total_students)
+        submission = None
+        if current_user.role == models.UserRole.STUDENT:
+            submission = db.query(models.AssignmentSubmission).filter(
+                models.AssignmentSubmission.assignment_id == assignment.id,
+                models.AssignmentSubmission.student_id == current_user.id
+            ).first()
+
+        response.append({
+            "id": assignment.id,
+            "class_id": assignment.class_id,
+            "title": assignment.title,
+            "description": assignment.description,
+            "due_date": assignment.due_date,
+            "created_at": assignment.created_at,
+            "created_by": assignment.created_by,
+            "allow_late": assignment.allow_late,
+            "visibility": assignment.visibility,
+            "stats": stats,
+            "my_submission": {
+                "id": submission.id,
+                "submitted_at": submission.submitted_at,
+                "is_late": submission.is_late,
+                "content": submission.content
+            } if submission else None
+        })
+
+    return response
+
+@app.post("/api/assignments/{assignment_id}/submit")
+async def submit_assignment(
+    assignment_id: int,
+    submission: schemas.AssignmentSubmissionCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    if current_user.role != models.UserRole.STUDENT:
+        raise HTTPException(status_code=403, detail="Only students can submit assignments")
+
+    assignment = db.query(models.Assignment).filter(models.Assignment.id == assignment_id).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    _ensure_class_access(db, current_user, assignment.class_id)
+
+    submitted_at = datetime.utcnow()
+    is_late = assignment.due_date is not None and submitted_at > assignment.due_date
+    if is_late and not assignment.allow_late:
+        raise HTTPException(status_code=400, detail="Late submissions are not allowed")
+
+    existing = db.query(models.AssignmentSubmission).filter(
+        models.AssignmentSubmission.assignment_id == assignment_id,
+        models.AssignmentSubmission.student_id == current_user.id
+    ).first()
+
+    if existing:
+        existing.content = submission.content
+        existing.submitted_at = submitted_at
+        existing.is_late = is_late
+        db.commit()
+        db.refresh(existing)
+        return {
+            "id": existing.id,
+            "assignment_id": existing.assignment_id,
+            "student_id": existing.student_id,
+            "submitted_at": existing.submitted_at,
+            "content": existing.content,
+            "is_late": existing.is_late
+        }
+
+    new_submission = models.AssignmentSubmission(
+        assignment_id=assignment_id,
+        student_id=current_user.id,
+        submitted_at=submitted_at,
+        content=submission.content,
+        is_late=is_late
+    )
+    db.add(new_submission)
+    db.commit()
+    db.refresh(new_submission)
+    return {
+        "id": new_submission.id,
+        "assignment_id": new_submission.assignment_id,
+        "student_id": new_submission.student_id,
+        "submitted_at": new_submission.submitted_at,
+        "content": new_submission.content,
+        "is_late": new_submission.is_late
+    }
+
+@app.get("/api/classes/{class_id}/assignments/{assignment_id}/submissions")
+async def list_assignment_submissions(
+    class_id: int,
+    assignment_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    db_class = _get_class_or_404(db, class_id)
+    assignment = db.query(models.Assignment).filter(models.Assignment.id == assignment_id).first()
+    if not assignment or assignment.class_id != class_id:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    if current_user.role == models.UserRole.ADMIN:
+        pass
+    elif current_user.role == models.UserRole.TEACHER:
+        teacher = _get_teacher_record(db, current_user)
+        if not teacher or db_class.teacher_id != teacher.id:
+            raise HTTPException(status_code=403, detail="Not authorized")
+    elif current_user.role == models.UserRole.STUDENT:
+        _ensure_class_access(db, current_user, class_id)
+        if assignment.visibility != "class":
+            raise HTTPException(status_code=403, detail="Not authorized")
+    else:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    submissions = db.query(models.AssignmentSubmission).filter(
+        models.AssignmentSubmission.assignment_id == assignment_id
+    ).all()
+
+    results = []
+    for submission in submissions:
+        student = db.query(models.User).filter(models.User.id == submission.student_id).first()
+        results.append({
+            "id": submission.id,
+            "assignment_id": submission.assignment_id,
+            "student_id": submission.student_id,
+            "submitted_at": submission.submitted_at,
+            "content": submission.content,
+            "is_late": submission.is_late,
+            "student": {
+                "id": student.id,
+                "first_name": student.first_name,
+                "last_name": student.last_name,
+                "email": student.email,
+                "username": student.username
+            } if student else None
+        })
+
+    return results
+
+@app.get("/api/classes/{class_id}/analytics")
+async def get_class_analytics(
+    class_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    db_class = _ensure_class_access(db, current_user, class_id)
+
+    if current_user.role == models.UserRole.STUDENT:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    total_students = _get_class_student_count(db, class_id)
+    total_posts = db.query(models.Blog).filter(models.Blog.class_id == class_id).count()
+    last_week = datetime.utcnow() - timedelta(days=7)
+    posts_last_week = db.query(models.Blog).filter(
+        models.Blog.class_id == class_id,
+        models.Blog.created_at >= last_week
+    ).count()
+    start_of_day = datetime.combine(datetime.utcnow().date(), datetime.min.time())
+    active_today = db.query(models.Blog.owner_id).filter(
+        models.Blog.class_id == class_id,
+        models.Blog.created_at >= start_of_day
+    ).distinct().count()
+
+    assignments = db.query(models.Assignment).filter(models.Assignment.class_id == class_id).all()
+    assignments_total = len(assignments)
+    submissions_total = 0
+    on_time_total = 0
+    late_total = 0
+    missing_total = 0
+    assignment_stats = []
+
+    for assignment in assignments:
+        stats = _get_assignment_stats(db, assignment, total_students)
+        submissions_total += stats["submitted"]
+        on_time_total += stats["on_time"]
+        late_total += stats["late"]
+        missing_total += stats["missing"]
+        assignment_stats.append({
+            "id": assignment.id,
+            "title": assignment.title,
+            "due_date": assignment.due_date,
+            **stats
+        })
+
+    if assignments_total > 0 and total_students > 0:
+        engagement_rate = min(
+            100,
+            round((submissions_total / (assignments_total * total_students)) * 100)
+        )
+    elif total_students > 0:
+        engagement_rate = min(100, round((posts_last_week / total_students) * 100))
+    else:
+        engagement_rate = 0
+
+    post_trend = _get_post_counts_last_days(db, class_id, days=7)
+
+    return {
+        "class_id": class_id,
+        "class_name": db_class.name,
+        "total_students": total_students,
+        "total_posts": total_posts,
+        "posts_last_week": posts_last_week,
+        "active_today": active_today,
+        "average_engagement": engagement_rate,
+        "assignments_total": assignments_total,
+        "submissions_total": submissions_total,
+        "on_time_total": on_time_total,
+        "late_total": late_total,
+        "missing_total": missing_total,
+        "assignment_stats": assignment_stats,
+        "posts_last_7_days": post_trend
+    }
+
+@app.get("/api/teacher/analytics")
+async def get_teacher_analytics(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    if current_user.role != models.UserRole.TEACHER:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    teacher = _get_teacher_record(db, current_user)
+    if not teacher:
+        return {
+            "classes": [],
+            "totals": {
+                "classes": 0,
+                "students": 0,
+                "posts": 0,
+                "assignments": 0,
+                "submissions": 0,
+                "on_time": 0,
+                "late": 0,
+                "missing": 0
+            }
+        }
+
+    classes = db.query(models.Class).filter(models.Class.teacher_id == teacher.id).all()
+    class_reports = []
+
+    totals = {
+        "classes": len(classes),
+        "students": 0,
+        "posts": 0,
+        "assignments": 0,
+        "submissions": 0,
+        "on_time": 0,
+        "late": 0,
+        "missing": 0,
+        "active_today": 0,
+        "average_engagement": 0
+    }
+
+    engagement_sum = 0
+
+    for class_ in classes:
+        total_students = _get_class_student_count(db, class_.id)
+        total_posts = db.query(models.Blog).filter(models.Blog.class_id == class_.id).count()
+        assignments = db.query(models.Assignment).filter(models.Assignment.class_id == class_.id).all()
+        start_of_day = datetime.combine(datetime.utcnow().date(), datetime.min.time())
+        active_today = db.query(models.Blog.owner_id).filter(
+            models.Blog.class_id == class_.id,
+            models.Blog.created_at >= start_of_day
+        ).distinct().count()
+        submissions_total = 0
+        on_time_total = 0
+        late_total = 0
+        missing_total = 0
+
+        for assignment in assignments:
+            stats = _get_assignment_stats(db, assignment, total_students)
+            submissions_total += stats["submitted"]
+            on_time_total += stats["on_time"]
+            late_total += stats["late"]
+            missing_total += stats["missing"]
+
+        if len(assignments) > 0 and total_students > 0:
+            class_engagement = min(
+                100,
+                round((submissions_total / (len(assignments) * total_students)) * 100)
+            )
+        elif total_students > 0:
+            class_engagement = min(
+                100,
+                round((db.query(models.Blog).filter(
+                    models.Blog.class_id == class_.id,
+                    models.Blog.created_at >= datetime.utcnow() - timedelta(days=7)
+                ).count() / total_students) * 100)
+            )
+        else:
+            class_engagement = 0
+
+        class_reports.append({
+            "class_id": class_.id,
+            "class_name": class_.name,
+            "students": total_students,
+            "posts": total_posts,
+            "assignments": len(assignments),
+            "submissions": submissions_total,
+            "on_time": on_time_total,
+            "late": late_total,
+            "missing": missing_total,
+            "active_today": active_today,
+            "average_engagement": class_engagement
+        })
+
+        totals["students"] += total_students
+        totals["posts"] += total_posts
+        totals["assignments"] += len(assignments)
+        totals["submissions"] += submissions_total
+        totals["on_time"] += on_time_total
+        totals["late"] += late_total
+        totals["missing"] += missing_total
+        totals["active_today"] += active_today
+        engagement_sum += class_engagement
+
+    totals["average_engagement"] = round(engagement_sum / totals["classes"], 0) if totals["classes"] else 0
+
+    return {
+        "classes": class_reports,
+        "totals": totals
+    }
+
 @app.get("/api/classes/{class_id}/posts/{post_id}")
 async def get_class_post(
     class_id: int,
@@ -1442,10 +1825,7 @@ async def delete_class_post(
     
     return {"message": "Post deleted successfully"}
 
-# Add this before your app starts
-#@app.on_event("startup")
-#async def startup_event():
-#    reset_database()
+
 
 def generate_unique_code(db: Session, length: int = 6) -> str:
     while True:
@@ -1587,10 +1967,33 @@ async def update_profile(
             user.first_name = profile_data["first_name"]
         if "last_name" in profile_data:
             user.last_name = profile_data["last_name"]
+
+        # Update avatar settings if provided
+        if "avatar_id" in profile_data:
+            user.avatar_id = profile_data["avatar_id"]
+        if "avatar_color" in profile_data:
+            user.avatar_color = profile_data["avatar_color"]
             
         db.commit()
+        db.refresh(user)
         
-        return {"message": "Profile updated successfully"}
+        return {
+            "message": "Profile updated successfully",
+            "profile": {
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "bio": user.bio,
+                "role": user.role.value if hasattr(user.role, "value") else user.role,
+                "profile_image": user.profile_image,
+                "cover_image": user.cover_image,
+                "avatar_id": user.avatar_id,
+                "avatar_color": user.avatar_color,
+                "created_at": user.created_at
+            }
+        }
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to update profile: {str(e)}")
@@ -1657,8 +2060,115 @@ async def upload_cover_image(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to upload image: {str(e)}")
 
+def _get_user_class_ids(db: Session, user: models.User) -> List[int]:
+    if user.role == models.UserRole.STUDENT:
+        return [
+            enrollment.class_id
+            for enrollment in db.query(models.ClassEnrollment)
+            .filter(models.ClassEnrollment.student_id == user.id)
+            .all()
+        ]
+
+    if user.role == models.UserRole.TEACHER:
+        teacher = _get_teacher_record(db, user)
+        if not teacher:
+            return []
+        return [
+            class_.id
+            for class_ in db.query(models.Class)
+            .filter(models.Class.teacher_id == teacher.id)
+            .all()
+        ]
+
+    return []
+
+def _get_teacher_record(db: Session, user: models.User) -> models.Teacher | None:
+    if user.role != models.UserRole.TEACHER:
+        return None
+    teacher = db.query(models.Teacher).filter(models.Teacher.user_id == user.id).first()
+    if not teacher and user.email:
+        teacher = db.query(models.Teacher).filter(models.Teacher.email == user.email).first()
+    return teacher
+
+def _get_class_or_404(db: Session, class_id: int) -> models.Class:
+    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
+    if not db_class:
+        raise HTTPException(status_code=404, detail="Class not found")
+    return db_class
+
+def _ensure_class_access(db: Session, current_user: models.User, class_id: int) -> models.Class:
+    db_class = _get_class_or_404(db, class_id)
+
+    if current_user.role == models.UserRole.ADMIN:
+        return db_class
+
+    if current_user.role == models.UserRole.TEACHER:
+        teacher = _get_teacher_record(db, current_user)
+        if teacher and db_class.teacher_id == teacher.id:
+            return db_class
+        raise HTTPException(status_code=403, detail="Not authorized to access this class")
+
+    # Student
+    enrollment = db.query(models.ClassEnrollment).filter(
+        models.ClassEnrollment.student_id == current_user.id,
+        models.ClassEnrollment.class_id == class_id
+    ).first()
+    if not enrollment:
+        raise HTTPException(status_code=403, detail="Not enrolled in this class")
+
+    return db_class
+
+def _get_class_student_count(db: Session, class_id: int) -> int:
+    return db.query(models.ClassEnrollment).filter(
+        models.ClassEnrollment.class_id == class_id
+    ).count()
+
+def _get_assignment_stats(db: Session, assignment: models.Assignment, total_students: int) -> dict:
+    submissions = db.query(models.AssignmentSubmission).filter(
+        models.AssignmentSubmission.assignment_id == assignment.id
+    ).all()
+
+    on_time = 0
+    late = 0
+    for submission in submissions:
+        if assignment.due_date and submission.submitted_at and submission.submitted_at <= assignment.due_date:
+            on_time += 1
+        else:
+            late += 1
+
+    submitted = len(submissions)
+    missing = max(total_students - submitted, 0)
+
+    return {
+        "submitted": submitted,
+        "on_time": on_time,
+        "late": late,
+        "missing": missing
+    }
+
+def _get_post_counts_last_days(db: Session, class_id: int, days: int = 7) -> list[dict]:
+    today = datetime.utcnow().date()
+    results = []
+    for offset in range(days - 1, -1, -1):
+        day = today - timedelta(days=offset)
+        start = datetime.combine(day, datetime.min.time())
+        end = start + timedelta(days=1)
+        count = db.query(models.Blog).filter(
+            models.Blog.class_id == class_id,
+            models.Blog.created_at >= start,
+            models.Blog.created_at < end
+        ).count()
+        results.append({
+            "date": day.isoformat(),
+            "count": count
+        })
+    return results
+
 @app.get("/api/user/profile")
-async def get_user_profile(current_user: models.User = Depends(get_current_user)):
+async def get_user_profile(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
     """Get user profile information"""
     try:
         return {
@@ -1668,13 +2178,101 @@ async def get_user_profile(current_user: models.User = Depends(get_current_user)
             "first_name": current_user.first_name,
             "last_name": current_user.last_name,
             "bio": current_user.bio,
-            "role": current_user.role,
+            "role": current_user.role.value if hasattr(current_user.role, "value") else current_user.role,
             "profile_image": current_user.profile_image,
             "cover_image": current_user.cover_image,
+            "avatar_id": current_user.avatar_id,
+            "avatar_color": current_user.avatar_color,
+            "class_ids": _get_user_class_ids(db, current_user),
             "created_at": current_user.created_at
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch profile: {str(e)}")
+
+@app.get("/api/user/profile/{user_id}")
+async def get_public_user_profile(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Get another user's profile if there is a shared class"""
+    target_user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if current_user.id != target_user.id and not current_user.is_admin:
+        viewer_classes = set(_get_user_class_ids(db, current_user))
+        target_classes = set(_get_user_class_ids(db, target_user))
+        if viewer_classes.isdisjoint(target_classes):
+            raise HTTPException(status_code=403, detail="Not authorized to view this profile")
+
+    return {
+        "id": target_user.id,
+        "username": target_user.username,
+        "email": target_user.email,
+        "first_name": target_user.first_name,
+        "last_name": target_user.last_name,
+        "bio": target_user.bio,
+        "role": target_user.role.value if hasattr(target_user.role, "value") else target_user.role,
+        "profile_image": target_user.profile_image,
+        "cover_image": target_user.cover_image,
+        "avatar_id": target_user.avatar_id,
+        "avatar_color": target_user.avatar_color,
+        "class_ids": _get_user_class_ids(db, target_user),
+        "created_at": target_user.created_at
+    }
+
+@app.get("/api/user/posts")
+async def get_current_user_posts(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Get posts for the current user"""
+    posts = db.query(models.Blog).filter(models.Blog.owner_id == current_user.id).all()
+
+    posts_with_class = []
+    for post in posts:
+        class_ = db.query(models.Class).filter(models.Class.id == post.class_id).first()
+        posts_with_class.append({
+            **post.__dict__,
+            "class_name": class_.name if class_ else "Unknown Class"
+        })
+
+    return posts_with_class
+
+@app.get("/api/user/{user_id}/posts")
+async def get_user_posts(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Get another user's posts restricted to shared classes"""
+    target_user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if current_user.id != target_user.id and not current_user.is_admin:
+        viewer_classes = set(_get_user_class_ids(db, current_user))
+        target_classes = set(_get_user_class_ids(db, target_user))
+        shared_classes = viewer_classes.intersection(target_classes)
+        if not shared_classes:
+            return []
+        posts = db.query(models.Blog).filter(
+            models.Blog.owner_id == target_user.id,
+            models.Blog.class_id.in_(shared_classes)
+        ).all()
+    else:
+        posts = db.query(models.Blog).filter(models.Blog.owner_id == target_user.id).all()
+
+    posts_with_class = []
+    for post in posts:
+        class_ = db.query(models.Class).filter(models.Class.id == post.class_id).first()
+        posts_with_class.append({
+            **post.__dict__,
+            "class_name": class_.name if class_ else "Unknown Class"
+        })
+
+    return posts_with_class
 
 @app.post("/api/classes/{class_id}/posts/{post_id}/like")
 async def like_post(
@@ -2040,7 +2638,8 @@ async def get_class_students(
     if current_user.role == models.UserRole.TEACHER:
         # Teachers can access classes they created
         class_details = db.query(models.Class).filter(models.Class.id == class_id).first()
-        if not class_details or class_details.teacher_id != current_user.id:
+        teacher = _get_teacher_record(db, current_user)
+        if not class_details or not teacher or class_details.teacher_id != teacher.id:
             raise HTTPException(status_code=403, detail="Not authorized to access this class")
     elif current_user.role == models.UserRole.STUDENT:
         # Students can access classes they're enrolled in
@@ -2198,7 +2797,8 @@ async def archive_class(
         raise HTTPException(status_code=404, detail="Class not found")
     
     # Check if the user is the teacher of this class
-    if db_class.teacher_id != current_user.id:
+    teacher = _get_teacher_record(db, current_user)
+    if not teacher or db_class.teacher_id != teacher.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only archive your own classes"
@@ -2229,7 +2829,8 @@ async def restore_class(
         raise HTTPException(status_code=404, detail="Class not found")
     
     # Check if the user is the teacher of this class
-    if db_class.teacher_id != current_user.id:
+    teacher = _get_teacher_record(db, current_user)
+    if not teacher or db_class.teacher_id != teacher.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only restore your own classes"
@@ -2260,7 +2861,8 @@ async def delete_class(
         raise HTTPException(status_code=404, detail="Class not found")
     
     # Check if the user is the teacher of this class
-    if db_class.teacher_id != current_user.id:
+    teacher = _get_teacher_record(db, current_user)
+    if not teacher or db_class.teacher_id != teacher.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only delete your own classes"
@@ -2293,7 +2895,8 @@ async def get_student_details(
         raise HTTPException(status_code=404, detail="Class not found")
     
     # Check if the user is the teacher of this class
-    if db_class.teacher_id != current_user.id:
+    teacher = _get_teacher_record(db, current_user)
+    if not teacher or db_class.teacher_id != teacher.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only view students in your own classes"
@@ -2400,7 +3003,8 @@ async def get_student_posts(
         raise HTTPException(status_code=404, detail="Class not found")
     
     # Check if the user is the teacher of this class
-    if db_class.teacher_id != current_user.id:
+    teacher = _get_teacher_record(db, current_user)
+    if not teacher or db_class.teacher_id != teacher.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only view students in your own classes"
@@ -2492,17 +3096,20 @@ class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
 
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://127.0.0.1:5500/")
+FRONTEND_URL = os.getenv("FRONTEND_URL")
 EMAIL_HOST = os.getenv("EMAIL_HOST")
 EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
 EMAIL_USERNAME = os.getenv("EMAIL_USERNAME")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 EMAIL_FROM = os.getenv("EMAIL_FROM")
 
+
 def send_password_reset_email(email: str, token: str):
     """Send password reset email with reset link"""
-    
     reset_url = f"{FRONTEND_URL}/reset-password?token={token}"
+    if not all([EMAIL_HOST, EMAIL_USERNAME, EMAIL_PASSWORD, EMAIL_FROM]):
+        print("Email configuration missing. Skipping password reset email.")
+        return False
     
     message = MIMEMultipart("alternative")
     message["Subject"] = "Reset Your LitBlog Password"
@@ -2511,19 +3118,34 @@ def send_password_reset_email(email: str, token: str):
     
     # Create HTML version of the message
     html = f"""
-    <html>
-      <head></head>
-      <body>
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2>Reset Your Password</h2>
-          <p>We received a request to reset your password. Click the button below to set a new password:</p>
-          <a href="{reset_url}" style="display: inline-block; background-color: #4F46E5; color: white; text-decoration: none; padding: 10px 20px; border-radius: 5px; margin: 20px 0;">Reset Password</a>
-          <p>If you didn't request a password reset, you can safely ignore this email.</p>
-          <p>This link will expire in 1 hour.</p>
-        </div>
-      </body>
-    </html>
-    """
+        <html>
+            <head></head>
+            <body style="margin:0; padding:0; background-color:#f3f4f6;">
+                <div style="max-width:640px; margin:0 auto; padding:32px 16px;">
+                    <div style="background-color:#ffffff; border-radius:16px; padding:32px; font-family: Arial, sans-serif; color:#111827; box-shadow:0 10px 30px rgba(0,0,0,0.08);">
+                        <div style="text-align:center; margin-bottom:24px;">
+                            <h1 style="margin:0; font-size:24px; font-weight:700;">Reset your LitBlog password</h1>
+                            <p style="margin:8px 0 0; color:#6b7280; font-size:14px;">We received a request to reset your password.</p>
+                        </div>
+                        <p style="font-size:16px; line-height:1.6; margin:0 0 24px;">
+                            Click the button below to set a new password. This link will expire in <strong>1 hour</strong>.
+                        </p>
+                        <div style="text-align:center; margin:24px 0;">
+                            <a href="{reset_url}" style="display:inline-block; background-color:#4F46E5; color:#ffffff; text-decoration:none; padding:12px 24px; border-radius:999px; font-weight:600;">Reset Password</a>
+                        </div>
+                        <p style="font-size:14px; color:#6b7280; line-height:1.6; margin:0 0 16px;">
+                            If you didn't request a password reset, you can safely ignore this email.
+                        </p>
+                        <div style="background-color:#f9fafb; border-radius:12px; padding:16px; font-size:12px; color:#6b7280;">
+                            Having trouble with the button? Copy and paste this link into your browser:<br />
+                            <span style="word-break:break-all; color:#4F46E5;">{reset_url}</span>
+                        </div>
+                    </div>
+                    <p style="text-align:center; color:#9ca3af; font-size:12px; margin-top:16px;">© {datetime.utcnow().year} LitBlog</p>
+                </div>
+            </body>
+        </html>
+        """
     
     # Attach HTML part
     part = MIMEText(html, "html")
@@ -2577,7 +3199,7 @@ async def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(
 async def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db)):
     """Reset a password using a valid token"""
 
-    token = request.get("token")
+    token = request.token
     if not token:
         raise HTTPException(status_code=400, detail="Token is required")
     

@@ -1,45 +1,16 @@
 import { useState, useEffect, useRef } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import Navbar from './components/Navbar';
+import Footer from './components/Footer';
 import './LitBlogs.css'; // Import your styles
 import FAQ from './components/FAQ';
-
 const Help = () => {
   const [darkMode, setDarkMode] = useState(false);
-
-  // Toggle dark mode
-  const toggleDarkMode = () => {
-    setDarkMode((prevDarkMode) => {
-      const newDarkMode = !prevDarkMode;
-      localStorage.setItem('darkMode', JSON.stringify(newDarkMode));
-      return newDarkMode;
-    });
-  };
-
-  // Load dark mode preference from localStorage
-  useEffect(() => {
-    const storedDarkMode = JSON.parse(localStorage.getItem('darkMode'));
-    if (storedDarkMode !== null) {
-      setDarkMode(storedDarkMode);
-    } else {
-      const systemPrefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-      setDarkMode(systemPrefersDark);
-    }
-  }, []);
-
-  // Apply the dark mode class to the document when darkMode state changes
-  useEffect(() => {
-    if (darkMode) {
-      document.documentElement.classList.add("dark");
-    } else {
-      document.documentElement.classList.remove("dark");
-    }
-  }, [darkMode]);
-
+  const [email, setEmail] = useState("");
   const [isPlaying, setIsPlaying] = useState(false);
-  const [progress, setProgress] = useState(0);
   const [volume, setVolume] = useState(1);
+  const [progress, setProgress] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
@@ -51,6 +22,32 @@ const Help = () => {
   const videoRef = useRef(null);
   const playerRef = useRef(null);
   const speedOptionsRef = useRef(null);
+
+  const toggleDarkMode = () => {
+    setDarkMode((prevDarkMode) => {
+      const newDarkMode = !prevDarkMode;
+      localStorage.setItem('darkMode', JSON.stringify(newDarkMode));
+      return newDarkMode;
+    });
+  };
+
+  useEffect(() => {
+    const storedDarkMode = JSON.parse(localStorage.getItem('darkMode'));
+    if (storedDarkMode !== null) {
+      setDarkMode(storedDarkMode);
+    } else {
+      const systemPrefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      setDarkMode(systemPrefersDark);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (darkMode) {
+      document.documentElement.classList.add("dark");
+    } else {
+      document.documentElement.classList.remove("dark");
+    }
+  }, [darkMode]);
 
   // Format time in MM:SS
   const formatTime = (timeInSeconds) => {
@@ -450,38 +447,7 @@ const Help = () => {
           </div>
         </form>
       </div>
-      {/* Footer */}
-      <footer className={`mt-12 transition-all duration-300 ${darkMode ? 'bg-gray-900 text-gray-300' : 'bg-gradient-to-r from-gray-100 to-gray-100 text-gray-900'}`}>
-        <div className="container mx-auto px-4 py-12">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-8 text-center md:text-left">
-            {/* LitBlog Info */}
-            <div>
-              <h3 className="text-lg font-semibold mb-4">LitBlog</h3>
-              <p className="text-gray-400">Connecting writers and readers worldwide</p>
-            </div>
-            {/* Resources */}
-            <div>
-              <h3 className="text-lg font-semibold mb-4">Resources</h3>
-              <ul className="space-y-2 text-gray-400">
-                <li><a href="#" className="hover:text-blue-400">Blog</a></li>
-                <li><a href="#" className="hover:text-blue-400">Guides</a></li>
-                <li><a href="#" className="hover:text-blue-400">Tutorials</a></li>
-              </ul>
-            </div>
-            {/* Company */}
-            <div>
-              <h3 className="text-lg font-semibold mb-4">Company</h3>
-              <ul className="space-y-2 text-gray-400">
-                <li><a href="#" className="hover:text-blue-400">About</a></li>
-              </ul>
-            </div>
-          </div>
-          {/* Copyright */}
-          <div className="border-t border-gray-800 mt-8 pt-6 text-center text-gray-400">
-            &copy; 2025 LitBlogs. All rights reserved.
-          </div>
-        </div>
-      </footer>
+      <Footer darkMode={darkMode} />
     </div>
   );
 };

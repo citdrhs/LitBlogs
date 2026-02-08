@@ -16,6 +16,7 @@ import 'prismjs/components/prism-css';
 import 'prismjs/components/prism-sql';
 import Loader from './components/Loader';
 import Navbar from "./components/Navbar";
+import Footer from "./components/Footer";
 import { Editor } from '@tinymce/tinymce-react';
 import './LitBlogs.css';
 import { toast } from 'react-hot-toast';
@@ -1283,6 +1284,14 @@ const ClassFeed = () => {
   const [commentLoading, setCommentLoading] = useState({});
   const [newCommentText, setNewCommentText] = useState({});
   const [commentCounts, setCommentCounts] = useState({});
+  const [assignments, setAssignments] = useState([]);
+  const [assignmentsLoading, setAssignmentsLoading] = useState(false);
+  const [showAssignmentModal, setShowAssignmentModal] = useState(false);
+  const [activeAssignment, setActiveAssignment] = useState(null);
+  const [assignmentSubmission, setAssignmentSubmission] = useState('');
+  const [assignmentSubmitting, setAssignmentSubmitting] = useState(false);
+  const [assignmentSubmissions, setAssignmentSubmissions] = useState({});
+  const [expandedAssignmentId, setExpandedAssignmentId] = useState(null);
 
   const gf = new GiphyFetch('FEzk8anVjSKZIiInlJWd4Jo4OuYBjV9B');
 
@@ -1322,11 +1331,19 @@ const ClassFeed = () => {
         });
         setPosts(postsResponse.data);
 
+        setAssignmentsLoading(true);
+        const assignmentsResponse = await axios.get(`http://localhost:8000/api/classes/${classId}/assignments`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        setAssignments(assignmentsResponse.data || []);
+        setAssignmentsLoading(false);
+
         setLoading(false);
       } catch (error) {
         console.error('Error fetching class data:', error);
         setError(error.response?.data?.detail || 'Failed to load class data');
         setLoading(false);
+        setAssignmentsLoading(false);
         if (error.response?.status === 401) {
           navigate('/sign-in');
         }
@@ -1520,6 +1537,50 @@ const ClassFeed = () => {
     } catch (error) {
       console.error('Error creating post:', error);
       toast.error('Failed to create post. Please try again.');
+    }
+  };
+
+  const handleSubmitAssignment = async () => {
+    if (!activeAssignment) return;
+    try {
+      setAssignmentSubmitting(true);
+      const token = localStorage.getItem('token');
+      await axios.post(
+        `http://localhost:8000/api/assignments/${activeAssignment.id}/submit`,
+        { content: assignmentSubmission },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      const assignmentsResponse = await axios.get(`http://localhost:8000/api/classes/${classId}/assignments`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setAssignments(assignmentsResponse.data || []);
+
+      setShowAssignmentModal(false);
+      setActiveAssignment(null);
+      setAssignmentSubmission('');
+      toast.success('Assignment submitted successfully!');
+    } catch (error) {
+      console.error('Error submitting assignment:', error);
+      toast.error(error.response?.data?.detail || 'Failed to submit assignment');
+    } finally {
+      setAssignmentSubmitting(false);
+    }
+  };
+
+  const loadAssignmentSubmissions = async (assignmentId) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await axios.get(
+        `http://localhost:8000/api/classes/${classId}/assignments/${assignmentId}/submissions`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setAssignmentSubmissions((prev) => ({
+        ...prev,
+        [assignmentId]: response.data
+      }));
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to load submissions');
     }
   };
 
@@ -1750,6 +1811,8 @@ const ClassFeed = () => {
       </div>
     );
   }
+
+  const isStudent = (userInfo?.role || '').toString().toUpperCase() === 'STUDENT';
 
   const handleSignOut = () => {
     localStorage.removeItem('token');
@@ -2161,6 +2224,134 @@ const ClassFeed = () => {
             </div>
           </div>
 
+            {/* Assignments Panel */}
+            <div className={`mb-10 rounded-2xl p-6 shadow-lg ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
+              <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <h2 className="text-xl font-semibold">Assignments</h2>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                    Track upcoming work and submit directly here.
+                  </p>
+                </div>
+                {assignmentsLoading && (
+                  <span className="text-sm text-gray-500 dark:text-gray-400">Loading assignments...</span>
+                )}
+              </div>
+
+              {assignments.length === 0 && !assignmentsLoading && (
+                <div className="text-sm text-gray-500 dark:text-gray-400 mt-4">
+                  No assignments yet.
+                </div>
+              )}
+
+              <div className="mt-4 grid gap-4">
+                {assignments.map((assignment) => {
+                  const submission = assignment.my_submission;
+                  const dueDate = new Date(assignment.due_date);
+                  const isOverdue = new Date() > dueDate && !submission;
+                  const isPublicSubmission = assignment.visibility === 'class';
+
+                  return (
+                    <div
+                      key={assignment.id}
+                      className={`rounded-xl border p-4 ${darkMode ? 'border-gray-700 bg-gray-900/40' : 'border-gray-200 bg-white'}`}
+                    >
+                      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                        <div>
+                          <h3 className="text-lg font-semibold">{assignment.title}</h3>
+                          <p className="text-sm text-gray-500 dark:text-gray-400">
+                            Due: {dueDate.toLocaleString()}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {isPublicSubmission && (
+                            <span className="px-3 py-1 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-500">
+                              Public Submissions
+                            </span>
+                          )}
+                          {isStudent && (
+                            <button
+                              onClick={() => {
+                                setActiveAssignment(assignment);
+                                setAssignmentSubmission(submission?.content || '');
+                                setShowAssignmentModal(true);
+                              }}
+                              className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                                submission
+                                  ? 'bg-emerald-500/10 text-emerald-500'
+                                  : isOverdue
+                                    ? 'bg-rose-500/10 text-rose-500'
+                                    : 'bg-blue-500/10 text-blue-500'
+                              }`}
+                            >
+                              {submission ? 'View Submission' : isOverdue ? 'Submit Late' : 'Submit'}
+                            </button>
+                          )}
+                          {isStudent && isPublicSubmission && (
+                            <button
+                              onClick={() => {
+                                const nextId = expandedAssignmentId === assignment.id ? null : assignment.id;
+                                setExpandedAssignmentId(nextId);
+                                if (nextId && !assignmentSubmissions[assignment.id]) {
+                                  loadAssignmentSubmissions(assignment.id);
+                                }
+                              }}
+                              className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                                darkMode ? 'bg-gray-700 text-gray-200' : 'bg-gray-100 text-gray-700'
+                              }`}
+                            >
+                              {expandedAssignmentId === assignment.id ? 'Hide Submissions' : 'View Submissions'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                        {assignment.description || 'No description provided.'}
+                      </p>
+                      {submission && (
+                        <div className="mt-3 text-xs text-gray-500 dark:text-gray-400">
+                          Submitted {new Date(submission.submitted_at).toLocaleString()} •{' '}
+                          <span className={submission.is_late ? 'text-rose-500' : 'text-emerald-500'}>
+                            {submission.is_late ? 'Late' : 'On time'}
+                          </span>
+                        </div>
+                      )}
+
+                      {expandedAssignmentId === assignment.id && (
+                        <div className="mt-4 space-y-3">
+                          {(assignmentSubmissions[assignment.id] || []).length === 0 ? (
+                            <div className="text-sm text-gray-500 dark:text-gray-400">No submissions yet.</div>
+                          ) : (
+                            (assignmentSubmissions[assignment.id] || []).map((submissionItem) => (
+                              <div
+                                key={submissionItem.id}
+                                className={`rounded-lg border p-3 ${darkMode ? 'border-gray-700 bg-gray-900/40' : 'border-gray-200 bg-white'}`}
+                              >
+                                <div className="flex items-center justify-between text-sm">
+                                  <span className="font-medium">
+                                    {submissionItem.student?.first_name} {submissionItem.student?.last_name}
+                                  </span>
+                                  <span className={submissionItem.is_late ? 'text-rose-500' : 'text-emerald-500'}>
+                                    {submissionItem.is_late ? 'Late' : 'On Time'}
+                                  </span>
+                                </div>
+                                <div className="text-xs text-gray-500 dark:text-gray-400">
+                                  Submitted: {new Date(submissionItem.submitted_at).toLocaleString()}
+                                </div>
+                                <div className="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                                  {submissionItem.content || 'No content provided.'}
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
           {/* Posts Grid */}
           <div className="space-y-8">
             {posts.map((post) => (
@@ -2411,6 +2602,64 @@ const ClassFeed = () => {
         </div>
       </div>
 
+        {/* Assignment Submission Modal */}
+        <AnimatePresence>
+          {showAssignmentModal && activeAssignment && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
+            >
+              <motion.div
+                initial={{ scale: 0.9, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.9, opacity: 0 }}
+                className={`${
+                  darkMode ? 'bg-gray-800' : 'bg-white'
+                } rounded-lg p-6 max-w-xl w-full shadow-xl`}
+              >
+                <div className="mb-4">
+                  <h3 className="text-xl font-semibold">{activeAssignment.title}</h3>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                    Due: {new Date(activeAssignment.due_date).toLocaleString()}
+                  </p>
+                </div>
+                <textarea
+                  value={assignmentSubmission}
+                  onChange={(e) => setAssignmentSubmission(e.target.value)}
+                  rows={6}
+                  placeholder="Write your submission..."
+                  className={`w-full p-3 rounded-lg border ${
+                    darkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300'
+                  }`}
+                />
+                <div className="mt-4 flex justify-end gap-3">
+                  <button
+                    onClick={() => {
+                      setShowAssignmentModal(false);
+                      setActiveAssignment(null);
+                      setAssignmentSubmission('');
+                    }}
+                    className={`px-4 py-2 rounded-lg ${
+                      darkMode ? 'bg-gray-700 text-gray-200' : 'bg-gray-100 text-gray-700'
+                    }`}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleSubmitAssignment}
+                    disabled={assignmentSubmitting}
+                    className="px-4 py-2 rounded-lg text-white bg-blue-600 hover:bg-blue-500"
+                  >
+                    {assignmentSubmitting ? 'Submitting...' : 'Submit'}
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
       {/* New Post Modal */}
       <AnimatePresence>
         {showNewPostForm && (
@@ -2631,6 +2880,7 @@ const ClassFeed = () => {
           </motion.div>
         )}
       </AnimatePresence>
+      <Footer darkMode={darkMode} />
     </div>
   );
 };

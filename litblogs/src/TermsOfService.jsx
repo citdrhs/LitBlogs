@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import Navbar from './components/Navbar';
+import Footer from './components/Footer';
 import './LitBlogs.css';
 
 const TermsOfService = () => {
@@ -186,46 +187,7 @@ const TermsOfService = () => {
         </motion.div>
       </div>
 
-      {/* Footer */}
-      <footer className={`mt-12 transition-all duration-300 ${darkMode ? 'bg-gray-900 text-gray-300' : 'bg-gradient-to-r from-gray-100 to-gray-100 text-gray-900'}`}>
-        <div className="container mx-auto px-4 py-12">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-8 text-center md:text-left">
-            {/* LitBlog Info */}
-            <div>
-              <h3 className="text-lg font-semibold mb-4">LitBlog</h3>
-              <p className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Connecting writers and readers worldwide</p>
-            </div>
-            {/* Resources */}
-            <div>
-              <h3 className="text-lg font-semibold mb-4">Resources</h3>
-              <ul className={`space-y-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                <li><Link to="/help" className="hover:underline">Help Center</Link></li>
-                <li><Link to="/privacy-policy" className="hover:underline">Privacy Policy</Link></li>
-                <li><Link to="/terms" className="hover:underline">Terms of Service</Link></li>
-              </ul>
-            </div>
-            {/* Connect */}
-            <div>
-              <h3 className="text-lg font-semibold mb-4">Connect</h3>
-              <ul className={`space-y-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                <li><a href="#" className="hover:underline">Twitter</a></li>
-                <li><a href="#" className="hover:underline">Facebook</a></li>
-                <li><a href="#" className="hover:underline">Instagram</a></li>
-              </ul>
-            </div>
-            {/* Contact */}
-            <div>
-              <h3 className="text-lg font-semibold mb-4">Contact</h3>
-              <p className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>info@litblog.com</p>
-            </div>
-          </div>
-          <div className="mt-8 pt-8 border-t border-gray-200 dark:border-gray-700 text-center">
-            <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-              &copy; {new Date().getFullYear()} LitBlog. All rights reserved.
-            </p>
-          </div>
-        </div>
-      </footer>
+      <Footer darkMode={darkMode} />
     </div>
   );
 };

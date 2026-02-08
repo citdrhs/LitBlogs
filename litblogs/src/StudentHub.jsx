@@ -5,6 +5,7 @@ import axios from 'axios';
 import Loader from './components/Loader';
 import Navbar from './components/Navbar';
 import { toast } from 'react-hot-toast';
+import Footer from './components/Footer';
 
 const StudentHub = () => {
   const navigate = useNavigate();
@@ -114,16 +115,16 @@ const StudentHub = () => {
   }
 
   return (
-    <div className={`min-h-screen bg-gradient-to-br ${darkMode ? 'bg-gradient-to-r from-slate-800 to-gray-950 text-gray-200' : 'bg-gradient-to-r from-indigo-100 to-pink-100 text-gray-900'}`}>
+    <div className={`min-h-screen flex flex-col bg-gradient-to-br ${darkMode ? 'bg-gradient-to-r from-slate-800 to-gray-950 text-gray-200' : 'bg-gradient-to-r from-indigo-100 to-pink-100 text-gray-900'}`}>
       <Navbar
         userInfo={userInfo}
         onSignOut={handleSignOut}
         darkMode={darkMode}
         logo="/logo.png"
       />
-      <div className="flex">
+      <div className="flex flex-1 pt-16">
         {/* Sidebar */}
-        <div className="w-64 bg-gray-50/60 dark:bg-gray-800/60 backdrop-blur-md min-h-screen p-4 border-r border-white/10">
+        <div className="w-64 bg-gray-50/60 dark:bg-gray-800/60 backdrop-blur-md h-full p-4 border-r border-white/10">
           <div className="mb-8">
             <h2 className="text-xl font-bold mb-4">Navigation</h2>
             <div className="space-y-2">
@@ -171,7 +172,7 @@ const StudentHub = () => {
         </div>
 
         {/* Main Content */}
-        <div className="flex-1 p-8 mt-16">
+        <div className="flex-1 p-8">
           {activeTab === 'current' && (
             <div>
               <div className="flex justify-between items-center mb-6">
@@ -326,6 +327,7 @@ const StudentHub = () => {
           </motion.div>
         )}
       </AnimatePresence>
+      <Footer darkMode={darkMode} />
     </div>
   );
 };

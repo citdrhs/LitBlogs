@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import './LitBlogs.css'; // Import any custom styles here
 import axios from 'axios';
 import Loader from './components/Loader';
+import Footer from './components/Footer';
 import { GoogleOAuthProvider, GoogleLogin, useGoogleLogin } from '@react-oauth/google';
 import { useMsal } from "@azure/msal-react";
 import { loginRequest } from "./config/msalConfig";
@@ -35,6 +36,13 @@ const SignUp = () => {
     color: "red-500",
     percent: 0
   });
+
+  const strengthColorMap = {
+    "red-500": { text: "text-red-500", bg: "bg-red-500" },
+    "green-400": { text: "text-green-400", bg: "bg-green-400" },
+    "green-500": { text: "text-green-500", bg: "bg-green-500" },
+    "green-700": { text: "text-green-700", bg: "bg-green-700" }
+  };
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -463,15 +471,16 @@ const SignUp = () => {
   };
 
   return (
-    <div className={`min-h-screen flex items-center justify-center transition-all duration-500 ${darkMode ? 'bg-gradient-to-r from-slate-800 to-gray-950 text-gray-200' : 'bg-gradient-to-r from-indigo-100 to-pink-100 text-gray-900'}`}>
+    <div className={`min-h-screen flex flex-col transition-all duration-500 ${darkMode ? 'bg-gradient-to-r from-slate-800 to-gray-950 text-gray-200' : 'bg-gradient-to-r from-indigo-100 to-pink-100 text-gray-900'}`}>
       {/* Navbar */}
       <motion.nav 
-        className="navbar z-50 fixed top-2 left-470 transform -translate-x-1/2 w-auto bg-white/80 dark:bg-gray-800/80 backdrop-blur-md py-2 px-6 rounded-xl shadow-lg border border-gray-200/50 dark:border-gray-700/50"
+        className="navbar z-50 fixed top-2 inset-x-0 flex justify-center"
         initial={{ opacity: 0, y: -30 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6, ease: "easeOut" }}
       >
-        <div className="flex items-center gap-6 whitespace-nowrap">
+        <div className="w-fit bg-white/80 dark:bg-gray-800/80 backdrop-blur-md py-2 px-6 rounded-xl shadow-lg border border-gray-200/50 dark:border-gray-700/50">
+          <div className="flex items-center gap-6 whitespace-nowrap">
           {/* Logo */}
           <Link to="/">
             <motion.img
@@ -534,13 +543,15 @@ const SignUp = () => {
             </AnimatePresence>
           </div>
         </div>
+        </div>
       </motion.nav>
-      <motion.div
-        className="max-w-md w-full p-8 mb-16 bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 mt-16"
-        initial={{ opacity: 0, y: 30 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.8, ease: "easeOut" }}
-      >
+      <main className="flex-1 flex items-center justify-center px-4 pt-24 pb-12">
+        <motion.div
+          className={`max-w-2xl w-full p-8 rounded-lg shadow-lg ${darkMode ? 'bg-gray-800' : 'bg-white'}`}
+          initial={{ opacity: 0, y: 30 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.8, ease: "easeOut" }}
+        >
         {/* Sign Up Form */}
         <motion.h2
           className="text-4xl font-semibold text-center mb-6 dark:bg-gray-800"
@@ -638,13 +649,13 @@ const SignUp = () => {
           {password && (
             <div className="mt-2 mb-2">
               <div className="flex justify-between items-center mb-1">
-                <span className={`text-xs font-medium text-${passwordStrength.color}`}>
+                <span className={`text-xs font-medium ${strengthColorMap[passwordStrength.color]?.text || "text-red-500"}`}>
                   Strength: {passwordStrength.label}
                 </span>
               </div>
               <div className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
                 <div 
-                  className={`h-full bg-${passwordStrength.color} transition-all duration-300 ease-in-out`} 
+                  className={`h-full ${strengthColorMap[passwordStrength.color]?.bg || "bg-red-500"} transition-all duration-300 ease-in-out`} 
                   style={{ width: `${passwordStrength.percent}%` }}
                 ></div>
               </div>
@@ -772,7 +783,8 @@ const SignUp = () => {
             </Link>
           </p>
         </div>
-      </motion.div>
+        </motion.div>
+      </main>
       {/* Dark Mode Toggle Button */}
       <motion.div
         className="absolute top-6 right-6 z-10"
@@ -857,6 +869,7 @@ const SignUp = () => {
           </motion.div>
         )}
       </AnimatePresence>
+      <Footer darkMode={darkMode} />
     </div>
   );
 };
