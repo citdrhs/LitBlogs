@@ -43,7 +43,7 @@ cd /var/www/
 ```
 Then clone the repository:
 ```bash
-git clone https://github.com/Antigro09/LitBlogs.git
+git clone https://github.com/citdrhs/LitBlogs.git
 cd /LitBlogs/litblogs
 ```
 Run the commmand with sudo if you need permissions to clone the repository.
