@@ -316,7 +316,25 @@ const StudentDetails = ({ darkMode }) => {
                     } shadow-sm backdrop-blur-sm`}
                     whileHover={{ scale: 1.01 }}
                   >
-                    <h4 className="text-lg font-semibold mb-2 dark:text-white">{post.title}</h4>
+                    <div className="flex items-center gap-2 mb-2">
+                      <h4 className="text-lg font-semibold dark:text-white">{post.title}</h4>
+                      {post.ai_percentage !== null && post.ai_percentage !== undefined && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigate(`/class/${classId}/post/${post.id}?showAi=true`);
+                          }}
+                          className={`px-2 py-1 text-xs font-bold rounded-full ${
+                            post.ai_percentage > 50 
+                              ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400' 
+                              : 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
+                          }`}
+                          title="Click to view AI analysis"
+                        >
+                          {post.ai_percentage}% AI
+                        </button>
+                      )}
+                    </div>
                     <div className="text-gray-600 dark:text-gray-300 mb-4">
                       {ReactHtmlParser(truncateHTML(post.content, 200))}
                     </div>

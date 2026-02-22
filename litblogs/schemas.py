@@ -28,6 +28,11 @@ class BlogResponse(BaseModel):
     author: str | None = None
     likes: int = 0
     comments: int = 0
+    
+    # AI Detection fields
+    ai_percentage: int | None = None
+    ai_highlighted_html: str | None = None
+    ai_sentence_analysis: str | None = None
 
     class Config:
         from_attributes = True
@@ -123,6 +128,11 @@ class AssignmentSubmissionResponse(BaseModel):
     submitted_at: datetime
     content: str | None = None
     is_late: bool
+    
+    # AI Detection fields
+    ai_percentage: int | None = None
+    ai_highlighted_html: str | None = None
+    ai_sentence_analysis: str | None = None
 
     class Config:
         from_attributes = True

@@ -82,6 +82,11 @@ class AssignmentSubmission(Base):
     submitted_at = Column(DateTime(timezone=True), server_default=func.now())
     content = Column(Text, nullable=True)
     is_late = Column(Boolean, default=False)
+    
+    # AI Detection fields
+    ai_percentage = Column(Integer, nullable=True)
+    ai_highlighted_html = Column(Text, nullable=True)
+    ai_sentence_analysis = Column(Text, nullable=True)
 
     assignment = relationship("Assignment", back_populates="submissions")
     student = relationship("User", back_populates="assignment_submissions")
@@ -103,6 +108,12 @@ class Blog(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     class_id = Column(Integer, ForeignKey("classes.id"), nullable=False)
+    
+    # AI Detection fields
+    ai_percentage = Column(Integer, nullable=True)
+    ai_highlighted_html = Column(Text, nullable=True)
+    ai_sentence_analysis = Column(Text, nullable=True)
+    
     owner = relationship("User", back_populates="blogs")
     class_ = relationship("Class", back_populates="blogs")
     likes = relationship("PostLike", back_populates="post", cascade="all, delete-orphan")

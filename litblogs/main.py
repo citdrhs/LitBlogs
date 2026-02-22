@@ -1,12 +1,12 @@
 # main.py
 # To run locally run:
 # uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, BackgroundTasks
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import engine, get_db, reset_database
+from database import engine, get_db, reset_database, SessionLocal
 from base import Base
 import models
 from models import User, Teacher, PasswordReset
@@ -39,6 +39,9 @@ from fastapi.responses import FileResponse
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from gradio_client import Client
+import json
+import re
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -969,10 +972,64 @@ def sanitize_html(content: str) -> str:
     
     return sanitized_content
 
+def run_ai_detection(text: str, record_id: int, record_type: str):
+    db = SessionLocal()
+    try:
+        # Strip HTML tags to get plain text for word count
+        soup = BeautifulSoup(text, "html.parser")
+        plain_text = soup.get_text()
+        word_count = len(plain_text.split())
+        
+        mode = "detailed" if word_count >= 200 else "quick"
+        
+        client = Client("ApsidalSolid4/CITProjectAIDetector")
+        result = client.predict(
+            text=plain_text,
+            mode=mode,
+            api_name="/predict"
+        )
+        
+        # result is a tuple: (highlighted_html, sentence_analysis, overall_result)
+        highlighted_html = result[0]
+        sentence_analysis = result[1]
+        overall_result = result[2]
+        
+        # Parse overall_result to get percentage
+        # Example: "         PREDICTION: AI         Confidence: 95.3%         Windows analyzed: 1         "
+        ai_percentage = None
+        confidence_match = re.search(r'Confidence:\s*([\d.]+)%', overall_result)
+        prediction_match = re.search(r'PREDICTION:\s*([A-Za-z]+)', overall_result)
+        
+        if confidence_match and prediction_match:
+            confidence = float(confidence_match.group(1))
+            prediction = prediction_match.group(1).strip().upper()
+            
+            if prediction == "AI":
+                ai_percentage = int(round(confidence))
+            elif prediction == "HUMAN":
+                ai_percentage = int(round(100 - confidence))
+        
+        # Update the database
+        if record_type == "post":
+            record = db.query(models.Blog).filter(models.Blog.id == record_id).first()
+        elif record_type == "assignment":
+            record = db.query(models.AssignmentSubmission).filter(models.AssignmentSubmission.id == record_id).first()
+            
+        if record:
+            record.ai_percentage = ai_percentage
+            record.ai_highlighted_html = highlighted_html
+            record.ai_sentence_analysis = sentence_analysis
+            db.commit()
+    except Exception as e:
+        print(f"AI Detection failed: {e}")
+    finally:
+        db.close()
+
 @app.post("/api/classes/{class_id}/posts", response_model=schemas.BlogResponse)
 async def create_class_post(
     class_id: int,
     post: schemas.BlogCreate,
+    background_tasks: BackgroundTasks,
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -1024,6 +1081,9 @@ async def create_class_post(
     db.commit()
     db.refresh(new_post)
     
+    # Trigger AI detection in the background
+    background_tasks.add_task(run_ai_detection, new_post.content, new_post.id, "post")
+    
     return {
         "id": new_post.id,
         "title": new_post.title,
@@ -1033,7 +1093,10 @@ async def create_class_post(
         "class_id": new_post.class_id,
         "author": f"{current_user.first_name} {current_user.last_name}",
         "likes": len(new_post.likes) if hasattr(new_post, 'likes') else 0,
-        "comments": len(new_post.comments) if hasattr(new_post, 'comments') else 0
+        "comments": len(new_post.comments) if hasattr(new_post, 'comments') else 0,
+        "ai_percentage": new_post.ai_percentage,
+        "ai_highlighted_html": new_post.ai_highlighted_html,
+        "ai_sentence_analysis": new_post.ai_sentence_analysis
     }
 
 @app.get("/api/classes/{class_id}/posts")
@@ -1060,7 +1123,10 @@ async def get_class_posts(
             "created_at": post.created_at,
             "author": f"{author.first_name} {author.last_name}" if author else "Unknown Author",
             "likes": len(post.likes) if hasattr(post, 'likes') else 0,
-            "comments": len(post.comments) if hasattr(post, 'comments') else 0
+            "comments": len(post.comments) if hasattr(post, 'comments') else 0,
+            "ai_percentage": post.ai_percentage,
+            "ai_highlighted_html": post.ai_highlighted_html,
+            "ai_sentence_analysis": post.ai_sentence_analysis
         })
     
     return formatted_posts
@@ -1430,6 +1496,7 @@ async def list_assignments(
 async def submit_assignment(
     assignment_id: int,
     submission: schemas.AssignmentSubmissionCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -1458,13 +1525,20 @@ async def submit_assignment(
         existing.is_late = is_late
         db.commit()
         db.refresh(existing)
+        
+        # Trigger AI detection in the background
+        background_tasks.add_task(run_ai_detection, existing.content, existing.id, "assignment")
+        
         return {
             "id": existing.id,
             "assignment_id": existing.assignment_id,
             "student_id": existing.student_id,
             "submitted_at": existing.submitted_at,
             "content": existing.content,
-            "is_late": existing.is_late
+            "is_late": existing.is_late,
+            "ai_percentage": existing.ai_percentage,
+            "ai_highlighted_html": existing.ai_highlighted_html,
+            "ai_sentence_analysis": existing.ai_sentence_analysis
         }
 
     new_submission = models.AssignmentSubmission(
@@ -1477,13 +1551,20 @@ async def submit_assignment(
     db.add(new_submission)
     db.commit()
     db.refresh(new_submission)
+    
+    # Trigger AI detection in the background
+    background_tasks.add_task(run_ai_detection, new_submission.content, new_submission.id, "assignment")
+    
     return {
         "id": new_submission.id,
         "assignment_id": new_submission.assignment_id,
         "student_id": new_submission.student_id,
         "submitted_at": new_submission.submitted_at,
         "content": new_submission.content,
-        "is_late": new_submission.is_late
+        "is_late": new_submission.is_late,
+        "ai_percentage": new_submission.ai_percentage,
+        "ai_highlighted_html": new_submission.ai_highlighted_html,
+        "ai_sentence_analysis": new_submission.ai_sentence_analysis
     }
 
 @app.get("/api/classes/{class_id}/assignments/{assignment_id}/submissions")
@@ -1524,6 +1605,9 @@ async def list_assignment_submissions(
             "submitted_at": submission.submitted_at,
             "content": submission.content,
             "is_late": submission.is_late,
+            "ai_percentage": submission.ai_percentage,
+            "ai_highlighted_html": submission.ai_highlighted_html,
+            "ai_sentence_analysis": submission.ai_sentence_analysis,
             "student": {
                 "id": student.id,
                 "first_name": student.first_name,
@@ -1762,6 +1846,7 @@ async def update_class_post(
     class_id: int,
     post_id: int,
     post: schemas.BlogCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -1786,6 +1871,9 @@ async def update_class_post(
     db.commit()
     db.refresh(db_post)
     
+    # Trigger AI detection in the background
+    background_tasks.add_task(run_ai_detection, db_post.content, db_post.id, "post")
+    
     # Return updated post
     return {
         "id": db_post.id,
@@ -1796,7 +1884,10 @@ async def update_class_post(
         "class_id": db_post.class_id,
         "author": f"{current_user.first_name} {current_user.last_name}",
         "likes": len(db_post.likes) if hasattr(db_post, 'likes') else 0,
-        "comments": len(db_post.comments) if hasattr(db_post, 'comments') else 0
+        "comments": len(db_post.comments) if hasattr(db_post, 'comments') else 0,
+        "ai_percentage": db_post.ai_percentage,
+        "ai_highlighted_html": db_post.ai_highlighted_html,
+        "ai_sentence_analysis": db_post.ai_sentence_analysis
     }
 
 @app.delete("/api/classes/{class_id}/posts/{post_id}")
@@ -3035,7 +3126,10 @@ async def get_student_posts(
             "content": post.content,
             "created_at": post.created_at,
             "likes": likes_count,
-            "comments": comments_count
+            "comments": comments_count,
+            "ai_percentage": post.ai_percentage,
+            "ai_highlighted_html": post.ai_highlighted_html,
+            "ai_sentence_analysis": post.ai_sentence_analysis
         })
     
     return formatted_posts
