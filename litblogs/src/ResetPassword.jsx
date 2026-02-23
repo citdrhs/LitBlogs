@@ -144,7 +144,7 @@ const ResetPassword = () => {
     setMessage("");
     
     try {
-      const response = await axios.post('http://localhost:8000/api/auth/reset-password', {
+      const response = await axios.post('https://drhscit.org/dren/api/auth/reset-password', {
         token,
         new_password: password
       });

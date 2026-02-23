@@ -45,12 +45,12 @@ const StudentHub = () => {
         const token = localStorage.getItem('token');
         
         // Fetch active classes
-        const activeResponse = await axios.get('http://localhost:8000/api/student/classes?status=active', {
+        const activeResponse = await axios.get('https://drhscit.org/dren/api/student/classes?status=active', {
           headers: { Authorization: `Bearer ${token}` }
         });
         
         // Fetch archived classes
-        const archivedResponse = await axios.get('http://localhost:8000/api/student/classes?status=archived', {
+        const archivedResponse = await axios.get('https://drhscit.org/dren/api/student/classes?status=archived', {
           headers: { Authorization: `Bearer ${token}` }
         });
         
@@ -70,7 +70,7 @@ const StudentHub = () => {
   const fetchUserPosts = async () => {
     try {
       const token = localStorage.getItem('token');
-      const response = await axios.get('http://localhost:8000/api/student/posts', {
+      const response = await axios.get('https://drhscit.org/dren/api/student/posts', {
         headers: { Authorization: `Bearer ${token}` }
       });
       setPosts(response.data);
@@ -84,13 +84,13 @@ const StudentHub = () => {
     try {
       setLoading(true);
       const token = localStorage.getItem('token');
-      await axios.post('http://localhost:8000/api/student/join-class', 
+      await axios.post('https://drhscit.org/dren/api/student/join-class', 
         { access_code: classCode },
         { headers: { Authorization: `Bearer ${token}` }}
       );
       
       // Fetch the updated list of classes
-      const activeResponse = await axios.get('http://localhost:8000/api/student/classes?status=active', {
+      const activeResponse = await axios.get('https://drhscit.org/dren/api/student/classes?status=active', {
         headers: { Authorization: `Bearer ${token}` }
       });
       

@@ -69,10 +69,10 @@ const TeacherDashboard = () => {
 
         // Fetch teacher dashboard data with detailed class information
         const [response, classesResponse, archivedClassesResponse, analyticsResponse] = await Promise.all([
-          axios.get('http://localhost:8000/api/teacher/dashboard', config),
-          axios.get('http://localhost:8000/api/classes?status=active', config),
-          axios.get('http://localhost:8000/api/classes?status=archived', config),
-          axios.get('http://localhost:8000/api/teacher/analytics', config)
+          axios.get('https://drhscit.org/dren/api/teacher/dashboard', config),
+          axios.get('https://drhscit.org/dren/api/classes?status=active', config),
+          axios.get('https://drhscit.org/dren/api/classes?status=archived', config),
+          axios.get('https://drhscit.org/dren/api/teacher/analytics', config)
         ]);
         
         // Update state with teacher data and classes with student counts
@@ -148,7 +148,7 @@ const TeacherDashboard = () => {
   const createClass = async () => {
     try {
       const token = localStorage.getItem('token');
-      const response = await axios.post('http://localhost:8000/api/classes', newClass, {
+      const response = await axios.post('https://drhscit.org/dren/api/classes', newClass, {
         headers: { Authorization: `Bearer ${token}` }
       });
       
@@ -183,7 +183,7 @@ const TeacherDashboard = () => {
       // For each class, fetch its students
       for (const cls of classes) {
         const response = await axios.get(
-          `http://localhost:8000/api/classes/${cls.id}/students`,
+          `https://drhscit.org/dren/api/classes/${cls.id}/students`,
           { headers: { Authorization: `Bearer ${token}` } }
         );
         
@@ -217,12 +217,12 @@ const TeacherDashboard = () => {
         const token = localStorage.getItem('token');
         
         // Fetch active classes
-        const activeResponse = await axios.get('http://localhost:8000/api/classes?status=active', {
+        const activeResponse = await axios.get('https://drhscit.org/dren/api/classes?status=active', {
           headers: { Authorization: `Bearer ${token}` }
         });
         
         // Fetch archived classes
-        const archivedResponse = await axios.get('http://localhost:8000/api/classes?status=archived', {
+        const archivedResponse = await axios.get('https://drhscit.org/dren/api/classes?status=archived', {
           headers: { Authorization: `Bearer ${token}` }
         });
         
@@ -247,7 +247,7 @@ const TeacherDashboard = () => {
     
     try {
       const token = localStorage.getItem('token');
-      await axios.put(`http://localhost:8000/api/classes/${classId}/archive`, {}, {
+      await axios.put(`https://drhscit.org/dren/api/classes/${classId}/archive`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
       
@@ -268,7 +268,7 @@ const TeacherDashboard = () => {
   const handleRestoreClass = async (classId) => {
     try {
       const token = localStorage.getItem('token');
-      await axios.put(`http://localhost:8000/api/classes/${classId}/restore`, {}, {
+      await axios.put(`https://drhscit.org/dren/api/classes/${classId}/restore`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
       
@@ -293,7 +293,7 @@ const TeacherDashboard = () => {
     
     try {
       const token = localStorage.getItem('token');
-      await axios.delete(`http://localhost:8000/api/classes/${classId}`, {
+      await axios.delete(`https://drhscit.org/dren/api/classes/${classId}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       

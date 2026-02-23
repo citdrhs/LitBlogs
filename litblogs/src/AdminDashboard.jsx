@@ -33,8 +33,8 @@ const AdminDashboard = () => {
 
         // Fetch all users and classes
         const [usersResponse, classesResponse] = await Promise.all([
-          axios.get('http://localhost:8000/api/users', config),
-          axios.get('http://localhost:8000/api/classes', config)
+          axios.get('https://drhscit.org/dren/api/users', config),
+          axios.get('https://drhscit.org/dren/api/classes', config)
         ]);
 
         setUsers(usersResponse.data);

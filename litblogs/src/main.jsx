@@ -13,7 +13,7 @@ import axios from 'axios'
 const msalInstance = new PublicClientApplication(msalConfig);
 
 // Set base URL for all axios requests
-axios.defaults.baseURL = 'http://localhost:8000';
+axios.defaults.baseURL = 'https://drhscit.org/dren';
 
 // Optional - Handle the response from auth redirects
 msalInstance.initialize().then(() => {

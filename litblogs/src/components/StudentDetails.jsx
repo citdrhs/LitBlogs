@@ -29,7 +29,7 @@ const StudentDetails = ({ darkMode }) => {
         
         // Fetch student details
         const studentResponse = await axios.get(
-          `http://localhost:8000/api/classes/${classId}/students/${studentId}`,
+          `https://drhscit.org/dren/api/classes/${classId}/students/${studentId}`,
           { headers: { Authorization: `Bearer ${token}` } }
         );
         setStudent(studentResponse.data);
@@ -37,14 +37,14 @@ const StudentDetails = ({ darkMode }) => {
         
         // Fetch class details
         const classResponse = await axios.get(
-          `http://localhost:8000/api/classes/${classId}/details`,
+          `https://drhscit.org/dren/api/classes/${classId}/details`,
           { headers: { Authorization: `Bearer ${token}` } }
         );
         setClassInfo(classResponse.data);
         
         // Fetch student's posts in this class
         const postsResponse = await axios.get(
-          `http://localhost:8000/api/classes/${classId}/students/${studentId}/posts`,
+          `https://drhscit.org/dren/api/classes/${classId}/students/${studentId}/posts`,
           { headers: { Authorization: `Bearer ${token}` } }
         );
         setPosts(postsResponse.data);
@@ -89,7 +89,7 @@ const StudentDetails = ({ darkMode }) => {
       const token = localStorage.getItem('token');
       
       await axios.put(
-        `http://localhost:8000/api/classes/${classId}/students/${studentId}/notes`,
+        `https://drhscit.org/dren/api/classes/${classId}/students/${studentId}/notes`,
         { notes: teacherNotes },
         { headers: { Authorization: `Bearer ${token}` } }
       );

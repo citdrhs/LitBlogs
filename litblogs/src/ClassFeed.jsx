@@ -410,7 +410,7 @@ const TINYMCE_CONFIG = {
       
       const token = localStorage.getItem('token');
       
-      axios.post('http://localhost:8000/api/upload', formData, {
+      axios.post('https://drhscit.org/dren/api/upload', formData, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'multipart/form-data'
@@ -520,7 +520,7 @@ const TINYMCE_CONFIG = {
                 
                 const token = localStorage.getItem('token');
                 const response = await axios.post(
-                  'http://localhost:8000/api/upload',
+                  'https://drhscit.org/dren/api/upload',
                   formData,
                   {
                     headers: {
@@ -576,7 +576,7 @@ const TINYMCE_CONFIG = {
               
               const token = localStorage.getItem('token');
               const response = await axios.post(
-                'http://localhost:8000/api/upload',
+                'https://drhscit.org/dren/api/upload',
                 formData,
                 {
                   headers: {
@@ -781,7 +781,7 @@ const TINYMCE_CONFIG = {
               
               // Upload the video
               const token = localStorage.getItem('token');
-              const response = await axios.post('http://localhost:8000/api/upload', formData, {
+              const response = await axios.post('https://drhscit.org/dren/api/upload', formData, {
                 headers: {
                   'Authorization': `Bearer ${token}`,
                   'Content-Type': 'multipart/form-data'
@@ -809,10 +809,10 @@ const TINYMCE_CONFIG = {
               
               // Ensure the URL is properly formatted
               const fullVideoUrl = videoUrl && videoUrl.startsWith('/') 
-                ? `http://localhost:8000${videoUrl}` 
+                ? `https://drhscit.org/dren${videoUrl}` 
                 : videoUrl && videoUrl.startsWith('http') 
                   ? videoUrl 
-                  : `http://localhost:8000/${videoUrl}`;
+                  : `https://drhscit.org/dren/${videoUrl}`;
                   
               console.log("Full video URL:", fullVideoUrl);
               
@@ -1125,7 +1125,7 @@ async function deleteFileFromServer(url) {
     const filePath = url.replace('/uploads/', '');
     
     const token = localStorage.getItem('token');
-    await axios.delete(`http://localhost:8000/api/upload/${filePath}`, {
+    await axios.delete(`https://drhscit.org/dren/api/upload/${filePath}`, {
       headers: { 
         'Authorization': `Bearer ${token}`
       }
@@ -1156,7 +1156,7 @@ if (!window.deleteVideoFromServer) {
     if (!token) return;
     
     // Delete the file from the server
-    axios.delete(`http://localhost:8000/api/upload/${filePath}`, {
+    axios.delete(`https://drhscit.org/dren/api/upload/${filePath}`, {
       headers: { 'Authorization': `Bearer ${token}` }
     })
     .then(response => {
@@ -1190,7 +1190,7 @@ function defineGlobalFunctions() {
     if (!token) return;
     
     // Delete the file from the server
-    axios.delete(`http://localhost:8000/api/upload/${filePath}`, {
+    axios.delete(`https://drhscit.org/dren/api/upload/${filePath}`, {
       headers: { 'Authorization': `Bearer ${token}` }
     })
     .then(response => {
@@ -1321,19 +1321,19 @@ const ClassFeed = () => {
         }
 
         // Use the correct endpoint
-        const classResponse = await axios.get(`http://localhost:8000/api/classes/${classId}/details`, {
+        const classResponse = await axios.get(`https://drhscit.org/dren/api/classes/${classId}/details`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         setClassDetails(classResponse.data);
 
         // Get class posts using the posts endpoint
-        const postsResponse = await axios.get(`http://localhost:8000/api/classes/${classId}/posts`, {
+        const postsResponse = await axios.get(`https://drhscit.org/dren/api/classes/${classId}/posts`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         setPosts(postsResponse.data);
 
         setAssignmentsLoading(true);
-        const assignmentsResponse = await axios.get(`http://localhost:8000/api/classes/${classId}/assignments`, {
+        const assignmentsResponse = await axios.get(`https://drhscit.org/dren/api/classes/${classId}/assignments`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         setAssignments(assignmentsResponse.data || []);
@@ -1413,7 +1413,7 @@ const ClassFeed = () => {
       
       for (const post of posts) {
         try {
-          const response = await axios.get(`http://localhost:8000/api/classes/${classId}/posts/${post.id}/likes`, {
+          const response = await axios.get(`https://drhscit.org/dren/api/classes/${classId}/posts/${post.id}/likes`, {
             headers: { Authorization: `Bearer ${token}` }
           });
           
@@ -1444,7 +1444,7 @@ const ClassFeed = () => {
         if (!token) return;
         
         // Fetch the posts
-        const response = await axios.get(`http://localhost:8000/api/classes/${classId}/posts`, {
+        const response = await axios.get(`https://drhscit.org/dren/api/classes/${classId}/posts`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         
@@ -1460,7 +1460,7 @@ const ClassFeed = () => {
         for (const post of response.data) {
           try {
             const commentResponse = await axios.get(
-              `http://localhost:8000/api/classes/${classId}/posts/${post.id}/comments?limit=1`,
+              `https://drhscit.org/dren/api/classes/${classId}/posts/${post.id}/comments?limit=1`,
               { headers: { Authorization: `Bearer ${token}` } }
             );
             counts[post.id] = commentResponse.data.total;
@@ -1504,7 +1504,7 @@ const ClassFeed = () => {
       // TinyMCE will handle the placement of files exactly where the user put them
       
       const response = await axios.post(
-          `http://localhost:8000/api/classes/${classId}/posts`,
+          `https://drhscit.org/dren/api/classes/${classId}/posts`,
           {
             title: postTitle,
           content: postContent.text, // This now contains all embedded files
@@ -1516,7 +1516,7 @@ const ClassFeed = () => {
         );
 
       // Refresh posts after creation
-      const postsResponse = await axios.get(`http://localhost:8000/api/classes/${classId}/posts`, {
+      const postsResponse = await axios.get(`https://drhscit.org/dren/api/classes/${classId}/posts`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setPosts(postsResponse.data);
@@ -1547,12 +1547,12 @@ const ClassFeed = () => {
       setAssignmentSubmitting(true);
       const token = localStorage.getItem('token');
       await axios.post(
-        `http://localhost:8000/api/assignments/${activeAssignment.id}/submit`,
+        `https://drhscit.org/dren/api/assignments/${activeAssignment.id}/submit`,
         { content: assignmentSubmission },
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
-      const assignmentsResponse = await axios.get(`http://localhost:8000/api/classes/${classId}/assignments`, {
+      const assignmentsResponse = await axios.get(`https://drhscit.org/dren/api/classes/${classId}/assignments`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setAssignments(assignmentsResponse.data || []);
@@ -1573,7 +1573,7 @@ const ClassFeed = () => {
     try {
       const token = localStorage.getItem('token');
       const response = await axios.get(
-        `http://localhost:8000/api/classes/${classId}/assignments/${assignmentId}/submissions`,
+        `https://drhscit.org/dren/api/classes/${classId}/assignments/${assignmentId}/submissions`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       setAssignmentSubmissions((prev) => ({
@@ -1592,7 +1592,7 @@ const ClassFeed = () => {
       formData.append('file', file);
       try {
         const token = localStorage.getItem('token');
-        const response = await axios.post('http://localhost:8000/api/upload/image', formData, {
+        const response = await axios.post('https://drhscit.org/dren/api/upload/image', formData, {
           headers: { 
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'multipart/form-data'
@@ -1619,7 +1619,7 @@ const ClassFeed = () => {
       formData.append('file', file);
       try {
         const token = localStorage.getItem('token');
-        const response = await axios.post('http://localhost:8000/api/upload/video', formData, {
+        const response = await axios.post('https://drhscit.org/dren/api/upload/video', formData, {
           headers: { 
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'multipart/form-data'
@@ -1646,7 +1646,7 @@ const ClassFeed = () => {
       formData.append('file', file);
       try {
         const token = localStorage.getItem('token');
-        const response = await axios.post('http://localhost:8000/api/upload/file', formData, {
+        const response = await axios.post('https://drhscit.org/dren/api/upload/file', formData, {
           headers: { 
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'multipart/form-data'
@@ -1829,7 +1829,7 @@ const ClassFeed = () => {
       const token = localStorage.getItem('token');
       
       // Use the correct endpoint with classId
-      const response = await axios.get(`http://localhost:8000/api/classes/${classId}/posts/${postId}`, {
+      const response = await axios.get(`https://drhscit.org/dren/api/classes/${classId}/posts/${postId}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       
@@ -1857,7 +1857,7 @@ const ClassFeed = () => {
       try {
       setLoading(true);
         const token = localStorage.getItem('token');
-        await axios.delete(`http://localhost:8000/api/classes/${classId}/posts/${postId}`, {
+        await axios.delete(`https://drhscit.org/dren/api/classes/${classId}/posts/${postId}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         
@@ -1896,7 +1896,7 @@ const ClassFeed = () => {
       if (editingPostId) {
         // Update existing post with the correct endpoint
         response = await axios.put(
-          `http://localhost:8000/api/classes/${classId}/posts/${editingPostId}`, 
+          `https://drhscit.org/dren/api/classes/${classId}/posts/${editingPostId}`, 
           postData, 
           {
             headers: { Authorization: `Bearer ${token}` }
@@ -1912,7 +1912,7 @@ const ClassFeed = () => {
       } else {
         // Create new post
         response = await axios.post(
-          `http://localhost:8000/api/classes/${classId}/posts`, 
+          `https://drhscit.org/dren/api/classes/${classId}/posts`, 
           postData, 
           {
             headers: { Authorization: `Bearer ${token}` }
@@ -1947,11 +1947,11 @@ const ClassFeed = () => {
       if (window.confirm('Are you sure you want to delete this post?')) {
         try {
           const token = localStorage.getItem('token');
-          await axios.delete(`http://localhost:8000/api/classes/${classId}/posts/${post.id}`, {
+          await axios.delete(`https://drhscit.org/dren/api/classes/${classId}/posts/${post.id}`, {
             headers: { Authorization: `Bearer ${token}` }
           });
         // Refresh posts after deletion
-        const postsResponse = await axios.get(`http://localhost:8000/api/classes/${classId}/posts`, {
+        const postsResponse = await axios.get(`https://drhscit.org/dren/api/classes/${classId}/posts`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         setPosts(postsResponse.data);
@@ -2003,7 +2003,7 @@ const ClassFeed = () => {
       }, 1000);
       
       // Actually call the API
-      const response = await axios.post(`http://localhost:8000/api/classes/${classId}/posts/${postId}/like`, {}, {
+      const response = await axios.post(`https://drhscit.org/dren/api/classes/${classId}/posts/${postId}/like`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
       
@@ -2021,7 +2021,7 @@ const ClassFeed = () => {
       toast.error('Failed to like post');
       
       // Revert optimistic update on error
-      const response = await axios.get(`http://localhost:8000/api/classes/${classId}/posts/${postId}/likes`, {
+      const response = await axios.get(`https://drhscit.org/dren/api/classes/${classId}/posts/${postId}/likes`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       
@@ -2046,7 +2046,7 @@ const ClassFeed = () => {
     try {
       const token = localStorage.getItem('token');
       const response = await axios.get(
-        `http://localhost:8000/api/classes/${classId}/posts/${postId}/comments?limit=3`,
+        `https://drhscit.org/dren/api/classes/${classId}/posts/${postId}/comments?limit=3`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       
@@ -2092,7 +2092,7 @@ const ClassFeed = () => {
     try {
       const token = localStorage.getItem('token');
       const response = await axios.post(
-        `http://localhost:8000/api/classes/${classId}/posts/${postId}/comments`,
+        `https://drhscit.org/dren/api/classes/${classId}/posts/${postId}/comments`,
         { content: commentText },
         { headers: { Authorization: `Bearer ${token}` } }
       );

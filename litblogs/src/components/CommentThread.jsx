@@ -43,7 +43,7 @@ const CommentThread = ({
     setLoadingMore(true);
     try {
       const response = await axios.get(
-        `http://localhost:8000/api/comments/${comment.id}/replies?skip=${comment.replies.length}`,
+        `https://drhscit.org/dren/api/comments/${comment.id}/replies?skip=${comment.replies.length}`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       
@@ -78,7 +78,7 @@ const CommentThread = ({
       
       // Call API
       const response = await axios.post(
-        `http://localhost:8000/api/comments/${comment.id}/like`, 
+        `https://drhscit.org/dren/api/comments/${comment.id}/like`, 
         {}, 
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -112,7 +112,7 @@ const CommentThread = ({
     
     try {
       const response = await axios.post(
-        `http://localhost:8000/api/classes/${classId}/posts/${postId}/comments`,
+        `https://drhscit.org/dren/api/classes/${classId}/posts/${postId}/comments`,
         {
           content: replyText,
           parent_id: comment.id

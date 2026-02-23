@@ -75,7 +75,7 @@ const ForgotPassword = () => {
     setIsSuccess(false);
     
     try {
-      const response = await axios.post('http://localhost:8000/api/auth/forgot-password', {
+      const response = await axios.post('https://drhscit.org/dren/api/auth/forgot-password', {
         email
       });
       

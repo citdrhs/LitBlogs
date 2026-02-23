@@ -71,7 +71,7 @@ const SignIn = () => {
     setErrorMessage("");
     
     try {
-      const response = await axios.post('http://localhost:8000/api/auth/login', {
+      const response = await axios.post('https://drhscit.org/dren/api/auth/login', {
         email,
         password
       });
@@ -133,7 +133,7 @@ const SignIn = () => {
       setIsLoading(true);
       setErrorMessage("");
       
-      const backendResponse = await axios.post('http://localhost:8000/api/auth/google-login', {
+      const backendResponse = await axios.post('https://drhscit.org/dren/api/auth/google-login', {
         token: response.credential
       });
       
@@ -194,7 +194,7 @@ const SignIn = () => {
       const response = await instance.loginPopup(loginRequest);
       
       // Send token to backend
-      const backendResponse = await axios.post('http://localhost:8000/api/auth/microsoft-login', {
+      const backendResponse = await axios.post('https://drhscit.org/dren/api/auth/microsoft-login', {
         msUserData: {
           email: response.account.username,
           firstName: response.account.name?.split(' ')[0] || '',

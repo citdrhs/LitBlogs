@@ -79,7 +79,7 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
       try {
         const token = localStorage.getItem('token');
         const response = await axios.get(
-          `http://localhost:8000/api/classes/${classData.id}/details`,
+          `https://drhscit.org/dren/api/classes/${classData.id}/details`,
           {
             headers: { Authorization: `Bearer ${token}` }
           }
@@ -90,7 +90,7 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
         
         // Fetch students enrolled in the class
         const enrollmentResponse = await axios.get(
-          `http://localhost:8000/api/classes/${classData.id}/students`,
+          `https://drhscit.org/dren/api/classes/${classData.id}/students`,
           {
             headers: { Authorization: `Bearer ${token}` }
           }
@@ -100,7 +100,7 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
         
         // Fetch posts for this class
         const postsResponse = await axios.get(
-          `http://localhost:8000/api/classes/${classData.id}/posts`,
+          `https://drhscit.org/dren/api/classes/${classData.id}/posts`,
           {
             headers: { Authorization: `Bearer ${token}` }
           }
@@ -109,10 +109,10 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
         setPostCount(postsResponse.data.length);
 
         const [assignmentsResponse, analyticsResponse] = await Promise.all([
-          axios.get(`http://localhost:8000/api/classes/${classData.id}/assignments`, {
+          axios.get(`https://drhscit.org/dren/api/classes/${classData.id}/assignments`, {
             headers: { Authorization: `Bearer ${token}` }
           }),
-          axios.get(`http://localhost:8000/api/classes/${classData.id}/analytics`, {
+          axios.get(`https://drhscit.org/dren/api/classes/${classData.id}/analytics`, {
             headers: { Authorization: `Bearer ${token}` }
           })
         ]);
@@ -152,7 +152,7 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
       setSavingAssignment(true);
       const token = localStorage.getItem('token');
       await axios.post(
-        `http://localhost:8000/api/classes/${classData.id}/assignments`,
+        `https://drhscit.org/dren/api/classes/${classData.id}/assignments`,
         {
           title: newAssignment.title,
           description: newAssignment.description,
@@ -165,7 +165,7 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
       );
 
       const assignmentsResponse = await axios.get(
-        `http://localhost:8000/api/classes/${classData.id}/assignments`,
+        `https://drhscit.org/dren/api/classes/${classData.id}/assignments`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       setAssignments(assignmentsResponse.data || []);
@@ -183,7 +183,7 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
     try {
       const token = localStorage.getItem('token');
       const response = await axios.get(
-        `http://localhost:8000/api/classes/${classData.id}/assignments/${assignmentId}/submissions`,
+        `https://drhscit.org/dren/api/classes/${classData.id}/assignments/${assignmentId}/submissions`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       setAssignmentSubmissions((prev) => ({

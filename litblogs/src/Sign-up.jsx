@@ -198,7 +198,7 @@ const SignUp = () => {
       const username = email.split('@')[0] + Math.floor(Math.random() * 1000);
 
       // Send registration data to backend with correct field names
-      const response = await axios.post('http://localhost:8000/api/auth/register', {
+      const response = await axios.post('https://drhscit.org/dren/api/auth/register', {
         username: username,
         email: email,
         password: password,
@@ -257,7 +257,7 @@ const SignUp = () => {
       const { credential } = credentialResponse;
       
       // Send the token to your backend for verification
-      const response = await fetch('http://localhost:8000/api/auth/google-signup', {
+      const response = await fetch('https://drhscit.org/dren/api/auth/google-signup', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -346,7 +346,7 @@ const SignUp = () => {
         const googleUserInfo = await userInfoResponse.json();
         
         // Send the user info to your backend
-        const response = await fetch('http://localhost:8000/api/auth/google-signup', {
+        const response = await fetch('https://drhscit.org/dren/api/auth/google-signup', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -429,7 +429,7 @@ const SignUp = () => {
       const response = await instance.loginPopup(loginRequest);
       
       // Send token to backend with role and access code
-      const backendResponse = await axios.post('http://localhost:8000/api/auth/microsoft-signup', {
+      const backendResponse = await axios.post('https://drhscit.org/dren/api/auth/microsoft-signup', {
         msUserData: {
           email: response.account.username,
           firstName: response.account.name?.split(' ')[0] || '',
