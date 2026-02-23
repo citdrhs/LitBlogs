@@ -138,7 +138,7 @@ server {
     listen 7001;
     listen [::]:7001;
     server_name drhscit.org www.drhscit.org;
-    root /var/www/LitBlog/litblogs/dist;
+    root /var/www/LitBlogs/litblogs/dist;
     index index.html;
     # For React Router (SPA) at /dren path
     location / {
