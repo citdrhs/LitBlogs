@@ -112,6 +112,11 @@ npm install --force
 ```javascript
 base: '/dren/',
 ```
+and
+```javascript
+<BrowserReact basename='/dren'>
+```
+in main.jsx
 
 3. Change the redirect/postLogoutRedirect URI in msalConfig.js to:
 ```javascript
