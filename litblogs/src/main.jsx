@@ -21,7 +21,7 @@ msalInstance.initialize().then(() => {
     <React.StrictMode>
       <MsalProvider instance={msalInstance}>
         <GoogleOAuthProvider clientId="653922429771-qdjgvs7vkrcd7g4o2oea12t097ah4eog.apps.googleusercontent.com">
-          <BrowserRouter>
+          <BrowserRouter basename="/dren">
             <App />
           </BrowserRouter>
         </GoogleOAuthProvider>
