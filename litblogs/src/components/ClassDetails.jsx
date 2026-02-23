@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import axios from 'axios';
 import Navbar from './Navbar';
 import { useNavigate } from 'react-router-dom';
@@ -38,7 +38,15 @@ const formatRelativeTime = (dateString) => {
   return 'Just now';
 };
 
+const formatDateSafe = (dateValue) => {
+  if (!dateValue) return '—';
+  const parsed = new Date(dateValue);
+  if (Number.isNaN(parsed.getTime())) return '—';
+  return parsed.toLocaleDateString();
+};
+
 const ClassDetails = ({ classData, darkMode, onBack }) => {
+  const [userInfo, setUserInfo] = useState(null);
   const [activeTab, setActiveTab] = useState('Overview');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -58,6 +66,13 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
   const navigate = useNavigate();
 
   const tabs = ['Overview', 'Students', 'Blogs', 'Assignments', 'Analytics'];
+
+  useEffect(() => {
+    const storedUserInfo = localStorage.getItem('user_info');
+    if (storedUserInfo) {
+      setUserInfo(JSON.parse(storedUserInfo));
+    }
+  }, []);
 
   useEffect(() => {
     const fetchClassDetails = async () => {
@@ -312,7 +327,7 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
                             {student.email}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                            {new Date(student.created_at).toLocaleDateString()}
+                            {formatDateSafe(student.created_at)}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm">
                             <button 
@@ -339,7 +354,15 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
                 <h3 className="text-xl font-semibold mb-4">Posts ({postCount})</h3>
                 
                 {posts.length > 0 ? (
-                  posts.map((post) => (
+                  posts.map((post) => {
+                    const authorName = typeof post.author === 'string'
+                      ? post.author
+                      : post.author
+                        ? `${post.author.first_name || ''} ${post.author.last_name || ''}`.trim()
+                        : 'Unknown Author';
+                    const authorInitial = authorName && authorName !== 'Unknown Author' ? authorName[0] : '?';
+
+                    return (
                     <motion.div
                       key={post.id}
                       className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden cursor-pointer hover:shadow-xl transition-shadow duration-300"
@@ -353,11 +376,11 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
                         <div className="flex justify-between items-start">
                           <div className="flex items-center">
                             <div className="w-12 h-12 rounded-full bg-gray-300 flex items-center justify-center">
-                              {post.author?.first_name?.[0] || '?'}
+                              {authorInitial}
                             </div>
                             <div>
                               <h3 className="font-medium text-lg dark:text-white">
-                                {post.author ? `${post.author.first_name} ${post.author.last_name}` : 'Unknown Author'}
+                                {authorName}
                               </h3>
                             </div>
                           </div>
@@ -375,7 +398,7 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                navigate(`/class/${classId}/post/${post.id}?showAi=true`);
+                                navigate(`/class/${classData.id}/post/${post.id}?showAi=true`);
                               }}
                               className={`px-2 py-1 text-xs font-bold rounded-full ${
                                 post.ai_percentage > 50 
@@ -409,7 +432,8 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
                         </div>
                       </div>
                     </motion.div>
-                  ))
+                    );
+                  })
                 ) : (
                   <div className="text-center text-gray-500 dark:text-gray-400 py-8">
                     No posts yet

@@ -108,14 +108,14 @@ const LitBlogs = () => {
 
       {/* Content */}
       <section className="py-28 text-center overflow-visible">
-        <motion
+        <motion.h1
           className="relative -top-2 text-5xl md:text-7xl font-bold mb-4 bg-gradient-text bg-clip-text text-transparent pt-2 pb-3"
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.8 }}
         >
           Lit Up Your Thoughts
-        </motion>
+        </motion.h1>
         <motion.p
           className="text-gray-600 dark:text-gray-400 text-xl mb-8 max-w-2xl mx-auto mt-8"
           initial={{ opacity: 0, y: 20 }}

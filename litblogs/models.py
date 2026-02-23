@@ -33,6 +33,7 @@ class User(Base):
     comments = relationship("Comment", back_populates="user", cascade="all, delete-orphan")
     comment_likes = relationship("CommentLike", back_populates="user", cascade="all, delete-orphan")
     assignment_submissions = relationship("AssignmentSubmission", back_populates="student", cascade="all, delete-orphan")
+    assignment_submission_replies = relationship("AssignmentSubmissionReply", back_populates="user", cascade="all, delete-orphan")
 
 class Teacher(Base):
     __tablename__ = "teachers"
@@ -90,6 +91,19 @@ class AssignmentSubmission(Base):
 
     assignment = relationship("Assignment", back_populates="submissions")
     student = relationship("User", back_populates="assignment_submissions")
+    replies = relationship("AssignmentSubmissionReply", back_populates="submission", cascade="all, delete-orphan")
+
+class AssignmentSubmissionReply(Base):
+    __tablename__ = "assignment_submission_replies"
+    id = Column(Integer, primary_key=True, index=True)
+    submission_id = Column(Integer, ForeignKey("assignment_submissions.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+    submission = relationship("AssignmentSubmission", back_populates="replies")
+    user = relationship("User", back_populates="assignment_submission_replies")
 
 class ClassEnrollment(Base):
     __tablename__ = "class_enrollments"

@@ -995,19 +995,46 @@ def run_ai_detection(text: str, record_id: int, record_type: str):
         overall_result = result[2]
         
         # Parse overall_result to get percentage
-        # Example: "         PREDICTION: AI         Confidence: 95.3%         Windows analyzed: 1         "
+        # API returns strings and format may vary by model/version.
         ai_percentage = None
-        confidence_match = re.search(r'Confidence:\s*([\d.]+)%', overall_result)
-        prediction_match = re.search(r'PREDICTION:\s*([A-Za-z]+)', overall_result)
-        
+        overall_text = str(overall_result or "")
+
+        confidence_match = re.search(r'confidence\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*%', overall_text, re.IGNORECASE)
+        prediction_match = re.search(r'prediction\s*:\s*([A-Za-z]+)', overall_text, re.IGNORECASE)
+
         if confidence_match and prediction_match:
             confidence = float(confidence_match.group(1))
             prediction = prediction_match.group(1).strip().upper()
-            
+
             if prediction == "AI":
                 ai_percentage = int(round(confidence))
             elif prediction == "HUMAN":
                 ai_percentage = int(round(100 - confidence))
+
+        # Fallback: derive an aggregate AI score from sentence-by-sentence analysis
+        # Example sentence block:
+        # Prediction: HUMAN
+        # Confidence: 78.5%
+        if ai_percentage is None and sentence_analysis:
+            sentence_matches = re.findall(
+                r'Prediction:\s*(AI|HUMAN)\s*\n\s*Confidence:\s*([0-9]+(?:\.[0-9]+)?)\s*%',
+                str(sentence_analysis),
+                re.IGNORECASE
+            )
+
+            if sentence_matches:
+                ai_likelihoods = []
+                for pred, conf_text in sentence_matches:
+                    conf = float(conf_text)
+                    if pred.upper() == "AI":
+                        ai_likelihoods.append(conf)
+                    else:
+                        ai_likelihoods.append(100 - conf)
+
+                ai_percentage = int(round(sum(ai_likelihoods) / len(ai_likelihoods)))
+
+        if ai_percentage is not None:
+            ai_percentage = max(0, min(100, int(ai_percentage)))
         
         # Update the database
         if record_type == "post":
@@ -1102,6 +1129,7 @@ async def create_class_post(
 @app.get("/api/classes/{class_id}/posts")
 async def get_class_posts(
     class_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -1115,6 +1143,9 @@ async def get_class_posts(
     # Format posts with author information
     formatted_posts = []
     for post in posts:
+        if post.content and post.ai_percentage is None and not post.ai_sentence_analysis:
+            background_tasks.add_task(run_ai_detection, post.content, post.id, "post")
+
         author = db.query(models.User).filter(models.User.id == post.owner_id).first()
         formatted_posts.append({
             "id": post.id,
@@ -1486,7 +1517,10 @@ async def list_assignments(
                 "id": submission.id,
                 "submitted_at": submission.submitted_at,
                 "is_late": submission.is_late,
-                "content": submission.content
+                "content": submission.content,
+                "ai_percentage": submission.ai_percentage,
+                "ai_highlighted_html": submission.ai_highlighted_html,
+                "ai_sentence_analysis": submission.ai_sentence_analysis
             } if submission else None
         })
 
@@ -1510,7 +1544,15 @@ async def submit_assignment(
     _ensure_class_access(db, current_user, assignment.class_id)
 
     submitted_at = datetime.utcnow()
-    is_late = assignment.due_date is not None and submitted_at > assignment.due_date
+    due_date = assignment.due_date
+
+    if due_date is not None:
+        if due_date.tzinfo is not None and submitted_at.tzinfo is None:
+            submitted_at = submitted_at.replace(tzinfo=due_date.tzinfo)
+        elif due_date.tzinfo is None and submitted_at.tzinfo is not None:
+            due_date = due_date.replace(tzinfo=submitted_at.tzinfo)
+
+    is_late = due_date is not None and submitted_at > due_date
     if is_late and not assignment.allow_late:
         raise HTTPException(status_code=400, detail="Late submissions are not allowed")
 
@@ -1598,6 +1640,9 @@ async def list_assignment_submissions(
     results = []
     for submission in submissions:
         student = db.query(models.User).filter(models.User.id == submission.student_id).first()
+        replies = db.query(models.AssignmentSubmissionReply).filter(
+            models.AssignmentSubmissionReply.submission_id == submission.id
+        ).order_by(models.AssignmentSubmissionReply.created_at.asc()).all()
         results.append({
             "id": submission.id,
             "assignment_id": submission.assignment_id,
@@ -1614,10 +1659,141 @@ async def list_assignment_submissions(
                 "last_name": student.last_name,
                 "email": student.email,
                 "username": student.username
-            } if student else None
+            } if student else None,
+            "replies": [
+                {
+                    "id": reply.id,
+                    "content": reply.content,
+                    "created_at": reply.created_at,
+                    "updated_at": reply.updated_at,
+                    "user": {
+                        "id": reply.user.id,
+                        "first_name": reply.user.first_name,
+                        "last_name": reply.user.last_name,
+                        "username": reply.user.username,
+                        "role": reply.user.role.value if hasattr(reply.user.role, "value") else str(reply.user.role)
+                    } if reply.user else None
+                }
+                for reply in replies
+            ]
         })
 
     return results
+
+@app.get("/api/classes/{class_id}/assignments/{assignment_id}/submissions/{submission_id}/replies")
+async def list_assignment_submission_replies(
+    class_id: int,
+    assignment_id: int,
+    submission_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    db_class = _get_class_or_404(db, class_id)
+    assignment = db.query(models.Assignment).filter(models.Assignment.id == assignment_id).first()
+    if not assignment or assignment.class_id != class_id:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    submission = db.query(models.AssignmentSubmission).filter(
+        models.AssignmentSubmission.id == submission_id,
+        models.AssignmentSubmission.assignment_id == assignment_id
+    ).first()
+    if not submission:
+        raise HTTPException(status_code=404, detail="Submission not found")
+
+    if current_user.role == models.UserRole.ADMIN:
+        pass
+    elif current_user.role == models.UserRole.TEACHER:
+        teacher = _get_teacher_record(db, current_user)
+        if not teacher or db_class.teacher_id != teacher.id:
+            raise HTTPException(status_code=403, detail="Not authorized")
+    elif current_user.role == models.UserRole.STUDENT:
+        _ensure_class_access(db, current_user, class_id)
+        if assignment.visibility != "class":
+            raise HTTPException(status_code=403, detail="Not authorized")
+    else:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    replies = db.query(models.AssignmentSubmissionReply).filter(
+        models.AssignmentSubmissionReply.submission_id == submission_id
+    ).order_by(models.AssignmentSubmissionReply.created_at.asc()).all()
+
+    return [
+        {
+            "id": reply.id,
+            "content": reply.content,
+            "created_at": reply.created_at,
+            "updated_at": reply.updated_at,
+            "user": {
+                "id": reply.user.id,
+                "first_name": reply.user.first_name,
+                "last_name": reply.user.last_name,
+                "username": reply.user.username,
+                "role": reply.user.role.value if hasattr(reply.user.role, "value") else str(reply.user.role)
+            } if reply.user else None
+        }
+        for reply in replies
+    ]
+
+@app.post("/api/classes/{class_id}/assignments/{assignment_id}/submissions/{submission_id}/replies")
+async def create_assignment_submission_reply(
+    class_id: int,
+    assignment_id: int,
+    submission_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    db_class = _get_class_or_404(db, class_id)
+    assignment = db.query(models.Assignment).filter(models.Assignment.id == assignment_id).first()
+    if not assignment or assignment.class_id != class_id:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    submission = db.query(models.AssignmentSubmission).filter(
+        models.AssignmentSubmission.id == submission_id,
+        models.AssignmentSubmission.assignment_id == assignment_id
+    ).first()
+    if not submission:
+        raise HTTPException(status_code=404, detail="Submission not found")
+
+    if current_user.role == models.UserRole.ADMIN:
+        pass
+    elif current_user.role == models.UserRole.TEACHER:
+        teacher = _get_teacher_record(db, current_user)
+        if not teacher or db_class.teacher_id != teacher.id:
+            raise HTTPException(status_code=403, detail="Not authorized")
+    elif current_user.role == models.UserRole.STUDENT:
+        _ensure_class_access(db, current_user, class_id)
+        if assignment.visibility != "class":
+            raise HTTPException(status_code=403, detail="Not authorized")
+    else:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    content = (payload.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Reply content is required")
+
+    reply = models.AssignmentSubmissionReply(
+        submission_id=submission_id,
+        user_id=current_user.id,
+        content=content
+    )
+    db.add(reply)
+    db.commit()
+    db.refresh(reply)
+
+    return {
+        "id": reply.id,
+        "content": reply.content,
+        "created_at": reply.created_at,
+        "updated_at": reply.updated_at,
+        "user": {
+            "id": current_user.id,
+            "first_name": current_user.first_name,
+            "last_name": current_user.last_name,
+            "username": current_user.username,
+            "role": current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role)
+        }
+    }
 
 @app.get("/api/classes/{class_id}/analytics")
 async def get_class_analytics(
@@ -2765,6 +2941,7 @@ async def get_class_students(
                 "email": student.email,
                 "first_name": student.first_name,
                 "last_name": student.last_name,
+                "created_at": student.created_at,
                 "posts_count": post_count,
             })
     
@@ -3111,13 +3288,13 @@ async def get_student_posts(
     formatted_posts = []
     for post in posts:
         # Count likes
-        likes_count = db.query(models.Like).filter(
-            models.Like.post_id == post.id
+        likes_count = db.query(models.PostLike).filter(
+            models.PostLike.post_id == post.id
         ).count()
         
         # Count comments
         comments_count = db.query(models.Comment).filter(
-            models.Comment.post_id == post.id
+            models.Comment.blog_id == post.id
         ).count()
         
         formatted_posts.append({

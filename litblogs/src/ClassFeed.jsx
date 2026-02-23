@@ -379,7 +379,6 @@ const TINYMCE_CONFIG = {
   paste_data_images: true,
   automatic_uploads: true,
   file_picker_types: 'file image media',
-  paste_retain_style_properties: 'color,background-color,font-size',
   browser_spellcheck: true,
   font_formats: 'Arial=arial,helvetica,sans-serif;' +
                 'Courier New=courier new,courier,monospace;' +
@@ -1245,7 +1244,8 @@ const ClassFeed = () => {
   const navigate = useNavigate();
   const [userInfo, setUserInfo] = useState(null);
   const [classDetails, setClassDetails] = useState(null);
-  const [posts, setPosts] = useState(MOCK_POSTS);
+  const [posts, setPosts] = useState([]);
+  const [postsLoading, setPostsLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [darkMode, setDarkMode] = useState(() => {
@@ -1407,7 +1407,7 @@ const ClassFeed = () => {
     // Get likes for all posts on initial load
     const fetchLikes = async () => {
       const token = localStorage.getItem('token');
-      if (!token || !posts.length) return;
+      if (!token || !posts.length || !classId) return;
       
       const likesInfo = {};
       
@@ -1430,7 +1430,7 @@ const ClassFeed = () => {
     };
     
     fetchLikes();
-  }, [posts]);
+  }, [posts, classId]);
 
   useEffect(() => {
     // Modify the existing useEffect that fetches posts
@@ -2123,7 +2123,7 @@ const ClassFeed = () => {
   };
 
   return (
-    <div className={`min-h-screen transition-all duration-500 ${darkMode ? 'bg-gradient-to-r from-slate-800 to-gray-950 text-gray-200' : 'bg-gradient-to-r from-indigo-100 to-pink-100 text-gray-900'}`}>
+    <div className={`min-h-screen flex flex-col transition-all duration-500 ${darkMode ? 'bg-gradient-to-r from-slate-800 to-gray-950 text-gray-200' : 'bg-gradient-to-r from-indigo-100 to-pink-100 text-gray-900'}`}>
       {/* Navbar */}
       <Navbar
         userInfo={userInfo}
@@ -2188,7 +2188,7 @@ const ClassFeed = () => {
       </div>
 
       {/* Main Content - Add margin for side panel */}
-      <div className="ml-64">
+      <div className="ml-64 flex-1">
         {/* Posts Feed */}
         <div className="max-w-5xl mx-auto px-8 pt-32">
           {/* Blog Header - Moved down */}
@@ -2288,20 +2288,14 @@ const ClassFeed = () => {
                               {submission ? 'View Submission' : isOverdue ? 'Submit Late' : 'Submit'}
                             </button>
                           )}
-                          {isStudent && isPublicSubmission && (
+                          {isPublicSubmission && (
                             <button
-                              onClick={() => {
-                                const nextId = expandedAssignmentId === assignment.id ? null : assignment.id;
-                                setExpandedAssignmentId(nextId);
-                                if (nextId && !assignmentSubmissions[assignment.id]) {
-                                  loadAssignmentSubmissions(assignment.id);
-                                }
-                              }}
+                              onClick={() => navigate(`/class/${classId}/assignment/${assignment.id}/submissions`)}
                               className={`px-4 py-2 rounded-lg text-sm font-medium ${
                                 darkMode ? 'bg-gray-700 text-gray-200' : 'bg-gray-100 text-gray-700'
                               }`}
                             >
-                              {expandedAssignmentId === assignment.id ? 'Hide Submissions' : 'View Submissions'}
+                              Open Submissions
                             </button>
                           )}
                         </div>
@@ -2315,56 +2309,17 @@ const ClassFeed = () => {
                           <span className={submission.is_late ? 'text-rose-500' : 'text-emerald-500'}>
                             {submission.is_late ? 'Late' : 'On time'}
                           </span>
-                        </div>
-                      )}
-
-                      {expandedAssignmentId === assignment.id && (
-                        <div className="mt-4 space-y-3">
-                          {(assignmentSubmissions[assignment.id] || []).length === 0 ? (
-                            <div className="text-sm text-gray-500 dark:text-gray-400">No submissions yet.</div>
-                          ) : (
-                            (assignmentSubmissions[assignment.id] || []).map((submissionItem) => (
-                              <div
-                                key={submissionItem.id}
-                                className={`rounded-lg border p-3 ${darkMode ? 'border-gray-700 bg-gray-900/40' : 'border-gray-200 bg-white'}`}
-                              >
-                                <div className="flex items-center justify-between text-sm">
-                                  <span className="font-medium">
-                                    {submissionItem.student?.first_name} {submissionItem.student?.last_name}
-                                  </span>
-                                  <div className="flex items-center gap-2">
-                                    {userInfo?.role === 'TEACHER' && submissionItem.ai_percentage !== null && submissionItem.ai_percentage !== undefined && (
-                                      <button
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setSelectedAiSubmission(submissionItem);
-                                        }}
-                                        className={`px-2 py-1 text-xs font-bold rounded-full ${
-                                          submissionItem.ai_percentage > 50 
-                                            ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400' 
-                                            : 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
-                                        }`}
-                                        title="Click to view AI analysis"
-                                      >
-                                        {submissionItem.ai_percentage}% AI
-                                      </button>
-                                    )}
-                                    <span className={submissionItem.is_late ? 'text-rose-500' : 'text-emerald-500'}>
-                                      {submissionItem.is_late ? 'Late' : 'On Time'}
-                                    </span>
-                                  </div>
-                                </div>
-                                <div className="text-xs text-gray-500 dark:text-gray-400">
-                                  Submitted: {new Date(submissionItem.submitted_at).toLocaleString()}
-                                </div>
-                                <div className="mt-2 text-sm text-gray-600 dark:text-gray-300">
-                                  {submissionItem.content || 'No content provided.'}
-                                </div>
-                              </div>
-                            ))
+                          {submission.ai_percentage !== null && submission.ai_percentage !== undefined && (
+                            <>
+                              {' '}•{' '}
+                              <span className={submission.ai_percentage > 50 ? 'text-rose-500' : 'text-emerald-500'}>
+                                {submission.ai_percentage}% AI
+                              </span>
+                            </>
                           )}
                         </div>
                       )}
+
                     </div>
                   );
                 })}
@@ -2989,7 +2944,9 @@ const ClassFeed = () => {
         )}
       </AnimatePresence>
 
-      <Footer darkMode={darkMode} />
+      <div className="ml-64">
+        <Footer darkMode={darkMode} />
+      </div>
     </div>
   );
 };
