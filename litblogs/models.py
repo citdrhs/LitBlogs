@@ -33,6 +33,7 @@ class User(Base):
     comments = relationship("Comment", back_populates="user", cascade="all, delete-orphan")
     comment_likes = relationship("CommentLike", back_populates="user", cascade="all, delete-orphan")
     assignment_submissions = relationship("AssignmentSubmission", back_populates="student", cascade="all, delete-orphan")
+    assignment_drafts = relationship("AssignmentDraft", back_populates="student", cascade="all, delete-orphan")
     assignment_submission_replies = relationship("AssignmentSubmissionReply", back_populates="user", cascade="all, delete-orphan")
 
 class Teacher(Base):
@@ -74,6 +75,22 @@ class Assignment(Base):
 
     class_ = relationship("Class", back_populates="assignments")
     submissions = relationship("AssignmentSubmission", back_populates="assignment", cascade="all, delete-orphan")
+    drafts = relationship("AssignmentDraft", back_populates="assignment", cascade="all, delete-orphan")
+
+class AssignmentDraft(Base):
+    __tablename__ = "assignment_drafts"
+    id = Column(Integer, primary_key=True, index=True)
+    assignment_id = Column(Integer, ForeignKey("assignments.id", ondelete="CASCADE"), nullable=False)
+    student_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    content = Column(Text, nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    assignment = relationship("Assignment", back_populates="drafts")
+    student = relationship("User", back_populates="assignment_drafts")
+
+    __table_args__ = (
+        UniqueConstraint('assignment_id', 'student_id', name='unique_assignment_draft'),
+    )
 
 class AssignmentSubmission(Base):
     __tablename__ = "assignment_submissions"

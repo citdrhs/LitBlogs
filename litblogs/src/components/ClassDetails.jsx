@@ -45,6 +45,22 @@ const formatDateSafe = (dateValue) => {
   return parsed.toLocaleDateString();
 };
 
+const EMPTY_ASSIGNMENT_FORM = {
+  title: '',
+  description: '',
+  due_date: '',
+  visibility: 'class',
+  allow_late: true,
+};
+
+const formatAssignmentDateInput = (dateValue) => {
+  if (!dateValue) return '';
+  const parsed = new Date(dateValue);
+  if (Number.isNaN(parsed.getTime())) return '';
+  const timezoneOffset = parsed.getTimezoneOffset() * 60000;
+  return new Date(parsed.getTime() - timezoneOffset).toISOString().slice(0, 16);
+};
+
 const ClassDetails = ({ classData, darkMode, onBack }) => {
   const [userInfo, setUserInfo] = useState(null);
   const [activeTab, setActiveTab] = useState('Overview');
@@ -58,11 +74,12 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
   const [assignments, setAssignments] = useState([]);
   const [analytics, setAnalytics] = useState(null);
   const [showAssignmentForm, setShowAssignmentForm] = useState(false);
-  const [newAssignment, setNewAssignment] = useState({ title: '', description: '', due_date: '', visibility: 'class' });
+  const [assignmentForm, setAssignmentForm] = useState(EMPTY_ASSIGNMENT_FORM);
   const [assignmentSubmissions, setAssignmentSubmissions] = useState({});
   const [savingAssignment, setSavingAssignment] = useState(false);
   const [expandedAssignmentId, setExpandedAssignmentId] = useState(null);
   const [selectedAiSubmission, setSelectedAiSubmission] = useState(null);
+  const [editingAssignmentId, setEditingAssignmentId] = useState(null);
   const navigate = useNavigate();
 
   const tabs = ['Overview', 'Students', 'Blogs', 'Assignments', 'Analytics'];
@@ -74,12 +91,44 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
     }
   }, []);
 
+  const refreshAssignments = async (token) => {
+    const assignmentsResponse = await axios.get(
+      `/classes/${classData.id}/assignments`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    setAssignments(assignmentsResponse.data || []);
+  };
+
+  const resetAssignmentForm = () => {
+    setAssignmentForm(EMPTY_ASSIGNMENT_FORM);
+    setEditingAssignmentId(null);
+    setShowAssignmentForm(false);
+  };
+
+  const openCreateAssignmentForm = () => {
+    setAssignmentForm(EMPTY_ASSIGNMENT_FORM);
+    setEditingAssignmentId(null);
+    setShowAssignmentForm(true);
+  };
+
+  const openEditAssignmentForm = (assignment) => {
+    setAssignmentForm({
+      title: assignment.title || '',
+      description: assignment.description || '',
+      due_date: formatAssignmentDateInput(assignment.due_date),
+      visibility: assignment.visibility || 'class',
+      allow_late: assignment.allow_late ?? true,
+    });
+    setEditingAssignmentId(assignment.id);
+    setShowAssignmentForm(true);
+  };
+
   useEffect(() => {
     const fetchClassDetails = async () => {
       try {
         const token = localStorage.getItem('token');
         const response = await axios.get(
-          `http://localhost:8000/api/classes/${classData.id}/details`,
+          `/classes/${classData.id}/details`,
           {
             headers: { Authorization: `Bearer ${token}` }
           }
@@ -90,7 +139,7 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
         
         // Fetch students enrolled in the class
         const enrollmentResponse = await axios.get(
-          `http://localhost:8000/api/classes/${classData.id}/students`,
+          `/classes/${classData.id}/students`,
           {
             headers: { Authorization: `Bearer ${token}` }
           }
@@ -100,7 +149,7 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
         
         // Fetch posts for this class
         const postsResponse = await axios.get(
-          `http://localhost:8000/api/classes/${classData.id}/posts`,
+          `/classes/${classData.id}/posts`,
           {
             headers: { Authorization: `Bearer ${token}` }
           }
@@ -109,10 +158,10 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
         setPostCount(postsResponse.data.length);
 
         const [assignmentsResponse, analyticsResponse] = await Promise.all([
-          axios.get(`http://localhost:8000/api/classes/${classData.id}/assignments`, {
+          axios.get(`/classes/${classData.id}/assignments`, {
             headers: { Authorization: `Bearer ${token}` }
           }),
-          axios.get(`http://localhost:8000/api/classes/${classData.id}/analytics`, {
+          axios.get(`/classes/${classData.id}/analytics`, {
             headers: { Authorization: `Bearer ${token}` }
           })
         ]);
@@ -147,32 +196,40 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
     return textContent.substring(0, maxLength) + '...';
   };
 
-  const handleCreateAssignment = async () => {
+  const handleSaveAssignment = async () => {
     try {
       setSavingAssignment(true);
       const token = localStorage.getItem('token');
-      await axios.post(
-        `http://localhost:8000/api/classes/${classData.id}/assignments`,
-        {
-          title: newAssignment.title,
-          description: newAssignment.description,
-          due_date: newAssignment.due_date,
-          visibility: newAssignment.visibility
-        },
-        {
-          headers: { Authorization: `Bearer ${token}` }
-        }
-      );
+      const payload = {
+        title: assignmentForm.title,
+        description: assignmentForm.description,
+        due_date: assignmentForm.due_date,
+        visibility: assignmentForm.visibility,
+        allow_late: assignmentForm.allow_late,
+      };
 
-      const assignmentsResponse = await axios.get(
-        `http://localhost:8000/api/classes/${classData.id}/assignments`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      setAssignments(assignmentsResponse.data || []);
-      setShowAssignmentForm(false);
-      setNewAssignment({ title: '', description: '', due_date: '', visibility: 'class' });
+      if (editingAssignmentId) {
+        await axios.put(
+          `/classes/${classData.id}/assignments/${editingAssignmentId}`,
+          payload,
+          {
+            headers: { Authorization: `Bearer ${token}` }
+          }
+        );
+      } else {
+        await axios.post(
+          `/classes/${classData.id}/assignments`,
+          payload,
+          {
+            headers: { Authorization: `Bearer ${token}` }
+          }
+        );
+      }
+
+      await refreshAssignments(token);
+      resetAssignmentForm();
     } catch (error) {
-      setError(error.response?.data?.detail || 'Failed to create assignment');
+      setError(error.response?.data?.detail || 'Failed to save assignment');
     } finally {
       setSavingAssignment(false);
     }
@@ -183,7 +240,7 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
     try {
       const token = localStorage.getItem('token');
       const response = await axios.get(
-        `http://localhost:8000/api/classes/${classData.id}/assignments/${assignmentId}/submissions`,
+        `/classes/${classData.id}/assignments/${assignmentId}/submissions`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       setAssignmentSubmissions((prev) => ({
@@ -456,7 +513,7 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
                     </p>
                   </div>
                   <button
-                    onClick={() => setShowAssignmentForm(true)}
+                    onClick={openCreateAssignmentForm}
                     className="px-4 py-2 rounded-lg text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500"
                   >
                     Create Assignment
@@ -465,20 +522,22 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
 
                 {showAssignmentForm && (
                   <div className={`p-6 rounded-lg ${darkMode ? 'bg-gray-800/60' : 'bg-white'} shadow-lg`}>
-                    <h4 className="text-lg font-semibold mb-4">New Assignment</h4>
+                    <h4 className="text-lg font-semibold mb-4">
+                      {editingAssignmentId ? 'Edit Assignment' : 'New Assignment'}
+                    </h4>
                     <div className="grid gap-4">
                       <input
                         type="text"
-                        value={newAssignment.title}
-                        onChange={(e) => setNewAssignment({ ...newAssignment, title: e.target.value })}
+                        value={assignmentForm.title}
+                        onChange={(e) => setAssignmentForm({ ...assignmentForm, title: e.target.value })}
                         placeholder="Assignment title"
                         className={`w-full p-3 rounded-lg border ${
                           darkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300'
                         }`}
                       />
                       <textarea
-                        value={newAssignment.description}
-                        onChange={(e) => setNewAssignment({ ...newAssignment, description: e.target.value })}
+                        value={assignmentForm.description}
+                        onChange={(e) => setAssignmentForm({ ...assignmentForm, description: e.target.value })}
                         placeholder="Assignment description"
                         rows="4"
                         className={`w-full p-3 rounded-lg border ${
@@ -487,12 +546,26 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
                       />
                       <input
                         type="datetime-local"
-                        value={newAssignment.due_date}
-                        onChange={(e) => setNewAssignment({ ...newAssignment, due_date: e.target.value })}
+                        value={assignmentForm.due_date}
+                        onChange={(e) => setAssignmentForm({ ...assignmentForm, due_date: e.target.value })}
                         className={`w-full p-3 rounded-lg border ${
                           darkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300'
                         }`}
                       />
+                      <label className="flex items-center justify-between rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-3">
+                        <div>
+                          <div className="text-sm font-medium text-gray-700 dark:text-gray-200">Allow late submissions</div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400">
+                            Students can still turn work in after the due date.
+                          </div>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={assignmentForm.allow_late}
+                          onChange={(e) => setAssignmentForm({ ...assignmentForm, allow_late: e.target.checked })}
+                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                      </label>
                       <div className="flex flex-col gap-2">
                         <label className="text-sm font-medium text-gray-600 dark:text-gray-300">
                           Submission Visibility
@@ -500,9 +573,9 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
                         <div className="flex flex-wrap gap-3">
                           <button
                             type="button"
-                            onClick={() => setNewAssignment({ ...newAssignment, visibility: 'class' })}
+                            onClick={() => setAssignmentForm({ ...assignmentForm, visibility: 'class' })}
                             className={`px-4 py-2 rounded-lg text-sm font-medium ${
-                              newAssignment.visibility === 'class'
+                              assignmentForm.visibility === 'class'
                                 ? 'bg-blue-500 text-white'
                                 : darkMode
                                   ? 'bg-gray-700 text-gray-200'
@@ -513,9 +586,9 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
                           </button>
                           <button
                             type="button"
-                            onClick={() => setNewAssignment({ ...newAssignment, visibility: 'private' })}
+                            onClick={() => setAssignmentForm({ ...assignmentForm, visibility: 'private' })}
                             className={`px-4 py-2 rounded-lg text-sm font-medium ${
-                              newAssignment.visibility === 'private'
+                              assignmentForm.visibility === 'private'
                                 ? 'bg-purple-500 text-white'
                                 : darkMode
                                   ? 'bg-gray-700 text-gray-200'
@@ -529,7 +602,7 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
                     </div>
                     <div className="mt-4 flex justify-end gap-3">
                       <button
-                        onClick={() => setShowAssignmentForm(false)}
+                        onClick={resetAssignmentForm}
                         className={`px-4 py-2 rounded-lg ${
                           darkMode ? 'bg-gray-700 text-gray-200' : 'bg-gray-100 text-gray-700'
                         }`}
@@ -537,11 +610,11 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
                         Cancel
                       </button>
                       <button
-                        onClick={handleCreateAssignment}
+                        onClick={handleSaveAssignment}
                         disabled={savingAssignment}
                         className="px-4 py-2 rounded-lg text-white bg-blue-600 hover:bg-blue-500"
                       >
-                        {savingAssignment ? 'Saving...' : 'Save Assignment'}
+                        {savingAssignment ? 'Saving...' : editingAssignmentId ? 'Update Assignment' : 'Save Assignment'}
                       </button>
                     </div>
                   </div>
@@ -560,29 +633,48 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
                             Due: {new Date(assignment.due_date).toLocaleString()}
                           </p>
                         </div>
-                        <button
-                          onClick={() => {
-                            const nextId = expandedAssignmentId === assignment.id ? null : assignment.id;
-                            setExpandedAssignmentId(nextId);
-                            if (nextId && !assignmentSubmissions[assignment.id]) {
-                              loadAssignmentSubmissions(assignment.id);
-                            }
-                          }}
-                          className={`px-4 py-2 rounded-lg text-sm font-medium ${
-                            darkMode ? 'bg-gray-700 text-gray-200' : 'bg-gray-100 text-gray-700'
-                          }`}
-                        >
-                          {expandedAssignmentId === assignment.id ? 'Hide Submissions' : 'View Submissions'}
-                        </button>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            onClick={() => openEditAssignmentForm(assignment)}
+                            className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                              darkMode ? 'bg-blue-900/40 text-blue-200' : 'bg-blue-50 text-blue-700'
+                            }`}
+                          >
+                            Edit Assignment
+                          </button>
+                          <button
+                            onClick={() => {
+                              const nextId = expandedAssignmentId === assignment.id ? null : assignment.id;
+                              setExpandedAssignmentId(nextId);
+                              if (nextId && !assignmentSubmissions[assignment.id]) {
+                                loadAssignmentSubmissions(assignment.id);
+                              }
+                            }}
+                            className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                              darkMode ? 'bg-gray-700 text-gray-200' : 'bg-gray-100 text-gray-700'
+                            }`}
+                          >
+                            {expandedAssignmentId === assignment.id ? 'Hide Submissions' : 'View Submissions'}
+                          </button>
+                        </div>
                       </div>
                       <div className="mt-2">
-                        <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${
-                          assignment.visibility === 'class'
-                            ? 'bg-blue-500/10 text-blue-500'
-                            : 'bg-purple-500/10 text-purple-500'
-                        }`}>
-                          {assignment.visibility === 'class' ? 'Public Submissions' : 'Teacher/Admin Only'}
-                        </span>
+                        <div className="flex flex-wrap gap-2">
+                          <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${
+                            assignment.visibility === 'class'
+                              ? 'bg-blue-500/10 text-blue-500'
+                              : 'bg-purple-500/10 text-purple-500'
+                          }`}>
+                            {assignment.visibility === 'class' ? 'Public Submissions' : 'Teacher/Admin Only'}
+                          </span>
+                          <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${
+                            assignment.allow_late
+                              ? 'bg-emerald-500/10 text-emerald-500'
+                              : 'bg-rose-500/10 text-rose-500'
+                          }`}>
+                            {assignment.allow_late ? 'Late Allowed' : 'Late Locked'}
+                          </span>
+                        </div>
                       </div>
                       <p className="mt-3 text-gray-600 dark:text-gray-300">{assignment.description || 'No description provided.'}</p>
                       <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">

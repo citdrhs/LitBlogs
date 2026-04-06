@@ -121,6 +121,30 @@ const StudentProfile = () => {
 
   const getUserId = (user) => user?.id || user?.username || user?.email
 
+  const syncStoredUserInfo = (profileData, shouldPersist = isOwnProfile) => {
+    if (!profileData || !shouldPersist) {
+      return
+    }
+
+    const storedUserInfo = JSON.parse(localStorage.getItem("user_info") || "{}")
+    const nextUserInfo = {
+      ...storedUserInfo,
+      role: profileData.role || storedUserInfo.role,
+      userId: profileData.id || storedUserInfo.userId,
+      username: profileData.username || storedUserInfo.username,
+      firstName: profileData.first_name ?? storedUserInfo.firstName,
+      first_name: profileData.first_name ?? storedUserInfo.first_name,
+      lastName: profileData.last_name ?? storedUserInfo.lastName,
+      last_name: profileData.last_name ?? storedUserInfo.last_name,
+      profile_image: profileData.profile_image ?? storedUserInfo.profile_image,
+      cover_image: profileData.cover_image ?? storedUserInfo.cover_image,
+      avatar_id: profileData.avatar_id ?? storedUserInfo.avatar_id,
+      avatar_color: profileData.avatar_color ?? storedUserInfo.avatar_color,
+    }
+
+    localStorage.setItem("user_info", JSON.stringify(nextUserInfo))
+  }
+
   const getClassIds = (classInfo) => {
     if (Array.isArray(classInfo)) {
       return classInfo.map((entry) => entry?.class_id || entry?.id || entry).filter(Boolean)
@@ -214,8 +238,9 @@ const StudentProfile = () => {
     }
   }, [])
 
-  const applyProfileData = (profileData) => {
+  const applyProfileData = (profileData, shouldPersist = isOwnProfile) => {
     setUserInfo(profileData)
+    syncStoredUserInfo(profileData, shouldPersist)
     const fullName = `${profileData?.first_name || ""} ${profileData?.last_name || ""}`.trim()
     const fallbackName = profileData?.name || profileData?.full_name || profileData?.display_name
     setName(fullName || fallbackName || profileData?.username || profileData?.email || "")
@@ -253,7 +278,7 @@ const StudentProfile = () => {
         })
 
         const profileData = response.data
-        applyProfileData(profileData)
+        applyProfileData(profileData, true)
         setLoading(false)
         return profileData
       } catch (error) {
@@ -274,7 +299,7 @@ const StudentProfile = () => {
       })
 
       const profileData = response.data
-      applyProfileData(profileData)
+      applyProfileData(profileData, false)
       setLoading(false)
       return profileData
     } catch (error) {
@@ -453,10 +478,22 @@ const StudentProfile = () => {
       setUploadProgress(0)
 
       // Update userInfo state
-      setUserInfo((prev) => ({
-        ...prev,
-        profile_image: response.data.image_url,
-      }))
+      setUserInfo((prev) => {
+        const nextProfile = {
+          ...prev,
+          profile_image: response.data.image_url,
+        }
+        syncStoredUserInfo(nextProfile)
+        return nextProfile
+      })
+      setViewerInfo((prev) => (
+        prev
+          ? {
+              ...prev,
+              profile_image: response.data.image_url,
+            }
+          : prev
+      ))
     } catch (error) {
       console.error("Error uploading image:", error)
       setUploadProgress(0)
@@ -491,10 +528,22 @@ const StudentProfile = () => {
       setUploadProgress(0)
 
       // Update userInfo state
-      setUserInfo((prev) => ({
-        ...prev,
-        cover_image: response.data.image_url,
-      }))
+      setUserInfo((prev) => {
+        const nextProfile = {
+          ...prev,
+          cover_image: response.data.image_url,
+        }
+        syncStoredUserInfo(nextProfile)
+        return nextProfile
+      })
+      setViewerInfo((prev) => (
+        prev
+          ? {
+              ...prev,
+              cover_image: response.data.image_url,
+            }
+          : prev
+      ))
     } catch (error) {
       console.error("Error uploading cover image:", error)
       setUploadProgress(0)

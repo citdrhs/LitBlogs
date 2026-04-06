@@ -104,6 +104,13 @@ class AssignmentCreate(BaseModel):
     allow_late: bool | None = True
     visibility: str | None = "class"
 
+class AssignmentUpdate(BaseModel):
+    title: str
+    description: str | None = None
+    due_date: datetime
+    allow_late: bool | None = True
+    visibility: str | None = "class"
+
 class AssignmentResponse(BaseModel):
     id: int
     class_id: int
@@ -119,6 +126,9 @@ class AssignmentResponse(BaseModel):
         from_attributes = True
 
 class AssignmentSubmissionCreate(BaseModel):
+    content: str | None = None
+
+class AssignmentDraftUpdate(BaseModel):
     content: str | None = None
 
 class AssignmentSubmissionResponse(BaseModel):

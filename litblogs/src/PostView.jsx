@@ -18,6 +18,7 @@ import { IoMdHeart, IoMdHeartEmpty } from 'react-icons/io';
 import toast from 'react-hot-toast';
 import CommentThread from './components/CommentThread';
 import { formatRelativeTime, setupTimeUpdater } from './utils/timeUtils';
+import { mediaPath } from './utils/urlUtils';
 import Footer from './components/Footer';
 
 // Function to determine file type from URL
@@ -149,7 +150,7 @@ const processHTMLWithDOM = (html) => {
     if (source) {
       const src = source.getAttribute('src');
       if (src && src.startsWith('/uploads/')) {
-        source.setAttribute('src', `http://localhost:8000${src}`);
+        source.setAttribute('src', mediaPath(src));
       }
     }
   });
@@ -227,7 +228,7 @@ const processHTMLWithDOM = (html) => {
     const src = img.getAttribute('src');
     if (src && src.startsWith('/uploads/')) {
       // Make sure the URL is absolute by adding the base URL
-      img.src = `http://localhost:8000${src}`;
+      img.src = mediaPath(src);
     }
     
     // IMPORTANT: Do NOT override existing styles or attributes
@@ -304,7 +305,7 @@ const processHTMLWithDOM = (html) => {
       //   // Simplified preview function
       //   previewBtn.addEventListener('click', function() {
       //     const fileType = getFileTypeFromUrl(fileUrl);
-      //     const fullUrl = fileUrl.startsWith('http') ? fileUrl : `http://localhost:8000${fileUrl}`;
+      //     const fullUrl = mediaPath(fileUrl);
           
       //     // Create modal for preview
       //     const modal = document.createElement('div');
@@ -404,7 +405,7 @@ const processHTMLWithDOM = (html) => {
         downloadBtn.style.display = 'inline-block';
         
         // Set the href to directly download the file
-        const fullUrl = fileUrl.startsWith('http') ? fileUrl : `http://localhost:8000${fileUrl}`;
+        const fullUrl = mediaPath(fileUrl);
         downloadBtn.href = fullUrl;
         downloadBtn.download = fileName; // This tells the browser to download instead of navigate
         downloadBtn.target = '_blank'; // Open in new tab as fallback
@@ -450,7 +451,7 @@ const processHTMLWithDOM = (html) => {
         
         // Make sure the URL is absolute
         if (videoUrl && videoUrl.startsWith('/uploads/')) {
-          videoUrl = `http://localhost:8000${videoUrl}`;
+          videoUrl = mediaPath(videoUrl);
           source.setAttribute('src', videoUrl);
         }
         
@@ -470,7 +471,7 @@ const processHTMLWithDOM = (html) => {
       if (src) {
         // Make sure the URL is absolute
         if (src.startsWith('/uploads/')) {
-          source.setAttribute('src', `http://localhost:8000${src}`);
+          source.setAttribute('src', mediaPath(src));
         }
         
         // Ensure the video has proper styling
@@ -562,7 +563,7 @@ const PostView = () => {
         const token = localStorage.getItem('token');
         
         // Fetch the post
-        const response = await axios.get(`http://localhost:8000/api/classes/${classId}/posts/${postId}`, {
+        const response = await axios.get(`/classes/${classId}/posts/${postId}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         
@@ -635,7 +636,7 @@ const PostView = () => {
       
       try {
         const token = localStorage.getItem('token');
-        const response = await axios.get(`http://localhost:8000/api/classes/${classId}/posts/${post.id}/likes`, {
+        const response = await axios.get(`/classes/${classId}/posts/${post.id}/likes`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         
@@ -658,7 +659,7 @@ const PostView = () => {
     try {
       const token = localStorage.getItem('token');
       const response = await axios.get(
-        `http://localhost:8000/api/classes/${classId}/posts/${postId}/comments?skip=${skip}&limit=5`,
+        `/classes/${classId}/posts/${postId}/comments?skip=${skip}&limit=5`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       
@@ -702,7 +703,7 @@ const PostView = () => {
       
       // Call API
       const token = localStorage.getItem('token');
-      const response = await axios.post(`http://localhost:8000/api/classes/${classId}/posts/${post.id}/like`, {}, {
+      const response = await axios.post(`/classes/${classId}/posts/${post.id}/like`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
       
@@ -715,7 +716,7 @@ const PostView = () => {
       
       // Revert on error
       const token = localStorage.getItem('token');
-      const response = await axios.get(`http://localhost:8000/api/classes/${classId}/posts/${post.id}/likes`, {
+      const response = await axios.get(`/classes/${classId}/posts/${post.id}/likes`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       
@@ -739,7 +740,7 @@ const PostView = () => {
     try {
       const token = localStorage.getItem('token');
       const response = await axios.post(
-        `http://localhost:8000/api/classes/${classId}/posts/${postId}/comments`,
+        `/classes/${classId}/posts/${postId}/comments`,
         { content: newComment },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -1099,7 +1100,7 @@ const PostView = () => {
         if (source) {
           const src = source.getAttribute('src');
           if (src && src.startsWith('/uploads/')) {
-            source.setAttribute('src', `http://localhost:8000${src}`);
+            source.setAttribute('src', mediaPath(src));
             // Force the video to reload with the new source
             video.load();
           }
@@ -1170,7 +1171,7 @@ const PostView = () => {
           
           // Fix the source URL if needed
           if (srcUrl.startsWith('/uploads/')) {
-            srcUrl = `http://localhost:8000${srcUrl}`;
+            srcUrl = mediaPath(srcUrl);
           }
           
           // Get the video type
@@ -1298,7 +1299,7 @@ const PostView = () => {
           if (src) {
             // Make sure the URL is absolute
             if (src.startsWith('/uploads/')) {
-              source.setAttribute('src', `http://localhost:8000${src}`);
+              source.setAttribute('src', mediaPath(src));
             }
             console.log(`Video ${index} source:`, source.getAttribute('src'));
           }
@@ -1629,3 +1630,4 @@ const PostView = () => {
 };
 
 export default PostView; 
+

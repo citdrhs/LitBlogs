@@ -35,10 +35,10 @@ const AssignmentSubmissions = () => {
       }
 
       const [assignmentsResponse, submissionsResponse] = await Promise.all([
-        axios.get(`http://localhost:8000/api/classes/${classId}/assignments`, {
+        axios.get(`/classes/${classId}/assignments`, {
           headers: { Authorization: `Bearer ${token}` }
         }),
-        axios.get(`http://localhost:8000/api/classes/${classId}/assignments/${assignmentId}/submissions`, {
+        axios.get(`/classes/${classId}/assignments/${assignmentId}/submissions`, {
           headers: { Authorization: `Bearer ${token}` }
         })
       ]);
@@ -89,7 +89,7 @@ const AssignmentSubmissions = () => {
       setReplyLoading((prev) => ({ ...prev, [submissionId]: true }));
 
       await axios.post(
-        `http://localhost:8000/api/classes/${classId}/assignments/${assignmentId}/submissions/${submissionId}/replies`,
+        `/classes/${classId}/assignments/${assignmentId}/submissions/${submissionId}/replies`,
         { content },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -224,3 +224,4 @@ const AssignmentSubmissions = () => {
 };
 
 export default AssignmentSubmissions;
+

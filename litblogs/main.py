@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import engine, get_db, reset_database, SessionLocal
+from database import engine, get_db, initialize_database, SessionLocal, reset_database
 from base import Base
 import models
 from models import User, Teacher, PasswordReset
@@ -39,13 +39,23 @@ from fastapi.responses import FileResponse
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from gradio_client import Client
+try:
+    from gradio_client import Client
+except Exception:
+    Client = None
 import json
 import re
 
+def _should_reset_database_on_startup() -> bool:
+    return os.getenv("RESET_DATABASE_ON_STARTUP", "").strip().lower() in {"1", "true", "yes", "on"}
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    reset_database()
+    if _should_reset_database_on_startup():
+        reset_database()
+        print("RESET_DATABASE_ON_STARTUP is enabled. Database was reset on startup.")
+    else:
+        initialize_database()
     yield
 
 app = FastAPI(lifespan=lifespan)
@@ -70,6 +80,31 @@ pwd_context = CryptContext(
     deprecated="auto",
     bcrypt__rounds=12
 )
+
+BASE_DIR = Path(__file__).resolve().parent
+UPLOAD_DIR = BASE_DIR / "uploads"
+
+def _sanitize_filename(filename: str | None, fallback: str = "upload") -> str:
+    clean_name = Path(filename or fallback).name
+    if not clean_name or clean_name in {".", ".."}:
+        clean_name = fallback
+    return re.sub(r"[^A-Za-z0-9._-]", "_", clean_name)
+
+def _build_unique_filename(filename: str | None, prefix: str | None = None) -> str:
+    safe_name = _sanitize_filename(filename)
+    stem = Path(safe_name).stem or "upload"
+    suffix = Path(safe_name).suffix
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    random_str = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
+    name_parts = [part for part in [prefix, timestamp, random_str, stem] if part]
+    return f"{'_'.join(name_parts)}{suffix}"
+
+def _upload_path(*parts: str) -> Path:
+    return UPLOAD_DIR.joinpath(*parts)
+
+def _upload_url(*parts: str) -> str:
+    normalized_parts = [str(part).replace("\\", "/").strip("/") for part in parts if str(part).strip("/")]
+    return f"/uploads/{'/'.join(normalized_parts)}"
 
 def _is_admin_role(role) -> bool:
     if role is None:
@@ -1152,6 +1187,7 @@ async def get_class_posts(
             "title": post.title,
             "content": post.content,  # Whitespace will be preserved
             "created_at": post.created_at,
+            "owner_id": post.owner_id,
             "author": f"{author.first_name} {author.last_name}" if author else "Unknown Author",
             "likes": len(post.likes) if hasattr(post, 'likes') else 0,
             "comments": len(post.comments) if hasattr(post, 'comments') else 0,
@@ -1226,40 +1262,44 @@ async def debug_classes(db: Session = Depends(get_db)):
     return [{"id": c.id, "name": c.name, "access_code": c.access_code} for c in classes]
 
 # Create upload directories if they don't exist
-UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 (UPLOAD_DIR / "images").mkdir(exist_ok=True)
 (UPLOAD_DIR / "videos").mkdir(exist_ok=True)
 (UPLOAD_DIR / "files").mkdir(exist_ok=True)
+(UPLOAD_DIR / "profile_images").mkdir(exist_ok=True)
+(UPLOAD_DIR / "cover_images").mkdir(exist_ok=True)
 
 # Add these new endpoints
 @app.post("/api/upload/image")
 async def upload_image(file: UploadFile = File(...), current_user: models.User = Depends(get_current_user)):
     try:
-        file_path = UPLOAD_DIR / "images" / file.filename
+        filename = _build_unique_filename(file.filename, "image")
+        file_path = _upload_path("images", filename)
         with file_path.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        return {"url": f"/uploads/images/{file.filename}"}
+        return {"url": _upload_url("images", filename)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/upload/video")
 async def upload_video(file: UploadFile = File(...), current_user: models.User = Depends(get_current_user)):
     try:
-        file_path = UPLOAD_DIR / "videos" / file.filename
+        filename = _build_unique_filename(file.filename, "video")
+        file_path = _upload_path("videos", filename)
         with file_path.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        return {"url": f"/uploads/videos/{file.filename}"}
+        return {"url": _upload_url("videos", filename)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/upload/file")
 async def upload_file(file: UploadFile = File(...), current_user: models.User = Depends(get_current_user)):
     try:
-        file_path = UPLOAD_DIR / "files" / file.filename
+        filename = _build_unique_filename(file.filename, "file")
+        file_path = _upload_path("files", filename)
         with file_path.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        return {"url": f"/uploads/files/{file.filename}"}
+        return {"url": _upload_url("files", filename)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1270,15 +1310,11 @@ async def upload_file(
 ):
     """Upload a file and return its URL"""
     try:
-        # Create uploads directory if it doesn't exist
-        upload_dir = Path("uploads")
-        user_dir = upload_dir / str(current_user.id)
+        user_dir = _upload_path(str(current_user.id))
         user_dir.mkdir(parents=True, exist_ok=True)
         
         # Generate a unique filename
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        random_str = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
-        filename = f"{timestamp}_{random_str}_{file.filename}"
+        filename = _build_unique_filename(file.filename)
         
         # Save the file
         file_path = user_dir / filename
@@ -1286,7 +1322,7 @@ async def upload_file(
             shutil.copyfileobj(file.file, buffer)
         
         # Return the file URL
-        file_url = f"/uploads/{current_user.id}/{filename}"
+        file_url = _upload_url(str(current_user.id), filename)
         
         return {
             "url": file_url,
@@ -1479,6 +1515,55 @@ async def create_assignment(
         "visibility": new_assignment.visibility
     }
 
+@app.put("/api/classes/{class_id}/assignments/{assignment_id}")
+async def update_assignment(
+    class_id: int,
+    assignment_id: int,
+    assignment: schemas.AssignmentUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    if current_user.role not in [models.UserRole.TEACHER, models.UserRole.ADMIN]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    db_class = _get_class_or_404(db, class_id)
+    if current_user.role == models.UserRole.TEACHER:
+        teacher = _get_teacher_record(db, current_user)
+        if not teacher or db_class.teacher_id != teacher.id:
+            raise HTTPException(status_code=403, detail="Not authorized")
+
+    db_assignment = db.query(models.Assignment).filter(
+        models.Assignment.id == assignment_id,
+        models.Assignment.class_id == class_id
+    ).first()
+    if not db_assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    visibility = assignment.visibility or db_assignment.visibility or "class"
+    if visibility not in ["class", "private"]:
+        raise HTTPException(status_code=400, detail="Invalid assignment visibility")
+
+    db_assignment.title = assignment.title
+    db_assignment.description = assignment.description
+    db_assignment.due_date = assignment.due_date
+    db_assignment.allow_late = assignment.allow_late if assignment.allow_late is not None else True
+    db_assignment.visibility = visibility
+
+    db.commit()
+    db.refresh(db_assignment)
+
+    return {
+        "id": db_assignment.id,
+        "class_id": db_assignment.class_id,
+        "title": db_assignment.title,
+        "description": db_assignment.description,
+        "due_date": db_assignment.due_date,
+        "created_at": db_assignment.created_at,
+        "created_by": db_assignment.created_by,
+        "allow_late": db_assignment.allow_late,
+        "visibility": db_assignment.visibility
+    }
+
 @app.get("/api/classes/{class_id}/assignments")
 async def list_assignments(
     class_id: int,
@@ -1496,10 +1581,15 @@ async def list_assignments(
     for assignment in assignments:
         stats = _get_assignment_stats(db, assignment, total_students)
         submission = None
+        draft = None
         if current_user.role == models.UserRole.STUDENT:
             submission = db.query(models.AssignmentSubmission).filter(
                 models.AssignmentSubmission.assignment_id == assignment.id,
                 models.AssignmentSubmission.student_id == current_user.id
+            ).first()
+            draft = db.query(models.AssignmentDraft).filter(
+                models.AssignmentDraft.assignment_id == assignment.id,
+                models.AssignmentDraft.student_id == current_user.id
             ).first()
 
         response.append({
@@ -1521,10 +1611,92 @@ async def list_assignments(
                 "ai_percentage": submission.ai_percentage,
                 "ai_highlighted_html": submission.ai_highlighted_html,
                 "ai_sentence_analysis": submission.ai_sentence_analysis
-            } if submission else None
+            } if submission else None,
+            "my_draft": {
+                "content": draft.content,
+                "updated_at": draft.updated_at
+            } if draft and draft.content else None
         })
 
     return response
+
+@app.get("/api/assignments/{assignment_id}/draft")
+async def get_assignment_draft(
+    assignment_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    if current_user.role != models.UserRole.STUDENT:
+        raise HTTPException(status_code=403, detail="Only students can access assignment drafts")
+
+    assignment = db.query(models.Assignment).filter(models.Assignment.id == assignment_id).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    _ensure_class_access(db, current_user, assignment.class_id)
+
+    draft = db.query(models.AssignmentDraft).filter(
+        models.AssignmentDraft.assignment_id == assignment_id,
+        models.AssignmentDraft.student_id == current_user.id
+    ).first()
+
+    return {
+        "content": draft.content if draft and draft.content else "",
+        "saved_at": draft.updated_at if draft and draft.content else None,
+        "has_draft": bool(draft and draft.content)
+    }
+
+@app.put("/api/assignments/{assignment_id}/draft")
+async def save_assignment_draft(
+    assignment_id: int,
+    payload: schemas.AssignmentDraftUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    if current_user.role != models.UserRole.STUDENT:
+        raise HTTPException(status_code=403, detail="Only students can save assignment drafts")
+
+    assignment = db.query(models.Assignment).filter(models.Assignment.id == assignment_id).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    _ensure_class_access(db, current_user, assignment.class_id)
+
+    draft = db.query(models.AssignmentDraft).filter(
+        models.AssignmentDraft.assignment_id == assignment_id,
+        models.AssignmentDraft.student_id == current_user.id
+    ).first()
+
+    content = payload.content if payload.content is not None else ""
+    if content == "":
+        if draft:
+            db.delete(draft)
+            db.commit()
+        return {
+            "content": "",
+            "saved_at": None,
+            "has_draft": False
+        }
+
+    if not draft:
+        draft = models.AssignmentDraft(
+            assignment_id=assignment_id,
+            student_id=current_user.id,
+            content=content
+        )
+        db.add(draft)
+    else:
+        draft.content = content
+
+    draft.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(draft)
+
+    return {
+        "content": draft.content,
+        "saved_at": draft.updated_at,
+        "has_draft": True
+    }
 
 @app.post("/api/assignments/{assignment_id}/submit")
 async def submit_assignment(
@@ -1542,6 +1714,11 @@ async def submit_assignment(
         raise HTTPException(status_code=404, detail="Assignment not found")
 
     _ensure_class_access(db, current_user, assignment.class_id)
+
+    draft = db.query(models.AssignmentDraft).filter(
+        models.AssignmentDraft.assignment_id == assignment_id,
+        models.AssignmentDraft.student_id == current_user.id
+    ).first()
 
     submitted_at = datetime.utcnow()
     due_date = assignment.due_date
@@ -1565,6 +1742,8 @@ async def submit_assignment(
         existing.content = submission.content
         existing.submitted_at = submitted_at
         existing.is_late = is_late
+        if draft:
+            db.delete(draft)
         db.commit()
         db.refresh(existing)
         
@@ -1591,6 +1770,8 @@ async def submit_assignment(
         is_late=is_late
     )
     db.add(new_submission)
+    if draft:
+        db.delete(draft)
     db.commit()
     db.refresh(new_submission)
     
@@ -2273,13 +2454,9 @@ async def upload_profile_image(
 ):
     """Upload profile image"""
     try:
-        # Create directory if it doesn't exist
-        upload_dir = Path("uploads/profile_images")
+        upload_dir = _upload_path("profile_images")
         upload_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Generate unique filename
-        file_extension = file.filename.split(".")[-1]
-        unique_filename = f"{current_user.id}_{int(datetime.now().timestamp())}.{file_extension}"
+        unique_filename = _build_unique_filename(file.filename, f"profile_{current_user.id}")
         file_path = upload_dir / unique_filename
         
         # Save file
@@ -2288,8 +2465,9 @@ async def upload_profile_image(
         
         # Update user record in database
         user = db.query(models.User).filter(models.User.id == current_user.id).first()
-        user.profile_image = f"/uploads/profile_images/{unique_filename}"
+        user.profile_image = _upload_url("profile_images", unique_filename)
         db.commit()
+        db.refresh(user)
         
         return {"image_url": user.profile_image}
     except Exception as e:
@@ -2304,13 +2482,9 @@ async def upload_cover_image(
 ):
     """Upload cover image"""
     try:
-        # Create directory if it doesn't exist
-        upload_dir = Path("uploads/cover_images")
+        upload_dir = _upload_path("cover_images")
         upload_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Generate unique filename
-        file_extension = file.filename.split(".")[-1]
-        unique_filename = f"{current_user.id}_{int(datetime.now().timestamp())}.{file_extension}"
+        unique_filename = _build_unique_filename(file.filename, f"cover_{current_user.id}")
         file_path = upload_dir / unique_filename
         
         # Save file
@@ -2319,8 +2493,9 @@ async def upload_cover_image(
         
         # Update user record in database
         user = db.query(models.User).filter(models.User.id == current_user.id).first()
-        user.cover_image = f"/uploads/cover_images/{unique_filename}"
+        user.cover_image = _upload_url("cover_images", unique_filename)
         db.commit()
+        db.refresh(user)
         
         return {"image_url": user.cover_image}
     except Exception as e:
@@ -2356,6 +2531,156 @@ def _get_teacher_record(db: Session, user: models.User) -> models.Teacher | None
     if not teacher and user.email:
         teacher = db.query(models.Teacher).filter(models.Teacher.email == user.email).first()
     return teacher
+
+def _collect_ids(query) -> List[int]:
+    return [record_id for (record_id,) in query.all()]
+
+def _delete_blogs_with_dependencies(db: Session, blog_ids: List[int]) -> None:
+    if not blog_ids:
+        return
+
+    comment_ids = _collect_ids(
+        db.query(models.Comment.id).filter(models.Comment.blog_id.in_(blog_ids))
+    )
+
+    if comment_ids:
+        db.query(models.CommentLike).filter(
+            models.CommentLike.comment_id.in_(comment_ids)
+        ).delete(synchronize_session=False)
+
+    db.query(models.Comment).filter(
+        models.Comment.blog_id.in_(blog_ids)
+    ).delete(synchronize_session=False)
+
+    db.query(models.PostLike).filter(
+        models.PostLike.post_id.in_(blog_ids)
+    ).delete(synchronize_session=False)
+
+    db.query(models.Blog).filter(
+        models.Blog.id.in_(blog_ids)
+    ).delete(synchronize_session=False)
+
+def _delete_assignments_with_dependencies(db: Session, assignment_ids: List[int]) -> None:
+    if not assignment_ids:
+        return
+
+    db.query(models.AssignmentDraft).filter(
+        models.AssignmentDraft.assignment_id.in_(assignment_ids)
+    ).delete(synchronize_session=False)
+
+    submission_ids = _collect_ids(
+        db.query(models.AssignmentSubmission.id).filter(
+            models.AssignmentSubmission.assignment_id.in_(assignment_ids)
+        )
+    )
+
+    if submission_ids:
+        db.query(models.AssignmentSubmissionReply).filter(
+            models.AssignmentSubmissionReply.submission_id.in_(submission_ids)
+        ).delete(synchronize_session=False)
+
+    db.query(models.AssignmentSubmission).filter(
+        models.AssignmentSubmission.assignment_id.in_(assignment_ids)
+    ).delete(synchronize_session=False)
+
+    db.query(models.Assignment).filter(
+        models.Assignment.id.in_(assignment_ids)
+    ).delete(synchronize_session=False)
+
+def _delete_classes_with_dependencies(db: Session, class_ids: List[int]) -> None:
+    if not class_ids:
+        return
+
+    class_assignment_ids = _collect_ids(
+        db.query(models.Assignment.id).filter(models.Assignment.class_id.in_(class_ids))
+    )
+    _delete_assignments_with_dependencies(db, class_assignment_ids)
+
+    class_blog_ids = _collect_ids(
+        db.query(models.Blog.id).filter(models.Blog.class_id.in_(class_ids))
+    )
+    _delete_blogs_with_dependencies(db, class_blog_ids)
+
+    db.query(models.ClassEnrollment).filter(
+        models.ClassEnrollment.class_id.in_(class_ids)
+    ).delete(synchronize_session=False)
+
+    db.query(models.Class).filter(
+        models.Class.id.in_(class_ids)
+    ).delete(synchronize_session=False)
+
+def _delete_user_dependencies(db: Session, user: models.User) -> None:
+    teacher_record = _get_teacher_record(db, user)
+
+    if teacher_record:
+        teacher_class_ids = _collect_ids(
+            db.query(models.Class.id).filter(models.Class.teacher_id == teacher_record.id)
+        )
+        _delete_classes_with_dependencies(db, teacher_class_ids)
+
+        db.query(models.Teacher).filter(
+            models.Teacher.id == teacher_record.id
+        ).delete(synchronize_session=False)
+
+    created_assignment_ids = _collect_ids(
+        db.query(models.Assignment.id).filter(models.Assignment.created_by == user.id)
+    )
+    _delete_assignments_with_dependencies(db, created_assignment_ids)
+
+    owned_blog_ids = _collect_ids(
+        db.query(models.Blog.id).filter(models.Blog.owner_id == user.id)
+    )
+    _delete_blogs_with_dependencies(db, owned_blog_ids)
+
+    authored_comment_ids = _collect_ids(
+        db.query(models.Comment.id).filter(models.Comment.user_id == user.id)
+    )
+    if authored_comment_ids:
+        db.query(models.CommentLike).filter(
+            models.CommentLike.comment_id.in_(authored_comment_ids)
+        ).delete(synchronize_session=False)
+
+    db.query(models.Comment).filter(
+        models.Comment.user_id == user.id
+    ).delete(synchronize_session=False)
+
+    db.query(models.CommentLike).filter(
+        models.CommentLike.user_id == user.id
+    ).delete(synchronize_session=False)
+
+    db.query(models.PostLike).filter(
+        models.PostLike.user_id == user.id
+    ).delete(synchronize_session=False)
+
+    student_submission_ids = _collect_ids(
+        db.query(models.AssignmentSubmission.id).filter(
+            models.AssignmentSubmission.student_id == user.id
+        )
+    )
+    if student_submission_ids:
+        db.query(models.AssignmentSubmissionReply).filter(
+            models.AssignmentSubmissionReply.submission_id.in_(student_submission_ids)
+        ).delete(synchronize_session=False)
+
+    db.query(models.AssignmentSubmissionReply).filter(
+        models.AssignmentSubmissionReply.user_id == user.id
+    ).delete(synchronize_session=False)
+
+    db.query(models.AssignmentSubmission).filter(
+        models.AssignmentSubmission.student_id == user.id
+    ).delete(synchronize_session=False)
+
+    db.query(models.AssignmentDraft).filter(
+        models.AssignmentDraft.student_id == user.id
+    ).delete(synchronize_session=False)
+
+    db.query(models.ClassEnrollment).filter(
+        models.ClassEnrollment.student_id == user.id
+    ).delete(synchronize_session=False)
+
+    db.query(models.PasswordReset).filter(
+        models.PasswordReset.user_id == user.id
+    ).delete(synchronize_session=False)
 
 def _get_class_or_404(db: Session, class_id: int) -> models.Class:
     db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
@@ -2455,6 +2780,32 @@ async def get_user_profile(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch profile: {str(e)}")
+
+@app.delete("/api/user/account")
+async def delete_user_account(
+    confirm: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Delete the currently authenticated user account and related data."""
+    if confirm.strip().upper() != "DELETE":
+        raise HTTPException(status_code=400, detail="Confirmation must be DELETE")
+
+    user = db.query(models.User).filter(models.User.id == current_user.id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    try:
+        _delete_user_dependencies(db, user)
+        db.delete(user)
+        db.commit()
+        return {"message": "Account deleted successfully"}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete account: {str(e)}")
 
 @app.get("/api/user/profile/{user_id}")
 async def get_public_user_profile(
@@ -2948,7 +3299,7 @@ async def get_class_students(
     return students
 
 # Add this after creating the app
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 @app.delete("/api/upload/{file_path:path}")
 async def delete_file(
@@ -2966,7 +3317,7 @@ async def delete_file(
             )
         
         # Construct the full file path
-        full_path = Path("uploads") / file_path
+        full_path = _upload_path(file_path)
         
         # Check if file exists
         if not full_path.exists():
@@ -3018,7 +3369,7 @@ async def download_file(
         print(f"Extracted file path: {file_path}")
         
         # Construct the full path
-        full_path = Path("uploads") / file_path
+        full_path = _upload_path(file_path)
         print(f"Full file path: {full_path}")
         
         # Check if file exists

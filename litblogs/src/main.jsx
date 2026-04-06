@@ -8,12 +8,13 @@ import { msalConfig } from './config/msalConfig'
 import App from './App'
 import './index.css'
 import axios from 'axios'
+import { API_BASE_PATH } from './utils/urlUtils'
 
 // Initialize MSAL instance
 const msalInstance = new PublicClientApplication(msalConfig);
 
 // Set base URL for all axios requests
-axios.defaults.baseURL = 'http://localhost:8000';
+axios.defaults.baseURL = API_BASE_PATH;
 
 // Optional - Handle the response from auth redirects
 msalInstance.initialize().then(() => {

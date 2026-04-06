@@ -23,6 +23,7 @@ import { toast } from 'react-hot-toast';
 import { IoMdHeart, IoMdHeartEmpty } from 'react-icons/io';
 import CommentThread from './components/CommentThread';
 import { formatRelativeTime, setupTimeUpdater } from './utils/timeUtils';
+import { mediaPath } from './utils/urlUtils';
 
 const expandableListStyles = `
   .expandable-list {
@@ -173,6 +174,67 @@ const richTextStyles = `
 
 // Add this after your imports
 Prism.manual = true;
+
+const getAssignmentDraftKey = ({ classId, assignmentId, userId }) => {
+  if (!classId || !assignmentId || !userId) {
+    return null;
+  }
+
+  return `assignmentDraft:${userId}:${classId}:${assignmentId}`;
+};
+
+const readAssignmentDraft = ({ classId, assignmentId, userId }) => {
+  const key = getAssignmentDraftKey({ classId, assignmentId, userId });
+  if (!key) {
+    return { hasDraft: false, content: '', savedAt: null };
+  }
+
+  try {
+    const storedValue = localStorage.getItem(key);
+    if (!storedValue) {
+      return { hasDraft: false, content: '', savedAt: null };
+    }
+
+    const parsedValue = JSON.parse(storedValue);
+    if (typeof parsedValue === 'string') {
+      return { hasDraft: true, content: parsedValue, savedAt: null };
+    }
+
+    return {
+      hasDraft: true,
+      content: parsedValue?.content || '',
+      savedAt: parsedValue?.savedAt || null,
+    };
+  } catch (error) {
+    console.error('Failed to read assignment draft:', error);
+    return { hasDraft: false, content: '', savedAt: null };
+  }
+};
+
+const writeAssignmentDraft = ({ classId, assignmentId, userId, content, savedAt }) => {
+  const key = getAssignmentDraftKey({ classId, assignmentId, userId });
+  if (!key) {
+    return null;
+  }
+
+  if (content === '') {
+    localStorage.removeItem(key);
+    return null;
+  }
+
+  const nextSavedAt = savedAt || new Date().toISOString();
+  localStorage.setItem(key, JSON.stringify({ content, savedAt: nextSavedAt }));
+  return nextSavedAt;
+};
+
+const clearAssignmentDraft = ({ classId, assignmentId, userId }) => {
+  const key = getAssignmentDraftKey({ classId, assignmentId, userId });
+  if (!key) {
+    return;
+  }
+
+  localStorage.removeItem(key);
+};
 
 const MOCK_POSTS = [
   {
@@ -410,7 +472,7 @@ const TINYMCE_CONFIG = {
       
       const token = localStorage.getItem('token');
       
-      axios.post('http://localhost:8000/api/upload', formData, {
+      axios.post('/upload', formData, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'multipart/form-data'
@@ -520,7 +582,7 @@ const TINYMCE_CONFIG = {
                 
                 const token = localStorage.getItem('token');
                 const response = await axios.post(
-                  'http://localhost:8000/api/upload',
+                  '/upload',
                   formData,
                   {
                     headers: {
@@ -576,7 +638,7 @@ const TINYMCE_CONFIG = {
               
               const token = localStorage.getItem('token');
               const response = await axios.post(
-                'http://localhost:8000/api/upload',
+                '/upload',
                 formData,
                 {
                   headers: {
@@ -781,7 +843,7 @@ const TINYMCE_CONFIG = {
               
               // Upload the video
               const token = localStorage.getItem('token');
-              const response = await axios.post('http://localhost:8000/api/upload', formData, {
+              const response = await axios.post('/upload', formData, {
                 headers: {
                   'Authorization': `Bearer ${token}`,
                   'Content-Type': 'multipart/form-data'
@@ -808,11 +870,7 @@ const TINYMCE_CONFIG = {
               console.log("Video URL:", videoUrl);
               
               // Ensure the URL is properly formatted
-              const fullVideoUrl = videoUrl && videoUrl.startsWith('/') 
-                ? `http://localhost:8000${videoUrl}` 
-                : videoUrl && videoUrl.startsWith('http') 
-                  ? videoUrl 
-                  : `http://localhost:8000/${videoUrl}`;
+              const fullVideoUrl = mediaPath(videoUrl);
                   
               console.log("Full video URL:", fullVideoUrl);
               
@@ -1125,7 +1183,7 @@ async function deleteFileFromServer(url) {
     const filePath = url.replace('/uploads/', '');
     
     const token = localStorage.getItem('token');
-    await axios.delete(`http://localhost:8000/api/upload/${filePath}`, {
+    await axios.delete(`/upload/${filePath}`, {
       headers: { 
         'Authorization': `Bearer ${token}`
       }
@@ -1156,7 +1214,7 @@ if (!window.deleteVideoFromServer) {
     if (!token) return;
     
     // Delete the file from the server
-    axios.delete(`http://localhost:8000/api/upload/${filePath}`, {
+    axios.delete(`/upload/${filePath}`, {
       headers: { 'Authorization': `Bearer ${token}` }
     })
     .then(response => {
@@ -1190,7 +1248,7 @@ function defineGlobalFunctions() {
     if (!token) return;
     
     // Delete the file from the server
-    axios.delete(`http://localhost:8000/api/upload/${filePath}`, {
+    axios.delete(`/upload/${filePath}`, {
       headers: { 'Authorization': `Bearer ${token}` }
     })
     .then(response => {
@@ -1262,6 +1320,7 @@ const ClassFeed = () => {
   const [content, setContent] = useState('');
   const [gifSearchTerm, setGifSearchTerm] = useState('');
   const [gifs, setGifs] = useState([]);
+  const [searchQuery, setSearchQuery] = useState('');
   const [showCodeEditor, setShowCodeEditor] = useState(false);
   const [codeLanguage, setCodeLanguage] = useState('javascript');
   const [codeContent, setCodeContent] = useState('');
@@ -1289,10 +1348,14 @@ const ClassFeed = () => {
   const [showAssignmentModal, setShowAssignmentModal] = useState(false);
   const [activeAssignment, setActiveAssignment] = useState(null);
   const [assignmentSubmission, setAssignmentSubmission] = useState('');
+  const [assignmentDraftSavedAt, setAssignmentDraftSavedAt] = useState(null);
+  const [assignmentDraftReady, setAssignmentDraftReady] = useState(false);
   const [assignmentSubmitting, setAssignmentSubmitting] = useState(false);
   const [assignmentSubmissions, setAssignmentSubmissions] = useState({});
   const [expandedAssignmentId, setExpandedAssignmentId] = useState(null);
   const [selectedAiSubmission, setSelectedAiSubmission] = useState(null);
+  const isStudent = (userInfo?.role || '').toString().toUpperCase() === 'STUDENT';
+  const assignmentDraftUserId = userInfo?.userId || userInfo?.id;
 
   const gf = new GiphyFetch('FEzk8anVjSKZIiInlJWd4Jo4OuYBjV9B');
 
@@ -1321,19 +1384,19 @@ const ClassFeed = () => {
         }
 
         // Use the correct endpoint
-        const classResponse = await axios.get(`http://localhost:8000/api/classes/${classId}/details`, {
+        const classResponse = await axios.get(`/classes/${classId}/details`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         setClassDetails(classResponse.data);
 
         // Get class posts using the posts endpoint
-        const postsResponse = await axios.get(`http://localhost:8000/api/classes/${classId}/posts`, {
+        const postsResponse = await axios.get(`/classes/${classId}/posts`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         setPosts(postsResponse.data);
 
         setAssignmentsLoading(true);
-        const assignmentsResponse = await axios.get(`http://localhost:8000/api/classes/${classId}/assignments`, {
+        const assignmentsResponse = await axios.get(`/classes/${classId}/assignments`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         setAssignments(assignmentsResponse.data || []);
@@ -1353,6 +1416,58 @@ const ClassFeed = () => {
 
     fetchData();
   }, [classId, navigate]);
+
+  useEffect(() => {
+    if (!isStudent || !activeAssignment || !assignmentDraftUserId || !assignmentDraftReady) {
+      return;
+    }
+
+    const autosaveTimer = setTimeout(() => {
+      const syncDraft = async () => {
+        const token = localStorage.getItem('token');
+        if (!token) {
+          return;
+        }
+
+        try {
+          const response = await axios.put(
+            `/assignments/${activeAssignment.id}/draft`,
+            { content: assignmentSubmission },
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+
+          if (response.data?.has_draft) {
+            const savedAt = writeAssignmentDraft({
+              classId,
+              assignmentId: activeAssignment.id,
+              userId: assignmentDraftUserId,
+              content: response.data.content || assignmentSubmission,
+              savedAt: response.data.saved_at,
+            });
+            setAssignmentDraftSavedAt(savedAt);
+            updateAssignmentDraftState(activeAssignment.id, {
+              content: response.data.content || assignmentSubmission,
+              updated_at: response.data.saved_at,
+            });
+          } else {
+            clearAssignmentDraft({
+              classId,
+              assignmentId: activeAssignment.id,
+              userId: assignmentDraftUserId,
+            });
+            setAssignmentDraftSavedAt(null);
+            updateAssignmentDraftState(activeAssignment.id, null);
+          }
+        } catch (error) {
+          console.error('Error autosaving assignment draft:', error);
+        }
+      };
+
+      syncDraft();
+    }, 500);
+
+    return () => clearTimeout(autosaveTimer);
+  }, [assignmentSubmission, activeAssignment, assignmentDraftReady, assignmentDraftUserId, classId, isStudent]);
 
   useEffect(() => {
     if (darkMode) {
@@ -1413,7 +1528,7 @@ const ClassFeed = () => {
       
       for (const post of posts) {
         try {
-          const response = await axios.get(`http://localhost:8000/api/classes/${classId}/posts/${post.id}/likes`, {
+          const response = await axios.get(`/classes/${classId}/posts/${post.id}/likes`, {
             headers: { Authorization: `Bearer ${token}` }
           });
           
@@ -1444,7 +1559,7 @@ const ClassFeed = () => {
         if (!token) return;
         
         // Fetch the posts
-        const response = await axios.get(`http://localhost:8000/api/classes/${classId}/posts`, {
+        const response = await axios.get(`/classes/${classId}/posts`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         
@@ -1460,7 +1575,7 @@ const ClassFeed = () => {
         for (const post of response.data) {
           try {
             const commentResponse = await axios.get(
-              `http://localhost:8000/api/classes/${classId}/posts/${post.id}/comments?limit=1`,
+              `/classes/${classId}/posts/${post.id}/comments?limit=1`,
               { headers: { Authorization: `Bearer ${token}` } }
             );
             counts[post.id] = commentResponse.data.total;
@@ -1504,7 +1619,7 @@ const ClassFeed = () => {
       // TinyMCE will handle the placement of files exactly where the user put them
       
       const response = await axios.post(
-          `http://localhost:8000/api/classes/${classId}/posts`,
+          `/classes/${classId}/posts`,
           {
             title: postTitle,
           content: postContent.text, // This now contains all embedded files
@@ -1516,7 +1631,7 @@ const ClassFeed = () => {
         );
 
       // Refresh posts after creation
-      const postsResponse = await axios.get(`http://localhost:8000/api/classes/${classId}/posts`, {
+      const postsResponse = await axios.get(`/classes/${classId}/posts`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setPosts(postsResponse.data);
@@ -1541,24 +1656,147 @@ const ClassFeed = () => {
     }
   };
 
+  const refreshAssignments = async (token) => {
+    const assignmentsResponse = await axios.get(`/classes/${classId}/assignments`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    setAssignments(assignmentsResponse.data || []);
+  };
+
+  const updateAssignmentDraftState = (assignmentId, draft) => {
+    setAssignments((prev) => prev.map((assignment) => (
+      assignment.id === assignmentId
+        ? { ...assignment, my_draft: draft }
+        : assignment
+    )));
+    setActiveAssignment((prev) => (
+      prev && prev.id === assignmentId
+        ? { ...prev, my_draft: draft }
+        : prev
+    ));
+  };
+
+  const persistAssignmentDraftLocally = (content, assignment = activeAssignment) => {
+    if (!assignment || !assignmentDraftUserId) {
+      return null;
+    }
+
+    const savedAt = writeAssignmentDraft({
+      classId,
+      assignmentId: assignment.id,
+      userId: assignmentDraftUserId,
+      content,
+    });
+
+    setAssignmentDraftSavedAt(savedAt);
+    updateAssignmentDraftState(
+      assignment.id,
+      savedAt
+        ? {
+            content,
+            updated_at: savedAt,
+          }
+        : null
+    );
+
+    return savedAt;
+  };
+
+  const handleAssignmentSubmissionChange = (event) => {
+    const nextContent = event.target.value;
+    setAssignmentSubmission(nextContent);
+    persistAssignmentDraftLocally(nextContent);
+  };
+
+  const closeAssignmentModal = () => {
+    if (assignmentDraftReady) {
+      persistAssignmentDraftLocally(assignmentSubmission);
+    }
+    setShowAssignmentModal(false);
+    setActiveAssignment(null);
+    setAssignmentDraftReady(false);
+    setAssignmentDraftSavedAt(null);
+  };
+
+  const openAssignmentModal = async (assignment) => {
+    const localDraft = readAssignmentDraft({
+      classId,
+      assignmentId: assignment.id,
+      userId: assignmentDraftUserId,
+    });
+
+    const fallbackContent = localDraft.hasDraft
+      ? localDraft.content
+      : (assignment.my_draft?.content || assignment.my_submission?.content || '');
+    const fallbackSavedAt = localDraft.savedAt || assignment.my_draft?.updated_at || null;
+
+    setActiveAssignment(assignment);
+    setAssignmentSubmission(fallbackContent);
+    setAssignmentDraftSavedAt(fallbackSavedAt);
+    setShowAssignmentModal(true);
+    setAssignmentDraftReady(false);
+
+    const token = localStorage.getItem('token');
+    if (!token) {
+      setAssignmentDraftReady(true);
+      return;
+    }
+
+    try {
+      const response = await axios.get(`/assignments/${assignment.id}/draft`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      const serverHasDraft = response.data?.has_draft;
+      const serverSavedAt = response.data?.saved_at || null;
+      const localSavedAtMs = localDraft.savedAt ? new Date(localDraft.savedAt).getTime() : 0;
+      const serverSavedAtMs = serverSavedAt ? new Date(serverSavedAt).getTime() : 0;
+
+      if (serverHasDraft && serverSavedAtMs >= localSavedAtMs) {
+        setAssignmentSubmission(response.data.content || '');
+        setAssignmentDraftSavedAt(serverSavedAt);
+        writeAssignmentDraft({
+          classId,
+          assignmentId: assignment.id,
+          userId: assignmentDraftUserId,
+          content: response.data.content || '',
+          savedAt: serverSavedAt,
+        });
+        updateAssignmentDraftState(assignment.id, {
+          content: response.data.content || '',
+          updated_at: serverSavedAt,
+        });
+      } else if (!serverHasDraft && !localDraft.hasDraft) {
+        setAssignmentDraftSavedAt(null);
+        updateAssignmentDraftState(assignment.id, null);
+      }
+    } catch (error) {
+      console.error('Error loading assignment draft:', error);
+    } finally {
+      setAssignmentDraftReady(true);
+    }
+  };
+
   const handleSubmitAssignment = async () => {
     if (!activeAssignment) return;
     try {
       setAssignmentSubmitting(true);
       const token = localStorage.getItem('token');
       await axios.post(
-        `http://localhost:8000/api/assignments/${activeAssignment.id}/submit`,
+        `/assignments/${activeAssignment.id}/submit`,
         { content: assignmentSubmission },
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
-      const assignmentsResponse = await axios.get(`http://localhost:8000/api/classes/${classId}/assignments`, {
-        headers: { Authorization: `Bearer ${token}` }
+      clearAssignmentDraft({
+        classId,
+        assignmentId: activeAssignment.id,
+        userId: assignmentDraftUserId,
       });
-      setAssignments(assignmentsResponse.data || []);
+      updateAssignmentDraftState(activeAssignment.id, null);
+      await refreshAssignments(token);
 
-      setShowAssignmentModal(false);
-      setActiveAssignment(null);
+      closeAssignmentModal();
       setAssignmentSubmission('');
       toast.success('Assignment submitted successfully!');
     } catch (error) {
@@ -1573,7 +1811,7 @@ const ClassFeed = () => {
     try {
       const token = localStorage.getItem('token');
       const response = await axios.get(
-        `http://localhost:8000/api/classes/${classId}/assignments/${assignmentId}/submissions`,
+        `/classes/${classId}/assignments/${assignmentId}/submissions`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       setAssignmentSubmissions((prev) => ({
@@ -1592,7 +1830,7 @@ const ClassFeed = () => {
       formData.append('file', file);
       try {
         const token = localStorage.getItem('token');
-        const response = await axios.post('http://localhost:8000/api/upload/image', formData, {
+        const response = await axios.post('/upload/image', formData, {
           headers: { 
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'multipart/form-data'
@@ -1619,7 +1857,7 @@ const ClassFeed = () => {
       formData.append('file', file);
       try {
         const token = localStorage.getItem('token');
-        const response = await axios.post('http://localhost:8000/api/upload/video', formData, {
+        const response = await axios.post('/upload/video', formData, {
           headers: { 
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'multipart/form-data'
@@ -1646,7 +1884,7 @@ const ClassFeed = () => {
       formData.append('file', file);
       try {
         const token = localStorage.getItem('token');
-        const response = await axios.post('http://localhost:8000/api/upload/file', formData, {
+        const response = await axios.post('/upload/file', formData, {
           headers: { 
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'multipart/form-data'
@@ -1812,8 +2050,54 @@ const ClassFeed = () => {
       </div>
     );
   }
+  const stripHtml = (html = '') => html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
 
-  const isStudent = (userInfo?.role || '').toString().toUpperCase() === 'STUDENT';
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const currentUserId = Number(userInfo?.userId ?? userInfo?.id ?? 0);
+  const currentUserName = (userInfo?.username || '').toLowerCase();
+  const currentFirstName = (userInfo?.firstName || userInfo?.first_name || '').toLowerCase();
+
+  const displayedPosts = posts.filter((post) => {
+    const title = (post.title || '').toLowerCase();
+    const author = (post.author || '').toLowerCase();
+    const contentText = stripHtml(post.content || '').toLowerCase();
+
+    const matchesSearch =
+      !normalizedQuery ||
+      title.includes(normalizedQuery) ||
+      author.includes(normalizedQuery) ||
+      contentText.includes(normalizedQuery);
+
+    if (!matchesSearch) {
+      return false;
+    }
+
+    const postOwnerId = Number(post.owner_id ?? post.ownerId ?? 0);
+    const isMineById = !!currentUserId && !!postOwnerId && postOwnerId === currentUserId;
+    const isMineByName = !!currentFirstName && author.startsWith(currentFirstName);
+    const isMineByUsername = !!currentUserName && author.includes(currentUserName);
+    const isMine = isMineById || isMineByName || isMineByUsername;
+
+    if (activeCategory === 'my') {
+      return isMine;
+    }
+
+    if (activeCategory === 'liked') {
+      return Boolean(likedPosts[post.id]?.userLiked);
+    }
+
+    if (activeCategory === 'commented') {
+      const totalComments = commentCounts[post.id] ?? post.comments ?? 0;
+      return totalComments > 0;
+    }
+
+    if (activeCategory === 'ai-flagged') {
+      const aiScore = Number(post.ai_percentage ?? 0);
+      return aiScore >= 50;
+    }
+
+    return true;
+  });
 
   const handleSignOut = () => {
     localStorage.removeItem('token');
@@ -1829,7 +2113,7 @@ const ClassFeed = () => {
       const token = localStorage.getItem('token');
       
       // Use the correct endpoint with classId
-      const response = await axios.get(`http://localhost:8000/api/classes/${classId}/posts/${postId}`, {
+      const response = await axios.get(`/classes/${classId}/posts/${postId}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       
@@ -1857,7 +2141,7 @@ const ClassFeed = () => {
       try {
       setLoading(true);
         const token = localStorage.getItem('token');
-        await axios.delete(`http://localhost:8000/api/classes/${classId}/posts/${postId}`, {
+        await axios.delete(`/classes/${classId}/posts/${postId}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         
@@ -1896,7 +2180,7 @@ const ClassFeed = () => {
       if (editingPostId) {
         // Update existing post with the correct endpoint
         response = await axios.put(
-          `http://localhost:8000/api/classes/${classId}/posts/${editingPostId}`, 
+          `/classes/${classId}/posts/${editingPostId}`, 
           postData, 
           {
             headers: { Authorization: `Bearer ${token}` }
@@ -1912,7 +2196,7 @@ const ClassFeed = () => {
       } else {
         // Create new post
         response = await axios.post(
-          `http://localhost:8000/api/classes/${classId}/posts`, 
+          `/classes/${classId}/posts`, 
           postData, 
           {
             headers: { Authorization: `Bearer ${token}` }
@@ -1947,11 +2231,11 @@ const ClassFeed = () => {
       if (window.confirm('Are you sure you want to delete this post?')) {
         try {
           const token = localStorage.getItem('token');
-          await axios.delete(`http://localhost:8000/api/classes/${classId}/posts/${post.id}`, {
+          await axios.delete(`/classes/${classId}/posts/${post.id}`, {
             headers: { Authorization: `Bearer ${token}` }
           });
         // Refresh posts after deletion
-        const postsResponse = await axios.get(`http://localhost:8000/api/classes/${classId}/posts`, {
+        const postsResponse = await axios.get(`/classes/${classId}/posts`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         setPosts(postsResponse.data);
@@ -2003,7 +2287,7 @@ const ClassFeed = () => {
       }, 1000);
       
       // Actually call the API
-      const response = await axios.post(`http://localhost:8000/api/classes/${classId}/posts/${postId}/like`, {}, {
+      const response = await axios.post(`/classes/${classId}/posts/${postId}/like`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
       
@@ -2021,7 +2305,7 @@ const ClassFeed = () => {
       toast.error('Failed to like post');
       
       // Revert optimistic update on error
-      const response = await axios.get(`http://localhost:8000/api/classes/${classId}/posts/${postId}/likes`, {
+      const response = await axios.get(`/classes/${classId}/posts/${postId}/likes`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       
@@ -2046,7 +2330,7 @@ const ClassFeed = () => {
     try {
       const token = localStorage.getItem('token');
       const response = await axios.get(
-        `http://localhost:8000/api/classes/${classId}/posts/${postId}/comments?limit=3`,
+        `/classes/${classId}/posts/${postId}/comments?limit=3`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       
@@ -2092,7 +2376,7 @@ const ClassFeed = () => {
     try {
       const token = localStorage.getItem('token');
       const response = await axios.post(
-        `http://localhost:8000/api/classes/${classId}/posts/${postId}/comments`,
+        `/classes/${classId}/posts/${postId}/comments`,
         { content: commentText },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -2134,34 +2418,6 @@ const ClassFeed = () => {
 
       {/* Side Panel */}
       <div className="fixed left-0 h-full w-64 bg-gray-50/70 dark:bg-gray-800/50 backdrop-blur-md border-r border-gray-200 dark:border-gray-700 p-6">
-        {/* Search Bar */}
-        <div className="mb-6">
-          <div className="relative">
-            <input
-              type="text"
-              placeholder="Search posts..."
-              className={`w-full pl-10 pr-4 py-2 rounded-lg border ${
-                darkMode 
-                  ? 'bg-gray-700 border-gray-600 text-white' 
-                  : 'bg-white border-gray-200'
-              } focus:outline-none focus:ring-2 focus:ring-blue-500`}
-            />
-            <svg
-              className="absolute left-3 top-2.5 w-5 h-5 text-gray-400"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-              />
-            </svg>
-          </div>
-        </div>
-
         {/* Categories */}
         <div className="space-y-2">
           <button
@@ -2193,19 +2449,66 @@ const ClassFeed = () => {
         <div className="max-w-5xl mx-auto px-8 pt-32">
           {/* Blog Header - Moved down */}
           <div className="flex justify-between items-center mb-12">
-            <div className="flex items-center space-x-6">
+            <div className="flex items-center gap-4 flex-wrap">
               <h1 className="text-2xl font-medium">
                 {classDetails?.name || 'Loading class...'}
               </h1>
+
+              <div className="relative w-72 max-w-full">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search posts by title, author, or content..."
+                  className={`w-full pl-10 pr-10 py-2 rounded-lg border ${
+                    darkMode
+                      ? 'bg-gray-800 border-gray-700 text-white'
+                      : 'bg-white border-gray-300 text-gray-900'
+                  } focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                />
+                <svg
+                  className="absolute left-3 top-2.5 w-5 h-5 text-gray-400"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+                  />
+                </svg>
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-3 top-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                    aria-label="Clear search"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+
               <div className="flex items-center space-x-3">
-                <span>Sort by:</span>
-                <select className={`rounded-lg py-2 ${
+                <span>Filter by:</span>
+                <select
+                  value={activeCategory}
+                  onChange={(e) => setActiveCategory(e.target.value)}
+                  className={`rounded-lg py-2 px-3 ${
                   darkMode 
                     ? 'bg-gray-800 border-gray-700' 
                     : 'bg-white border-gray-300'
                   } border`}
                 >
-                  <option>Recent Activity</option>
+                  <option value="all">All Posts</option>
+                  <option value="my">My Posts</option>
+                  <option value="liked">Liked by Me</option>
+                  <option value="commented">Has Comments</option>
+                  {(userInfo?.role || '').toString().toUpperCase() === 'TEACHER' && (
+                    <option value="ai-flagged">AI Flagged (50%+)</option>
+                  )}
                 </select>
               </div>
             </div>
@@ -2248,8 +2551,10 @@ const ClassFeed = () => {
               <div className="mt-4 grid gap-4">
                 {assignments.map((assignment) => {
                   const submission = assignment.my_submission;
+                  const draft = assignment.my_draft;
                   const dueDate = new Date(assignment.due_date);
                   const isOverdue = new Date() > dueDate && !submission;
+                  const isClosed = new Date() > dueDate && !assignment.allow_late && !submission;
                   const isPublicSubmission = assignment.visibility === 'class';
 
                   return (
@@ -2270,22 +2575,35 @@ const ClassFeed = () => {
                               Public Submissions
                             </span>
                           )}
+                          <span
+                            className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                              assignment.allow_late
+                                ? 'bg-emerald-500/10 text-emerald-500'
+                                : 'bg-rose-500/10 text-rose-500'
+                            }`}
+                          >
+                            {assignment.allow_late ? 'Late Allowed' : 'Late Locked'}
+                          </span>
+                          {draft && !submission && (
+                            <span className="px-3 py-1 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-500">
+                              Draft Saved
+                            </span>
+                          )}
                           {isStudent && (
                             <button
-                              onClick={() => {
-                                setActiveAssignment(assignment);
-                                setAssignmentSubmission(submission?.content || '');
-                                setShowAssignmentModal(true);
-                              }}
+                              onClick={() => openAssignmentModal(assignment)}
+                              disabled={isClosed}
                               className={`px-4 py-2 rounded-lg text-sm font-medium ${
-                                submission
+                                isClosed
+                                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed dark:bg-gray-700 dark:text-gray-400'
+                                  : submission
                                   ? 'bg-emerald-500/10 text-emerald-500'
                                   : isOverdue
                                     ? 'bg-rose-500/10 text-rose-500'
                                     : 'bg-blue-500/10 text-blue-500'
                               }`}
                             >
-                              {submission ? 'View Submission' : isOverdue ? 'Submit Late' : 'Submit'}
+                              {submission ? 'View Submission' : draft ? 'Resume Draft' : isClosed ? 'Closed' : isOverdue ? 'Submit Late' : 'Submit'}
                             </button>
                           )}
                           {isPublicSubmission && (
@@ -2303,6 +2621,11 @@ const ClassFeed = () => {
                       <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
                         {assignment.description || 'No description provided.'}
                       </p>
+                      {!assignment.allow_late && (
+                        <div className="mt-2 text-xs text-rose-500">
+                          Late submissions close after the due date.
+                        </div>
+                      )}
                       {submission && (
                         <div className="mt-3 text-xs text-gray-500 dark:text-gray-400">
                           Submitted {new Date(submission.submitted_at).toLocaleString()} •{' '}
@@ -2326,9 +2649,18 @@ const ClassFeed = () => {
               </div>
             </div>
 
+          <div className="mb-4 text-sm text-gray-500 dark:text-gray-400">
+            Showing {displayedPosts.length} of {posts.length} posts
+            {searchQuery ? ` for "${searchQuery}"` : ''}
+          </div>
+
           {/* Posts Grid */}
           <div className="space-y-8">
-            {posts.map((post) => (
+            {displayedPosts.length === 0 ? (
+              <div className={`rounded-xl p-8 text-center ${darkMode ? 'bg-gray-800 text-gray-300' : 'bg-white text-gray-600'}`}>
+                No posts match your current search/filter.
+              </div>
+            ) : displayedPosts.map((post) => (
               <motion.div
                 key={post.id}
                 layout
@@ -2607,7 +2939,7 @@ const ClassFeed = () => {
                 exit={{ scale: 0.9, opacity: 0 }}
                 className={`${
                   darkMode ? 'bg-gray-800' : 'bg-white'
-                } rounded-lg p-6 max-w-xl w-full shadow-xl`}
+                } rounded-lg p-6 max-w-5xl w-full shadow-xl`}
               >
                 <div className="mb-4">
                   <h3 className="text-xl font-semibold">{activeAssignment.title}</h3>
@@ -2615,22 +2947,51 @@ const ClassFeed = () => {
                     Due: {new Date(activeAssignment.due_date).toLocaleString()}
                   </p>
                 </div>
-                <textarea
-                  value={assignmentSubmission}
-                  onChange={(e) => setAssignmentSubmission(e.target.value)}
-                  rows={6}
-                  placeholder="Write your submission..."
-                  className={`w-full p-3 rounded-lg border ${
-                    darkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300'
-                  }`}
-                />
+                <div className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+                  <div className={`rounded-xl border p-4 ${darkMode ? 'border-gray-700 bg-gray-900/40' : 'border-gray-200 bg-gray-50'}`}>
+                    <div className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                      Assignment Prompt
+                    </div>
+                    <div className="mt-3 space-y-3">
+                      <div>
+                        <div className="text-sm font-medium text-gray-500 dark:text-gray-400">Question</div>
+                        <div className="mt-1 text-base font-semibold text-gray-900 dark:text-gray-100">
+                          {activeAssignment.title}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-sm font-medium text-gray-500 dark:text-gray-400">Details</div>
+                        <div className="mt-1 whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300">
+                          {activeAssignment.description || 'No additional instructions provided.'}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="mb-2 flex items-center justify-between text-sm">
+                      <span className="font-medium text-gray-700 dark:text-gray-200">Your Response</span>
+                      <span className="text-xs text-gray-500 dark:text-gray-400">
+                        {!assignmentDraftReady
+                          ? 'Loading saved draft...'
+                          : assignmentDraftSavedAt
+                          ? `Autosaved ${new Date(assignmentDraftSavedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+                          : 'Draft autosaves to your account while you type'}
+                      </span>
+                    </div>
+                    <textarea
+                      value={assignmentSubmission}
+                      onChange={handleAssignmentSubmissionChange}
+                      rows={14}
+                      placeholder="Write your submission..."
+                      className={`w-full min-h-[320px] p-3 rounded-lg border ${
+                        darkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300'
+                      }`}
+                    />
+                  </div>
+                </div>
                 <div className="mt-4 flex justify-end gap-3">
                   <button
-                    onClick={() => {
-                      setShowAssignmentModal(false);
-                      setActiveAssignment(null);
-                      setAssignmentSubmission('');
-                    }}
+                    onClick={closeAssignmentModal}
                     className={`px-4 py-2 rounded-lg ${
                       darkMode ? 'bg-gray-700 text-gray-200' : 'bg-gray-100 text-gray-700'
                     }`}
@@ -2952,4 +3313,5 @@ const ClassFeed = () => {
 };
 
 export default ClassFeed; 
+
 

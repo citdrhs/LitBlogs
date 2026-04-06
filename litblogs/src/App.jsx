@@ -9,6 +9,7 @@ import AdminDashboard from "./AdminDashboard";
 import PostView from "./PostView";
 import StudentHub from "./StudentHub";
 import Profile from "./Profile";
+import Settings from "./Settings";
 import AssignmentSubmissions from "./AssignmentSubmissions";
 import ForgotPassword from "./ForgotPassword";
 import ResetPassword from "./ResetPassword";
@@ -56,6 +57,7 @@ function App() {
       <Route path="/student-hub" element={<StudentHub />} />
       <Route path="/profile" element={<Profile />} />
       <Route path="/profile/:userId" element={<Profile />} />
+      <Route path="/settings" element={<Settings onDarkModeChange={setDarkMode} />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/privacy-policy" element={<PrivacyPolicy />} />
