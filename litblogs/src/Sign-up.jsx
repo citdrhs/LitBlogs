@@ -9,6 +9,7 @@ import { GoogleOAuthProvider, GoogleLogin, useGoogleLogin } from '@react-oauth/g
 import { useMsal } from "@azure/msal-react";
 import { loginRequest } from "./config/msalConfig";
 import { FaMicrosoft } from 'react-icons/fa';
+import { apiPath, resolveAppAsset } from './utils/urlUtils';
 
 const SignUp = () => {
   const navigate = useNavigate();
@@ -198,7 +199,7 @@ const SignUp = () => {
       const username = email.split('@')[0] + Math.floor(Math.random() * 1000);
 
       // Send registration data to backend with correct field names
-      const response = await axios.post('http://localhost:8000/api/auth/register', {
+      const response = await axios.post('/auth/register', {
         username: username,
         email: email,
         password: password,
@@ -257,7 +258,7 @@ const SignUp = () => {
       const { credential } = credentialResponse;
       
       // Send the token to your backend for verification
-      const response = await fetch('http://localhost:8000/api/auth/google-signup', {
+      const response = await fetch(apiPath('/auth/google-signup'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -346,7 +347,7 @@ const SignUp = () => {
         const googleUserInfo = await userInfoResponse.json();
         
         // Send the user info to your backend
-        const response = await fetch('http://localhost:8000/api/auth/google-signup', {
+        const response = await fetch(apiPath('/auth/google-signup'), {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -429,7 +430,7 @@ const SignUp = () => {
       const response = await instance.loginPopup(loginRequest);
       
       // Send token to backend with role and access code
-      const backendResponse = await axios.post('http://localhost:8000/api/auth/microsoft-signup', {
+      const backendResponse = await axios.post('/auth/microsoft-signup', {
         msUserData: {
           email: response.account.username,
           firstName: response.account.name?.split(' ')[0] || '',
@@ -484,7 +485,7 @@ const SignUp = () => {
           {/* Logo */}
           <Link to="/">
             <motion.img
-              src="/dren/logo.png"
+              src={resolveAppAsset('logo.png')}
               alt="Logo"
               className="h-8 transition-transform duration-300 hover:scale-110 cursor-pointer"
               whileHover={{ scale: 1.1 }}

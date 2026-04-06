@@ -9,6 +9,7 @@ import { GoogleLogin, GoogleOAuthProvider } from '@react-oauth/google';
 import { useMsal } from "@azure/msal-react";
 import { loginRequest } from "./config/msalConfig";
 import { FaMicrosoft } from 'react-icons/fa';
+import { resolveAppAsset } from './utils/urlUtils';
 
 const SignIn = () => {
   const [email, setEmail] = useState("");
@@ -71,7 +72,7 @@ const SignIn = () => {
     setErrorMessage("");
     
     try {
-      const response = await axios.post('http://localhost:8000/api/auth/login', {
+      const response = await axios.post('/auth/login', {
         email,
         password
       });
@@ -133,7 +134,7 @@ const SignIn = () => {
       setIsLoading(true);
       setErrorMessage("");
       
-      const backendResponse = await axios.post('http://localhost:8000/api/auth/google-login', {
+      const backendResponse = await axios.post('/auth/google-login', {
         token: response.credential
       });
       
@@ -194,7 +195,7 @@ const SignIn = () => {
       const response = await instance.loginPopup(loginRequest);
       
       // Send token to backend
-      const backendResponse = await axios.post('http://localhost:8000/api/auth/microsoft-login', {
+      const backendResponse = await axios.post('/auth/microsoft-login', {
         msUserData: {
           email: response.account.username,
           firstName: response.account.name?.split(' ')[0] || '',
@@ -248,7 +249,7 @@ return (
           {/* Logo */}
           <Link to="/">
             <motion.img
-              src="/dren/logo.png"
+              src={resolveAppAsset('logo.png')}
               alt="Logo"
               className="h-8 transition-transform duration-300 hover:scale-110 cursor-pointer"
               whileHover={{ scale: 1.1 }}

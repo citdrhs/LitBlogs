@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import axios from 'axios';
 import Loader from './components/Loader';
 import Footer from './components/Footer';
+import { resolveAppAsset } from './utils/urlUtils';
 
 const ResetPassword = () => {
   const [password, setPassword] = useState("");
@@ -144,7 +145,7 @@ const ResetPassword = () => {
     setMessage("");
     
     try {
-      const response = await axios.post('http://localhost:8000/api/auth/reset-password', {
+      const response = await axios.post('/auth/reset-password', {
         token,
         new_password: password
       });
@@ -187,7 +188,7 @@ const ResetPassword = () => {
           {/* Logo */}
           <Link to="/">
             <motion.img
-              src="/dren/logo.png"
+              src={resolveAppAsset('logo.png')}
               alt="Logo"
               className="h-8 transition-transform duration-300 hover:scale-110 cursor-pointer"
               whileHover={{ scale: 1.1 }}

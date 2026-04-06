@@ -2413,7 +2413,7 @@ const ClassFeed = () => {
         userInfo={userInfo}
         onSignOut={handleSignOut}
         darkMode={darkMode}
-        logo="/dren/logo.png"
+        logo="logo.png"
       />
 
       {/* Side Panel */}

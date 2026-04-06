@@ -33,8 +33,8 @@ const AdminDashboard = () => {
 
         // Fetch all users and classes
         const [usersResponse, classesResponse] = await Promise.all([
-          axios.get('http://localhost:8000/api/users', config),
-          axios.get('http://localhost:8000/api/classes', config)
+          axios.get('/users', config),
+          axios.get('/classes', config)
         ]);
 
         setUsers(usersResponse.data);
@@ -305,4 +305,4 @@ const AdminDashboard = () => {
   );
 };
 
-export default AdminDashboard; 
+export default AdminDashboard;

@@ -117,7 +117,7 @@ const AssignmentSubmissions = () => {
         userInfo={userInfo}
         onSignOut={handleSignOut}
         darkMode={darkMode}
-        logo="/dren/logo.png"
+        logo="logo.png"
       />
 
       <main className="flex-1 max-w-5xl w-full mx-auto px-6 pt-28 pb-10">

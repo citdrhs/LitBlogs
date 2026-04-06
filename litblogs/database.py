@@ -2,10 +2,18 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 from base import Base
 
-load_dotenv()  # Load environment variables from a .env file if you use one
+BASE_DIR = Path(__file__).resolve().parent
+
+load_dotenv(BASE_DIR / ".env")
+
+app_env = os.getenv("APP_ENV", "development").strip().lower()
+env_override_path = BASE_DIR / f".env.{app_env}"
+if env_override_path.exists():
+    load_dotenv(env_override_path, override=True)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 

@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
+import { assetPath } from './utils/urlUtils';
 import './LitBlogs.css'; // Import your styles
 
 const LitBlogs = () => {
@@ -13,10 +14,10 @@ const LitBlogs = () => {
   const [email, setEmail] = useState("");
   const [newsletterMessage, setNewsletterMessage] = useState("");
   const slides = [
-    "/dren/Classroom1.jpeg",
-    "/dren/Classroom2.jpeg",
-    "/dren/Classroom3.jpeg",
-    "/dren/Classroom4.jpeg",
+    assetPath("Classroom1.jpeg"),
+    assetPath("Classroom2.jpeg"),
+    assetPath("Classroom3.jpeg"),
+    assetPath("Classroom4.jpeg"),
   ];
 
   // Handle next and previous slides
@@ -90,7 +91,7 @@ const LitBlogs = () => {
       userInfo={userInfo}
       onSignOut={handleSignOut}
       darkMode={darkMode}
-      logo="/dren/logo.png"
+      logo="logo.png"
       />
       
       {/* Toggle Dark Mode Button */}

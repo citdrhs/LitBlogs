@@ -228,7 +228,7 @@ const Settings = ({ onDarkModeChange }) => {
 
   return (
     <div className={pageClasses}>
-      <Navbar userInfo={userInfo} onSignOut={handleSignOut} darkMode={settings.darkMode} logo="/dren/logo.png" />
+      <Navbar userInfo={userInfo} onSignOut={handleSignOut} darkMode={settings.darkMode} logo="logo.png" />
 
       <div className="pt-24 pb-10 px-4 md:px-8">
         <div className="max-w-4xl mx-auto space-y-6">

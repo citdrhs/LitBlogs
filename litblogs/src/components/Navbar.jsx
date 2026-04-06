@@ -2,12 +2,13 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import Button from './Sign-out';
+import { resolveAppAsset } from '../utils/urlUtils';
 
 const Navbar = ({ 
   userInfo, 
   onSignOut, 
   darkMode = false,
-  logo = "/dren/logo.png",
+  logo = "logo.png",
   navLinks = [
     { to: "/", label: "Home" },
     { to: "/help", label: "Help" },
@@ -17,6 +18,7 @@ const Navbar = ({
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   const dropdownRef = useRef(null);
+  const resolvedLogo = resolveAppAsset(logo);
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -58,7 +60,7 @@ const Navbar = ({
         {/* Logo */}
         <Link to="/">
           <motion.img
-            src={logo}
+            src={resolvedLogo}
             alt="Logo"
             className="h-8 mr-7 transition-transform duration-300 hover:scale-110 cursor-pointer"
             whileHover={{ scale: 1.1 }}

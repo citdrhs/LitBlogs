@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
+import { assetPath } from "../utils/urlUtils";
 
 const FAQ = ({ darkMode }) => {
   const [activeIndex, setActiveIndex] = useState(null);
@@ -8,7 +9,7 @@ const FAQ = ({ darkMode }) => {
     {
       question: "How can I join my teacher's class?",
       answer: "Use the provided teacher code in the sign-up menu to join the class.",
-      image: "/dren/faq1.png"
+      image: assetPath("faq1.png")
     },
     {
       question: "How to Sign up?",
@@ -103,4 +104,4 @@ const FAQ = ({ darkMode }) => {
   );
 };
 
-export default FAQ; 
+export default FAQ;

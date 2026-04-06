@@ -8,7 +8,7 @@ import { msalConfig } from './config/msalConfig'
 import App from './App'
 import './index.css'
 import axios from 'axios'
-import { API_BASE_PATH } from './utils/urlUtils'
+import { API_BASE_PATH, ROUTER_BASENAME } from './utils/urlUtils'
 
 // Initialize MSAL instance
 const msalInstance = new PublicClientApplication(msalConfig);
@@ -22,7 +22,7 @@ msalInstance.initialize().then(() => {
     <React.StrictMode>
       <MsalProvider instance={msalInstance}>
         <GoogleOAuthProvider clientId="653922429771-qdjgvs7vkrcd7g4o2oea12t097ah4eog.apps.googleusercontent.com">
-          <BrowserRouter>
+          <BrowserRouter basename={ROUTER_BASENAME}>
             <App />
           </BrowserRouter>
         </GoogleOAuthProvider>

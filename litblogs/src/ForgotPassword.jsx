@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import axios from 'axios';
 import Loader from './components/Loader';
 import Footer from './components/Footer';
+import { resolveAppAsset } from './utils/urlUtils';
 
 const ForgotPassword = () => {
   const [email, setEmail] = useState("");
@@ -75,7 +76,7 @@ const ForgotPassword = () => {
     setIsSuccess(false);
     
     try {
-      const response = await axios.post('http://localhost:8000/api/auth/forgot-password', {
+      const response = await axios.post('/auth/forgot-password', {
         email
       });
       
@@ -111,7 +112,7 @@ const ForgotPassword = () => {
           {/* Logo */}
           <Link to="/">
             <motion.img
-              src="/dren/logo.png"
+              src={resolveAppAsset('logo.png')}
               alt="Logo"
               className="h-8 transition-transform duration-300 hover:scale-110 cursor-pointer"
               whileHover={{ scale: 1.1 }}

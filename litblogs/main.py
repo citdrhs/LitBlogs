@@ -33,6 +33,7 @@ from google.oauth2 import id_token
 import secrets
 import random
 from msal import ConfidentialClientApplication  # Add this import
+from urllib.parse import urlsplit
 from sqlalchemy.orm import relationship
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -49,6 +50,33 @@ import re
 def _should_reset_database_on_startup() -> bool:
     return os.getenv("RESET_DATABASE_ON_STARTUP", "").strip().lower() in {"1", "true", "yes", "on"}
 
+def _parse_csv_env(value: str | None) -> list[str]:
+    if not value:
+        return []
+
+    return [item.strip().rstrip("/") for item in value.split(",") if item.strip()]
+
+def _origin_from_url(url: str | None) -> str | None:
+    if not url:
+        return None
+
+    parsed = urlsplit(url)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://drhscit.org/dren").rstrip("/")
+MICROSOFT_REDIRECT_URI = os.getenv("MICROSOFT_REDIRECT_URI", FRONTEND_URL).rstrip("/")
+CORS_ALLOWED_ORIGINS = _parse_csv_env(os.getenv("CORS_ALLOWED_ORIGINS"))
+FRONTEND_ORIGIN = _origin_from_url(FRONTEND_URL)
+
+if FRONTEND_ORIGIN and FRONTEND_ORIGIN not in CORS_ALLOWED_ORIGINS:
+    CORS_ALLOWED_ORIGINS.append(FRONTEND_ORIGIN)
+
+if not CORS_ALLOWED_ORIGINS:
+    CORS_ALLOWED_ORIGINS = ["https://drhscit.org"]
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if _should_reset_database_on_startup():
@@ -63,13 +91,7 @@ app = FastAPI(lifespan=lifespan)
 # Fix CORS middleware setup
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5500",
-        "http://127.0.0.1:5500",
-        "https://drhscit.org",
-    ],
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -626,7 +648,7 @@ async def get_microsoft_token(request_data: dict, db: Session = Depends(get_db))
         result = app.acquire_token_by_authorization_code(
             code=auth_code,
             scopes=["https://graph.microsoft.com/User.Read"],
-            redirect_uri="http://localhost:5173"
+            redirect_uri=MICROSOFT_REDIRECT_URI
         )
 
         if "error" in result:
@@ -3718,7 +3740,6 @@ class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
 
-FRONTEND_URL = os.getenv("FRONTEND_URL")
 EMAIL_HOST = os.getenv("EMAIL_HOST")
 EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
 EMAIL_USERNAME = os.getenv("EMAIL_USERNAME")
