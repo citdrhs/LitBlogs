@@ -112,6 +112,11 @@ npm install --force
 ```javascript
 base: '/dren/',
 ```
+and
+```javascript
+<BrowserReact basename='/dren'>
+```
+in main.jsx
 
 3. Change the redirect/postLogoutRedirect URI in msalConfig.js to:
 ```javascript
@@ -138,7 +143,7 @@ server {
     listen 7001;
     listen [::]:7001;
     server_name drhscit.org www.drhscit.org;
-    root /var/www/LitBlog/litblogs/dist;
+    root /var/www/LitBlogs/litblogs/dist;
     index index.html;
     # For React Router (SPA) at /dren path
     location / {
