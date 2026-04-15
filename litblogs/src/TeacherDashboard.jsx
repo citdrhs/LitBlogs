@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import axios from 'axios';
 import Navbar from './components/Navbar';
@@ -9,6 +9,7 @@ import Footer from './components/Footer';
 
 const TeacherDashboard = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const [darkMode, setDarkMode] = useState(() => {
     return JSON.parse(localStorage.getItem('darkMode')) ?? false;
   });
@@ -21,6 +22,7 @@ const TeacherDashboard = () => {
   const [error, setError] = useState(null);
   const [userInfo, setUserInfo] = useState(null);
   const [selectedClass, setSelectedClass] = useState(null);
+  const [selectedClassInitialTab, setSelectedClassInitialTab] = useState('Overview');
   const [allStudents, setAllStudents] = useState([]);
   const [archivedClasses, setArchivedClasses] = useState([]);
   const [classesTab, setClassesTab] = useState('active'); // 'active' or 'archived'
@@ -44,6 +46,16 @@ const TeacherDashboard = () => {
       document.documentElement.classList.remove('dark');
     }
   }, [darkMode]);
+
+  useEffect(() => {
+    if (!location.state?.selectedClass) {
+      return;
+    }
+
+    setActiveTab('Classes');
+    setSelectedClass(location.state.selectedClass);
+    setSelectedClassInitialTab(location.state.classDetailsTab || 'Overview');
+  }, [location.key, location.state]);
 
   // Combine the useEffects
   useEffect(() => {
@@ -496,7 +508,11 @@ const TeacherDashboard = () => {
                   <ClassDetails 
                     classData={selectedClass} 
                     darkMode={darkMode} 
-                    onBack={() => setSelectedClass(null)}
+                    initialTab={selectedClassInitialTab}
+                    onBack={() => {
+                      setSelectedClass(null);
+                      setSelectedClassInitialTab('Overview');
+                    }}
                   />
                 ) : (
                   <>
@@ -571,6 +587,7 @@ const TeacherDashboard = () => {
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation();
+                                        setSelectedClassInitialTab('Overview');
                                         setSelectedClass(cls);
                                         setMenuOpen(null);
                                       }}
@@ -632,7 +649,13 @@ const TeacherDashboard = () => {
                           </div>
                           
                           {/* Class content */}
-                          <div onClick={() => setSelectedClass(cls)} className="cursor-pointer">
+                          <div
+                            onClick={() => {
+                              setSelectedClassInitialTab('Overview');
+                              setSelectedClass(cls);
+                            }}
+                            className="cursor-pointer"
+                          >
                           <h3 className="text-xl font-semibold mb-2">{cls.name}</h3>
                           <p className="mb-4 opacity-80">{cls.description}</p>
                           <div className="flex justify-between items-center">

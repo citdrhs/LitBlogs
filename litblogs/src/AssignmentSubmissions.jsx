@@ -156,19 +156,6 @@ const AssignmentSubmissions = () => {
                     {submission.student?.first_name} {submission.student?.last_name}
                   </div>
                   <div className="flex items-center gap-2">
-                    {submission.ai_percentage !== null && submission.ai_percentage !== undefined ? (
-                      <span className={`px-2 py-1 text-xs font-bold rounded-full ${
-                        submission.ai_percentage > 50
-                          ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400'
-                          : 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
-                      }`}>
-                        {submission.ai_percentage}% AI
-                      </span>
-                    ) : (
-                      <span className="px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300">
-                        AI pending
-                      </span>
-                    )}
                     <div className="text-xs text-gray-500 dark:text-gray-400">
                       {new Date(submission.submitted_at).toLocaleString()}
                     </div>

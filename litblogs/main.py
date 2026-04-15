@@ -1,7 +1,7 @@
 # main.py
 # To run locally run:
 # uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -25,7 +25,6 @@ from pathlib import Path
 import random
 import string
 from models import User, Teacher  # Add this line
-from bs4 import BeautifulSoup
 import bleach
 from bleach.css_sanitizer import CSSSanitizer
 from google.auth.transport import requests
@@ -40,10 +39,6 @@ from fastapi.responses import FileResponse
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-try:
-    from gradio_client import Client
-except Exception:
-    Client = None
 import json
 import re
 
@@ -1029,91 +1024,35 @@ def sanitize_html(content: str) -> str:
     
     return sanitized_content
 
-def run_ai_detection(text: str, record_id: int, record_type: str):
-    db = SessionLocal()
-    try:
-        # Strip HTML tags to get plain text for word count
-        soup = BeautifulSoup(text, "html.parser")
-        plain_text = soup.get_text()
-        word_count = len(plain_text.split())
-        
-        mode = "detailed" if word_count >= 200 else "quick"
-        
-        client = Client("ApsidalSolid4/CITProjectAIDetector")
-        result = client.predict(
-            text=plain_text,
-            mode=mode,
-            api_name="/predict"
-        )
-        
-        # result is a tuple: (highlighted_html, sentence_analysis, overall_result)
-        highlighted_html = result[0]
-        sentence_analysis = result[1]
-        overall_result = result[2]
-        
-        # Parse overall_result to get percentage
-        # API returns strings and format may vary by model/version.
-        ai_percentage = None
-        overall_text = str(overall_result or "")
+def _build_post_content(post: schemas.BlogCreate) -> str:
+    content = sanitize_html(post.content)
 
-        confidence_match = re.search(r'confidence\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*%', overall_text, re.IGNORECASE)
-        prediction_match = re.search(r'prediction\s*:\s*([A-Za-z]+)', overall_text, re.IGNORECASE)
+    if post.code_snippets:
+        for snippet in post.code_snippets:
+            content += f"\n[CODE:{snippet['language']}]{snippet['code']}\n"
 
-        if confidence_match and prediction_match:
-            confidence = float(confidence_match.group(1))
-            prediction = prediction_match.group(1).strip().upper()
+    if post.media:
+        for media in post.media:
+            if media['type'] == 'gif':
+                content += f"\n[GIF:{media['url']}]\n"
+            elif media['type'] == 'image':
+                content += f"\n[IMAGE:{media['url']}]\n"
 
-            if prediction == "AI":
-                ai_percentage = int(round(confidence))
-            elif prediction == "HUMAN":
-                ai_percentage = int(round(100 - confidence))
+    if post.polls:
+        for poll in post.polls:
+            options = ','.join(poll['options'])
+            content += f"\n[POLL:{options}]\n"
 
-        # Fallback: derive an aggregate AI score from sentence-by-sentence analysis
-        # Example sentence block:
-        # Prediction: HUMAN
-        # Confidence: 78.5%
-        if ai_percentage is None and sentence_analysis:
-            sentence_matches = re.findall(
-                r'Prediction:\s*(AI|HUMAN)\s*\n\s*Confidence:\s*([0-9]+(?:\.[0-9]+)?)\s*%',
-                str(sentence_analysis),
-                re.IGNORECASE
-            )
+    if post.files:
+        for file in post.files:
+            content += f"\n[FILE:{file['name']}|{file['url']}]\n"
 
-            if sentence_matches:
-                ai_likelihoods = []
-                for pred, conf_text in sentence_matches:
-                    conf = float(conf_text)
-                    if pred.upper() == "AI":
-                        ai_likelihoods.append(conf)
-                    else:
-                        ai_likelihoods.append(100 - conf)
-
-                ai_percentage = int(round(sum(ai_likelihoods) / len(ai_likelihoods)))
-
-        if ai_percentage is not None:
-            ai_percentage = max(0, min(100, int(ai_percentage)))
-        
-        # Update the database
-        if record_type == "post":
-            record = db.query(models.Blog).filter(models.Blog.id == record_id).first()
-        elif record_type == "assignment":
-            record = db.query(models.AssignmentSubmission).filter(models.AssignmentSubmission.id == record_id).first()
-            
-        if record:
-            record.ai_percentage = ai_percentage
-            record.ai_highlighted_html = highlighted_html
-            record.ai_sentence_analysis = sentence_analysis
-            db.commit()
-    except Exception as e:
-        print(f"AI Detection failed: {e}")
-    finally:
-        db.close()
+    return content
 
 @app.post("/api/classes/{class_id}/posts", response_model=schemas.BlogResponse)
 async def create_class_post(
     class_id: int,
     post: schemas.BlogCreate,
-    background_tasks: BackgroundTasks,
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -1126,32 +1065,7 @@ async def create_class_post(
         if not enrollment:
             raise HTTPException(status_code=403, detail="Not enrolled in this class")
     
-    # Sanitize the content while preserving styles
-    content = sanitize_html(post.content)
-    
-    # Process rich content markers
-    if post.code_snippets:
-        for snippet in post.code_snippets:
-            content += f"\n[CODE:{snippet['language']}]{snippet['code']}\n"
-    
-    # Handle media (images, GIFs) if they exist
-    if post.media:
-        for media in post.media:
-            if media['type'] == 'gif':
-                content += f"\n[GIF:{media['url']}]\n"
-            elif media['type'] == 'image':
-                content += f"\n[IMAGE:{media['url']}]\n"
-    
-    # Handle polls if they exist
-    if post.polls:
-        for poll in post.polls:
-            options = ','.join(poll['options'])
-            content += f"\n[POLL:{options}]\n"
-    
-    # Handle files if they exist
-    if post.files:
-        for file in post.files:
-            content += f"\n[FILE:{file['name']}|{file['url']}]\n"
+    content = _build_post_content(post)
     
     # Create new post with processed content
     new_post = models.Blog(
@@ -1164,9 +1078,6 @@ async def create_class_post(
     db.add(new_post)
     db.commit()
     db.refresh(new_post)
-    
-    # Trigger AI detection in the background
-    background_tasks.add_task(run_ai_detection, new_post.content, new_post.id, "post")
     
     return {
         "id": new_post.id,
@@ -1186,7 +1097,6 @@ async def create_class_post(
 @app.get("/api/classes/{class_id}/posts")
 async def get_class_posts(
     class_id: int,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -1200,9 +1110,6 @@ async def get_class_posts(
     # Format posts with author information
     formatted_posts = []
     for post in posts:
-        if post.content and post.ai_percentage is None and not post.ai_sentence_analysis:
-            background_tasks.add_task(run_ai_detection, post.content, post.id, "post")
-
         author = db.query(models.User).filter(models.User.id == post.owner_id).first()
         formatted_posts.append({
             "id": post.id,
@@ -1724,7 +1631,6 @@ async def save_assignment_draft(
 async def submit_assignment(
     assignment_id: int,
     submission: schemas.AssignmentSubmissionCreate,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -1769,9 +1675,6 @@ async def submit_assignment(
         db.commit()
         db.refresh(existing)
         
-        # Trigger AI detection in the background
-        background_tasks.add_task(run_ai_detection, existing.content, existing.id, "assignment")
-        
         return {
             "id": existing.id,
             "assignment_id": existing.assignment_id,
@@ -1796,9 +1699,6 @@ async def submit_assignment(
         db.delete(draft)
     db.commit()
     db.refresh(new_submission)
-    
-    # Trigger AI detection in the background
-    background_tasks.add_task(run_ai_detection, new_submission.content, new_submission.id, "assignment")
     
     return {
         "id": new_submission.id,
@@ -2225,7 +2125,6 @@ async def update_class_post(
     class_id: int,
     post_id: int,
     post: schemas.BlogCreate,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -2244,14 +2143,11 @@ async def update_class_post(
     
     # Update the post - make sure title and content are both updated
     db_post.title = post.title
-    db_post.content = post.content
+    db_post.content = _build_post_content(post)
     db_post.updated_at = datetime.utcnow()
     
     db.commit()
     db.refresh(db_post)
-    
-    # Trigger AI detection in the background
-    background_tasks.add_task(run_ai_detection, db_post.content, db_post.id, "post")
     
     # Return updated post
     return {

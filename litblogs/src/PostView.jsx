@@ -503,8 +503,14 @@ const PostView = () => {
   const { classId, postId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const queryParams = new URLSearchParams(location.search);
-  const showAi = queryParams.get('showAi') === 'true';
+  const viewerContext = location.state?.postViewerContext || null;
+  const reviewSequence = Array.isArray(viewerContext?.postSequence) ? viewerContext.postSequence : [];
+  const currentReviewIndex = reviewSequence.findIndex((item) => String(item.id) === String(postId));
+  const previousReviewPost = currentReviewIndex > 0 ? reviewSequence[currentReviewIndex - 1] : null;
+  const nextReviewPost =
+    currentReviewIndex >= 0 && currentReviewIndex < reviewSequence.length - 1
+      ? reviewSequence[currentReviewIndex + 1]
+      : null;
   
   const [post, setPost] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -549,6 +555,10 @@ const PostView = () => {
       document.documentElement.classList.remove("dark");
     }
   }, [darkMode]);
+
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [postId]);
 
   useEffect(() => {
     // Load user info
@@ -679,11 +689,32 @@ const PostView = () => {
   };
 
   const handleBack = () => {
-    if (userInfo?.role === 'TEACHER') {
+    if (viewerContext?.selectedClass) {
+      navigate('/teacher-dashboard', {
+        state: {
+          selectedClass: viewerContext.selectedClass,
+          classDetailsTab: viewerContext.classDetailsTab || 'Blogs',
+        },
+      });
+    } else if (viewerContext?.returnPath) {
+      navigate(viewerContext.returnPath);
+    } else if (userInfo?.role === 'TEACHER') {
       navigate('/teacher-dashboard');
     } else {
       navigate(`/class-feed/${classId}`);
     }
+  };
+
+  const handleReviewNavigation = (targetPostId) => {
+    if (!targetPostId) {
+      return;
+    }
+
+    navigate(`/class/${classId}/post/${targetPostId}`, {
+      state: {
+        postViewerContext: viewerContext,
+      },
+    });
   };
 
   const handleLike = async () => {
@@ -1386,7 +1417,7 @@ const PostView = () => {
           className="bg-white dark:bg-gray-800 rounded-lg shadow-xl overflow-hidden"
         >
           {/* Back Button */}
-          <div className="p-4 border-b dark:border-gray-700">
+          <div className="p-4 border-b dark:border-gray-700 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <motion.button
               onClick={handleBack}
               className="flex items-center gap-2 text-blue-500 hover:text-blue-600"
@@ -1395,8 +1426,34 @@ const PostView = () => {
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
               </svg>
-              {userInfo?.role === 'TEACHER' ? 'Back to Dashboard' : 'Back to Class'}
+              {viewerContext?.backLabel || (userInfo?.role === 'TEACHER' ? 'Back to Dashboard' : 'Back to Class')}
             </motion.button>
+
+            {currentReviewIndex >= 0 && reviewSequence.length > 1 && (
+              <div className="flex items-center gap-2 self-start sm:self-auto">
+                <span className="text-xs text-gray-500 dark:text-gray-400">
+                  Post {currentReviewIndex + 1} of {reviewSequence.length}
+                </span>
+                <button
+                  onClick={() => handleReviewNavigation(previousReviewPost?.id)}
+                  disabled={!previousReviewPost}
+                  className={`px-3 py-1.5 rounded-lg text-sm border transition-colors ${
+                    darkMode
+                      ? 'border-gray-600 text-gray-200 disabled:text-gray-500 disabled:border-gray-700'
+                      : 'border-gray-300 text-gray-700 disabled:text-gray-400'
+                  }`}
+                >
+                  Previous
+                </button>
+                <button
+                  onClick={() => handleReviewNavigation(nextReviewPost?.id)}
+                  disabled={!nextReviewPost}
+                  className="px-3 py-1.5 rounded-lg text-sm bg-blue-600 text-white disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Post Content */}
@@ -1418,59 +1475,21 @@ const PostView = () => {
 
             {/* Post Title - without label */}
             <div className={`mb-6 px-5 py-4 rounded-lg border ${darkMode ? 'bg-gray-750 border-gray-600' : 'bg-blue-50 border-blue-100'}`}>
-              <div className="flex items-center justify-between">
-                <h1 className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-800'}`}>
-                  {post.title}
-                </h1>
-                {userInfo?.role === 'TEACHER' && post.ai_percentage !== null && post.ai_percentage !== undefined && (
-                  <div className={`px-3 py-1 text-sm font-bold rounded-full ${
-                    post.ai_percentage > 50 
-                      ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400' 
-                      : 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
-                  }`}>
-                    {post.ai_percentage}% AI Generated
-                  </div>
-                )}
-              </div>
+              <h1 className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-800'}`}>
+                {post.title}
+              </h1>
             </div>
 
             {/* Post Content */}
             <div className="prose dark:prose-invert max-w-none mt-6">
               <style dangerouslySetInnerHTML={{ __html: richTextStyles }} />
-              {showAi && userInfo?.role === 'TEACHER' && post.ai_highlighted_html ? (
-                <div className="space-y-6">
-                  <div className="p-4 rounded-lg border bg-yellow-50 border-yellow-200 dark:bg-yellow-900/20 dark:border-yellow-800">
-                    <h3 className="text-lg font-semibold mb-2 text-yellow-800 dark:text-yellow-400">AI Analysis View</h3>
-                    <p className="text-sm text-yellow-700 dark:text-yellow-500">
-                      You are viewing the AI detection analysis. Highlighted text indicates potential AI generation.
-                    </p>
-                  </div>
-                  <div 
-                    className="html-content p-4 rounded-lg border dark:border-gray-700"
-                    dangerouslySetInnerHTML={{ 
-                      __html: post.ai_highlighted_html
-                    }}
-                  />
-                  {post.ai_sentence_analysis && (
-                    <div className="mt-6">
-                      <h3 className="text-lg font-semibold mb-3 dark:text-white">Sentence Analysis</h3>
-                      <div className="p-4 rounded-lg border bg-gray-50 dark:bg-gray-800 dark:border-gray-700">
-                        <pre className="whitespace-pre-wrap text-sm font-mono dark:text-gray-300">
-                          {post.ai_sentence_analysis}
-                        </pre>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div 
-                  className="html-content"
-                  dangerouslySetInnerHTML={{ 
-                    __html: processHTMLWithDOM(post.content)
-                  }}
-                  ref={contentRef}
-                />
-              )}
+              <div 
+                className="html-content"
+                dangerouslySetInnerHTML={{ 
+                  __html: processHTMLWithDOM(post.content)
+                }}
+                ref={contentRef}
+              />
             </div>
 
             {/* Interactions */}

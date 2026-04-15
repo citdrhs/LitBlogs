@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import axios from 'axios';
 import Navbar from './Navbar';
 import { useNavigate } from 'react-router-dom';
@@ -61,9 +61,9 @@ const formatAssignmentDateInput = (dateValue) => {
   return new Date(parsed.getTime() - timezoneOffset).toISOString().slice(0, 16);
 };
 
-const ClassDetails = ({ classData, darkMode, onBack }) => {
+const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) => {
   const [userInfo, setUserInfo] = useState(null);
-  const [activeTab, setActiveTab] = useState('Overview');
+  const [activeTab, setActiveTab] = useState(initialTab);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [classDetails, setClassDetails] = useState(classData);
@@ -78,7 +78,6 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
   const [assignmentSubmissions, setAssignmentSubmissions] = useState({});
   const [savingAssignment, setSavingAssignment] = useState(false);
   const [expandedAssignmentId, setExpandedAssignmentId] = useState(null);
-  const [selectedAiSubmission, setSelectedAiSubmission] = useState(null);
   const [editingAssignmentId, setEditingAssignmentId] = useState(null);
   const navigate = useNavigate();
 
@@ -90,6 +89,10 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
       setUserInfo(JSON.parse(storedUserInfo));
     }
   }, []);
+
+  useEffect(() => {
+    setActiveTab(initialTab || 'Overview');
+  }, [classData.id, initialTab]);
 
   const refreshAssignments = async (token) => {
     const assignmentsResponse = await axios.get(
@@ -250,6 +253,19 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
     } catch (error) {
       setError(error.response?.data?.detail || 'Failed to load submissions');
     }
+  };
+
+  const openPostReview = (postId) => {
+    navigate(`/class/${classData.id}/post/${postId}`, {
+      state: {
+        postViewerContext: {
+          backLabel: 'Back to Blog List',
+          classDetailsTab: 'Blogs',
+          selectedClass: classData,
+          postSequence: posts.map(({ id, title }) => ({ id, title })),
+        },
+      },
+    });
   };
 
   return (
@@ -426,7 +442,7 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
                       initial={{ opacity: 0, y: 20 }}
                       animate={{ opacity: 1, y: 0 }}
                       whileHover={{ scale: 1.01 }}
-                      onClick={() => navigate(`/class/${classData.id}/post/${post.id}`)}
+                      onClick={() => openPostReview(post.id)}
                     >
                       <div className="p-6">
                         {/* Author Info */}
@@ -449,24 +465,8 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
                         </div>
 
                         {/* Post Title and Preview */}
-                        <div className="flex items-center gap-2 mb-2">
+                        <div className="mb-2">
                           <h2 className="text-xl font-semibold dark:text-white">{post.title}</h2>
-                          {userInfo?.role === 'TEACHER' && post.ai_percentage !== null && post.ai_percentage !== undefined && (
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                navigate(`/class/${classData.id}/post/${post.id}?showAi=true`);
-                              }}
-                              className={`px-2 py-1 text-xs font-bold rounded-full ${
-                                post.ai_percentage > 50 
-                                  ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400' 
-                                  : 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
-                              }`}
-                              title="Click to view AI analysis"
-                            >
-                              {post.ai_percentage}% AI
-                            </button>
-                          )}
                         </div>
                         <div className="text-gray-600 dark:text-gray-300 line-clamp-3">
                           {ReactHtmlParser(truncateHTML(post.content, 150))}
@@ -712,27 +712,9 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
                                     <span className="font-medium">
                                       {submission.student?.first_name} {submission.student?.last_name}
                                     </span>
-                                    <div className="flex items-center gap-2">
-                                      {userInfo?.role === 'TEACHER' && submission.ai_percentage !== null && submission.ai_percentage !== undefined && (
-                                        <button
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            setSelectedAiSubmission(submission);
-                                          }}
-                                          className={`px-2 py-1 text-xs font-bold rounded-full ${
-                                            submission.ai_percentage > 50 
-                                              ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400' 
-                                              : 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
-                                          }`}
-                                          title="Click to view AI analysis"
-                                        >
-                                          {submission.ai_percentage}% AI
-                                        </button>
-                                      )}
-                                      <span className={submission.is_late ? 'text-rose-500' : 'text-emerald-500'}>
-                                        {submission.is_late ? 'Late' : 'On Time'}
-                                      </span>
-                                    </div>
+                                    <span className={submission.is_late ? 'text-rose-500' : 'text-emerald-500'}>
+                                      {submission.is_late ? 'Late' : 'On Time'}
+                                    </span>
                                   </div>
                                   <div className="text-xs text-gray-500 dark:text-gray-400">
                                     Submitted: {new Date(submission.submitted_at).toLocaleString()}
@@ -840,78 +822,6 @@ const ClassDetails = ({ classData, darkMode, onBack }) => {
         )}
       </div>
 
-      {/* AI Analysis Modal */}
-      <AnimatePresence>
-        {selectedAiSubmission && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
-            onClick={() => setSelectedAiSubmission(null)}
-          >
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              onClick={(e) => e.stopPropagation()}
-              className={`w-full max-w-3xl max-h-[80vh] overflow-y-auto rounded-xl shadow-2xl p-6 ${
-                darkMode ? 'bg-gray-800 text-white' : 'bg-white text-gray-900'
-              }`}
-            >
-              <div className="flex justify-between items-center mb-6">
-                <h2 className="text-2xl font-bold">AI Analysis Report</h2>
-                <button
-                  onClick={() => setSelectedAiSubmission(null)}
-                  className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
-                >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-
-              <div className="space-y-6">
-                <div className={`p-4 rounded-lg border ${
-                  selectedAiSubmission.ai_percentage > 50 
-                    ? 'bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-800' 
-                    : 'bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800'
-                }`}>
-                  <h3 className="text-lg font-semibold mb-2">Overall Result</h3>
-                  <p className="text-3xl font-bold">
-                    {selectedAiSubmission.ai_percentage}% AI Generated
-                  </p>
-                </div>
-
-                {selectedAiSubmission.ai_highlighted_html && (
-                  <div>
-                    <h3 className="text-lg font-semibold mb-3">Highlighted Text</h3>
-                    <div 
-                      className={`p-4 rounded-lg border prose dark:prose-invert max-w-none ${
-                        darkMode ? 'bg-gray-900 border-gray-700' : 'bg-gray-50 border-gray-200'
-                      }`}
-                      dangerouslySetInnerHTML={{ __html: selectedAiSubmission.ai_highlighted_html }}
-                    />
-                  </div>
-                )}
-
-                {selectedAiSubmission.ai_sentence_analysis && (
-                  <div>
-                    <h3 className="text-lg font-semibold mb-3">Sentence Analysis</h3>
-                    <div className={`p-4 rounded-lg border ${
-                      darkMode ? 'bg-gray-900 border-gray-700' : 'bg-gray-50 border-gray-200'
-                    }`}>
-                      <pre className="whitespace-pre-wrap text-sm font-mono">
-                        {selectedAiSubmission.ai_sentence_analysis}
-                      </pre>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   );
 };

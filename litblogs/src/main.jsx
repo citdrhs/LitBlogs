@@ -8,13 +8,37 @@ import { msalConfig } from './config/msalConfig'
 import App from './App'
 import './index.css'
 import axios from 'axios'
-import { API_BASE_PATH, ROUTER_BASENAME } from './utils/urlUtils'
+import { API_BASE_PATH, APP_BASE_PATH, ROUTER_BASENAME } from './utils/urlUtils'
+import { clearStoredAuth, purgeExpiredSession } from './utils/auth'
 
 // Initialize MSAL instance
 const msalInstance = new PublicClientApplication(msalConfig);
 
 // Set base URL for all axios requests
 axios.defaults.baseURL = API_BASE_PATH;
+
+purgeExpiredSession();
+
+axios.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const isUnauthorized = error?.response?.status === 401;
+    const hadAuthHeader = Boolean(error?.config?.headers?.Authorization);
+
+    if (isUnauthorized && hadAuthHeader) {
+      clearStoredAuth();
+
+      if (typeof window !== "undefined") {
+        const signInPath = `${APP_BASE_PATH || ""}/sign-in`;
+        if (window.location.pathname !== signInPath) {
+          window.location.replace(signInPath);
+        }
+      }
+    }
+
+    return Promise.reject(error);
+  }
+);
 
 // Optional - Handle the response from auth redirects
 msalInstance.initialize().then(() => {

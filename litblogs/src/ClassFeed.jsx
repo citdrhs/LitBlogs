@@ -2,8 +2,6 @@ import { useState, useEffect } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import axios from 'axios';
-import EmojiPicker from 'emoji-picker-react';
-import { GiphyFetch } from '@giphy/js-fetch-api';
 import Prism from 'prismjs';
 import 'prismjs/themes/prism-tomorrow.css';
 import 'prismjs/components/prism-core';
@@ -235,6 +233,14 @@ const clearAssignmentDraft = ({ classId, assignmentId, userId }) => {
 
   localStorage.removeItem(key);
 };
+
+const createEmptyPostContent = () => ({
+  text: "",
+  media: [],
+  expandableLists: [],
+  codeSnippets: [],
+  files: []
+});
 
 const MOCK_POSTS = [
   {
@@ -1309,30 +1315,12 @@ const ClassFeed = () => {
   const [darkMode, setDarkMode] = useState(() => {
     return JSON.parse(localStorage.getItem('darkMode')) ?? false;
   });
-  const [newPost, setNewPost] = useState("");
   const [showNewPostForm, setShowNewPostForm] = useState(false);
   const [postTitle, setPostTitle] = useState("");
-  const [postCategory, setPostCategory] = useState("");
-  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
-  const [showGifPicker, setShowGifPicker] = useState(false);
-  const [showPollForm, setShowPollForm] = useState(false);
-  const [pollOptions, setPollOptions] = useState(['', '']);
   const [content, setContent] = useState('');
-  const [gifSearchTerm, setGifSearchTerm] = useState('');
-  const [gifs, setGifs] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
-  const [showCodeEditor, setShowCodeEditor] = useState(false);
-  const [codeLanguage, setCodeLanguage] = useState('javascript');
-  const [codeContent, setCodeContent] = useState('');
-  const [postContent, setPostContent] = useState({
-    text: "",
-    media: [],
-    expandableLists: [],
-    codeSnippets: [],
-    files: []
-  });
+  const [postContent, setPostContent] = useState(createEmptyPostContent);
   const [activeCategory, setActiveCategory] = useState('all');
-  const [activePostMenu, setActivePostMenu] = useState(null);
   const [editingPostId, setEditingPostId] = useState(null);
   const [menuOpen, setMenuOpen] = useState(null);
   const [likedPosts, setLikedPosts] = useState({});
@@ -1353,11 +1341,8 @@ const ClassFeed = () => {
   const [assignmentSubmitting, setAssignmentSubmitting] = useState(false);
   const [assignmentSubmissions, setAssignmentSubmissions] = useState({});
   const [expandedAssignmentId, setExpandedAssignmentId] = useState(null);
-  const [selectedAiSubmission, setSelectedAiSubmission] = useState(null);
   const isStudent = (userInfo?.role || '').toString().toUpperCase() === 'STUDENT';
   const assignmentDraftUserId = userInfo?.userId || userInfo?.id;
-
-  const gf = new GiphyFetch('FEzk8anVjSKZIiInlJWd4Jo4OuYBjV9B');
 
   // Add this to your component's useEffect that runs on mount
   useEffect(() => {
@@ -1506,18 +1491,6 @@ const ClassFeed = () => {
     };
   }, []);
 
-  // Add the new useEffect for click outside menu
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (activePostMenu && !event.target.closest('.post-menu')) {
-        setActivePostMenu(null);
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [activePostMenu]);
-
   useEffect(() => {
     // Get likes for all posts on initial load
     const fetchLikes = async () => {
@@ -1609,52 +1582,6 @@ const ClassFeed = () => {
     // Clean up the interval when the component unmounts
     return () => clearInterval(timeUpdateInterval);
   }, []);
-
-  const createPost = async (e) => {
-    e.preventDefault();
-    try {
-      const token = localStorage.getItem('token');
-      
-      // The content already contains the embedded files as HTML
-      // TinyMCE will handle the placement of files exactly where the user put them
-      
-      const response = await axios.post(
-          `/classes/${classId}/posts`,
-          {
-            title: postTitle,
-          content: postContent.text, // This now contains all embedded files
-          // We don't need separate media, files arrays as they're embedded in the content
-          },
-          {
-            headers: { Authorization: `Bearer ${token}` }
-          }
-        );
-
-      // Refresh posts after creation
-      const postsResponse = await axios.get(`/classes/${classId}/posts`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setPosts(postsResponse.data);
-      
-      // Reset form
-      setShowNewPostForm(false);
-      setPostTitle("");
-      setPostContent({
-        text: "",
-        media: [],
-        expandableLists: [],
-        codeSnippets: [],
-        files: []
-      });
-      setPollOptions(['', '']);
-      setShowPollForm(false);
-      
-      toast.success('Post created successfully!');
-    } catch (error) {
-      console.error('Error creating post:', error);
-      toast.error('Failed to create post. Please try again.');
-    }
-  };
 
   const refreshAssignments = async (token) => {
     const assignmentsResponse = await axios.get(`/classes/${classId}/assignments`, {
@@ -1823,141 +1750,6 @@ const ClassFeed = () => {
     }
   };
 
-  const handleImageUpload = async (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      const formData = new FormData();
-      formData.append('file', file);
-      try {
-        const token = localStorage.getItem('token');
-        const response = await axios.post('/upload/image', formData, {
-          headers: { 
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'multipart/form-data'
-          }
-        });
-        setPostContent(prev => ({
-          ...prev,
-          media: [...prev.media, {
-            type: 'image',
-            url: response.data.url,
-            alt: 'Image'
-          }]
-        }));
-      } catch (error) {
-        console.error('Error uploading image:', error);
-      }
-    }
-  };
-
-  const handleVideoUpload = async (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      const formData = new FormData();
-      formData.append('file', file);
-      try {
-        const token = localStorage.getItem('token');
-        const response = await axios.post('/upload/video', formData, {
-          headers: { 
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'multipart/form-data'
-          }
-        });
-        setPostContent(prev => ({
-          ...prev,
-          media: [...prev.media, {
-            type: 'video',
-            url: response.data.url,
-            alt: 'Video'
-          }]
-        }));
-      } catch (error) {
-        console.error('Error uploading video:', error);
-      }
-    }
-  };
-
-  const handleFileUpload = async (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      const formData = new FormData();
-      formData.append('file', file);
-      try {
-        const token = localStorage.getItem('token');
-        const response = await axios.post('/upload/file', formData, {
-          headers: { 
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'multipart/form-data'
-          }
-        });
-        setPostContent(prev => ({
-          ...prev,
-          files: [...prev.files, {
-            name: file.name,
-            url: response.data.url
-          }]
-        }));
-      } catch (error) {
-        console.error('Error uploading file:', error);
-      }
-    }
-  };
-
-  const insertDivider = () => {
-    setPostContent(prev => ({
-      ...prev,
-      text: prev.text + '\n---\n'
-    }));
-  };
-
-  const handleEmojiClick = (emojiData) => {
-    setPostContent(prev => ({
-      ...prev,
-      text: prev.text + emojiData.emoji
-    }));
-    setShowEmojiPicker(false);
-  };
-
-  const searchGifs = async (term) => {
-    try {
-      const { data } = await gf.search(term, { 
-        limit: 10,
-        rating: 'g', // 'g' means content suitable for children
-        type: 'gifs',
-        lang: 'en'
-      });
-      setGifs(data);
-    } catch (error) {
-      console.error('Error searching GIFs:', error);
-    }
-  };
-
-  const handleGifSelect = (gif) => {
-    setPostContent(prev => ({
-      ...prev,
-      media: [...prev.media, {
-        type: 'gif',
-        url: gif.images.fixed_height.url,
-        alt: 'GIF'
-      }]
-    }));
-    setShowGifPicker(false);
-    setGifs([]);
-    setGifSearchTerm('');
-  };
-
-  const insertExpandableList = () => {
-    setPostContent(prev => ({
-      ...prev,
-      expandableLists: [...prev.expandableLists, {
-        id: Date.now(),
-        title: "Write a title",
-        content: "Add content to expand",
-        isCollapsed: false
-      }]
-    }));
-  };
-
   const updateExpandableList = (id, field, value) => {
     setPostContent(prev => ({
       ...prev,
@@ -1967,70 +1759,11 @@ const ClassFeed = () => {
     }));
   };
 
-  const handlePollSubmit = () => {
-    const pollContent = `\n### Poll\n${pollOptions.map((opt, i) => `${i + 1}. ${opt}`).join('\n')}\n`;
-    setPostContent(prev => ({
-      ...prev,
-      text: prev.text + pollContent
-    }));
-    setShowPollForm(false);
-    setPollOptions(['', '']);
-  };
-
-  const handleCodeSubmit = () => {
-    if (!codeContent.trim()) return;
-    
-    // Add code directly to the text content instead of keeping it separate
-    setPostContent(prev => ({
-      ...prev,
-      text: prev.text + `\n[CODE:${codeLanguage}]${codeContent}\n`
-    }));
-    
-    setShowCodeEditor(false);
-    setCodeContent('');
-    setCodeLanguage('javascript');
-  };
-
   const handleRemoveMedia = (type, index) => {
     setPostContent(prev => ({
       ...prev,
       [type]: prev[type].filter((_, i) => i !== index)
     }));
-  };
-
-  // Add this helper function near the top of your file
-  const renderContent = (content) => {
-    // Split content by custom markers
-    const parts = content.split(/(\[(?:CODE|GIF|POLL|FILE|IMAGE):.+?\])/g);
-
-    return parts.map((part, index) => {
-      // Check for special content markers
-      if (part.startsWith('[CODE:')) {
-        const language = part.match(/\[CODE:(\w+)\]/)?.[1] || 'javascript';
-        const code = part.replace(/\[CODE:\w+\]/, '').trim();
-        return (
-          <div key={index} className="code-snippet my-4">
-            <div className="code-header">
-              <span className="text-sm font-mono">{language}</span>
-            </div>
-            <pre>
-              <code className={`language-${language}`}>
-                {code}
-              </code>
-            </pre>
-          </div>
-        );
-      }
-      
-      // ... other content type handlers ...
-
-      // Regular text content
-      return (
-        <p key={index} className="text-gray-600 dark:text-gray-300 whitespace-pre-wrap">
-          {part}
-        </p>
-      );
-    });
   };
 
   if (loading) {
@@ -2091,13 +1824,38 @@ const ClassFeed = () => {
       return totalComments > 0;
     }
 
-    if (activeCategory === 'ai-flagged') {
-      const aiScore = Number(post.ai_percentage ?? 0);
-      return aiScore >= 50;
-    }
-
     return true;
   });
+
+  const openPost = (postId) => {
+    navigate(`/class/${classId}/post/${postId}`, {
+      state: {
+        postViewerContext: {
+          backLabel: 'Back to Class Feed',
+          returnPath: `/class-feed/${classId}`,
+          postSequence: displayedPosts.map(({ id, title }) => ({ id, title })),
+        },
+      },
+    });
+  };
+
+  const resetPostComposer = () => {
+    setPostTitle('');
+    setContent('');
+    setPostContent(createEmptyPostContent());
+  };
+
+  const closePostComposer = () => {
+    resetPostComposer();
+    setEditingPostId(null);
+    setShowNewPostForm(false);
+  };
+
+  const openNewPostComposer = () => {
+    resetPostComposer();
+    setEditingPostId(null);
+    setShowNewPostForm(true);
+  };
 
   const handleSignOut = () => {
     localStorage.removeItem('token');
@@ -2120,17 +1878,16 @@ const ClassFeed = () => {
       const post = response.data;
       
       // Set the form fields with the post data
-      setPostTitle(post.title);
-      setContent(post.content);
-      
-      // Show the post form
-    setShowNewPostForm(true);
+      resetPostComposer();
+      setPostTitle(post.title || '');
+      setContent(post.content || '');
       setEditingPostId(postId);
+      setShowNewPostForm(true);
       
-      setLoading(false);
     } catch (error) {
       console.error('Error fetching post for editing:', error);
       toast.error('Failed to load post for editing');
+    } finally {
       setLoading(false);
     }
   };
@@ -2146,13 +1903,12 @@ const ClassFeed = () => {
         });
         
       // Remove the post from the state
-      setPosts(posts.filter(post => post.id !== postId));
+      setPosts((prevPosts) => prevPosts.filter((post) => post.id !== postId));
       toast.success('Post deleted successfully');
-      
-      setLoading(false);
     } catch (error) {
       console.error('Error deleting post:', error);
       toast.error('Failed to delete post');
+    } finally {
       setLoading(false);
     }
   };
@@ -2188,9 +1944,9 @@ const ClassFeed = () => {
         );
         
         // Update the post in the state
-        setPosts(posts.map(post => 
+        setPosts((prevPosts) => prevPosts.map((post) => (
           post.id === editingPostId ? { ...post, ...response.data } : post
-        ));
+        )));
         
         toast.success('Post updated successfully');
       } else {
@@ -2204,50 +1960,18 @@ const ClassFeed = () => {
         );
         
         // Add the new post to the state
-        setPosts([response.data, ...posts]);
+        setPosts((prevPosts) => [response.data, ...prevPosts]);
         
         toast.success('Post created successfully');
       }
       
-      // Reset form
-      setPostTitle('');
-      setContent('');
-      setShowNewPostForm(false);
-      setEditingPostId(null);
-      
-      setLoading(false);
+      closePostComposer();
     } catch (error) {
       console.error('Error saving post:', error);
       toast.error(editingPostId ? 'Failed to update post' : 'Failed to create post');
+    } finally {
       setLoading(false);
     }
-  };
-
-  const handlePostAction = async (action, post) => {
-    if (action === 'edit') {
-      // Navigate to edit post or set edit mode
-      handleEditPost(post.id);
-    } else if (action === 'delete') {
-      if (window.confirm('Are you sure you want to delete this post?')) {
-        try {
-          const token = localStorage.getItem('token');
-          await axios.delete(`/classes/${classId}/posts/${post.id}`, {
-            headers: { Authorization: `Bearer ${token}` }
-          });
-        // Refresh posts after deletion
-        const postsResponse = await axios.get(`/classes/${classId}/posts`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        setPosts(postsResponse.data);
-          toast.success('Post deleted successfully');
-      } catch (error) {
-        console.error('Error deleting post:', error);
-          toast.error('Failed to delete post');
-        }
-      }
-    }
-    // Close the menu after action
-    setMenuOpen(null);
   };
 
   const handleLikePost = async (postId) => {
@@ -2506,15 +2230,12 @@ const ClassFeed = () => {
                   <option value="my">My Posts</option>
                   <option value="liked">Liked by Me</option>
                   <option value="commented">Has Comments</option>
-                  {(userInfo?.role || '').toString().toUpperCase() === 'TEACHER' && (
-                    <option value="ai-flagged">AI Flagged (50%+)</option>
-                  )}
                 </select>
               </div>
             </div>
             <div className="flex items-center space-x-6">
               <motion.button 
-                onClick={() => setShowNewPostForm(true)}
+                onClick={openNewPostComposer}
                 className={`px-6 py-2 rounded-lg text-white ${
                   darkMode 
                     ? 'bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500' 
@@ -2632,14 +2353,6 @@ const ClassFeed = () => {
                           <span className={submission.is_late ? 'text-rose-500' : 'text-emerald-500'}>
                             {submission.is_late ? 'Late' : 'On time'}
                           </span>
-                          {submission.ai_percentage !== null && submission.ai_percentage !== undefined && (
-                            <>
-                              {' '}•{' '}
-                              <span className={submission.ai_percentage > 50 ? 'text-rose-500' : 'text-emerald-500'}>
-                                {submission.ai_percentage}% AI
-                              </span>
-                            </>
-                          )}
                         </div>
                       )}
 
@@ -2688,23 +2401,7 @@ const ClassFeed = () => {
 
                   {/* Add post actions menu here */}
                   <div className="relative flex items-center gap-2">
-                    {userInfo?.role === 'TEACHER' && post.ai_percentage !== null && post.ai_percentage !== undefined && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          navigate(`/class/${classId}/post/${post.id}?showAi=true`);
-                        }}
-                        className={`px-2 py-1 text-xs font-bold rounded-full ${
-                          post.ai_percentage > 50 
-                            ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400' 
-                            : 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
-                        }`}
-                        title="Click to view AI analysis"
-                      >
-                        {post.ai_percentage}% AI
-                      </button>
-                    )}
-                        <button
+                    <button
                       onClick={(e) => {
                         e.stopPropagation();
                         setMenuOpen(menuOpen === post.id ? null : post.id);
@@ -2759,7 +2456,7 @@ const ClassFeed = () => {
                 {/* Post Title - without label */}
                 <div 
                   className={`mb-4 px-4 py-3 rounded-lg border cursor-pointer ${darkMode ? 'bg-gray-750 border-gray-600' : 'bg-blue-50 border-blue-100'}`}
-                  onClick={() => navigate(`/class/${classId}/post/${post.id}`)}
+                  onClick={() => openPost(post.id)}
                 >
                   <h4 className={`text-xl font-bold ${darkMode ? 'text-white' : 'text-gray-800'}`}>
                     {post.title}
@@ -2769,7 +2466,7 @@ const ClassFeed = () => {
                 {/* Post Content */}
                 <div 
                   className="html-content mb-4 cursor-pointer prose dark:prose-invert max-w-none"
-                  onClick={() => navigate(`/class/${classId}/post/${post.id}`)}
+                  onClick={() => openPost(post.id)}
                   dangerouslySetInnerHTML={{ 
                     __html: truncateHTML(processHTMLWithDOM(post.content), 200) 
                   }}
@@ -2843,7 +2540,7 @@ const ClassFeed = () => {
                           {/* Show more comments link */}
                           {commentCounts[post.id] > (postComments[post.id]?.length || 0) && (
                             <div 
-                              onClick={() => navigate(`/class/${classId}/post/${post.id}`)}
+                              onClick={() => openPost(post.id)}
                               className="text-center py-2 text-sm text-blue-500 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
                             >
                               View all {commentCounts[post.id]} comments
@@ -3045,31 +2742,11 @@ const ClassFeed = () => {
                   </svg>
                 </div>
                 <span className="text-sm text-gray-600 dark:text-gray-300">
-                  Posting as {localStorage.getItem('username')}
+                  Posting as {userInfo?.firstName || userInfo?.first_name || userInfo?.username || 'Current user'}
                 </span>
               </div>
 
               <form onSubmit={handleSubmit} className="space-y-4">
-                {/* Category Dropdown */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    Category
-                  </label>
-                  <select
-                    className={`w-full p-2 rounded-lg border ${
-                      darkMode 
-                        ? 'bg-gray-700 border-gray-600 text-white' 
-                        : 'bg-white border-gray-300'
-                    } focus:ring-2 focus:ring-blue-500 focus:border-transparent`}
-                  >
-                    <option value="">Select a category</option>
-                    <option value="question">Question</option>
-                    <option value="discussion">Discussion</option>
-                    <option value="resource">Resource</option>
-                    <option value="announcement">Announcement</option>
-                  </select>
-                </div>
-
                 {/* Title Input - professional styling */}
                 <div className={`mb-5 p-4 rounded-lg border ${darkMode ? 'bg-gray-750 border-gray-600' : 'bg-blue-50 border-blue-100'}`}>
                   <label htmlFor="post-title" className={`block text-base font-bold ${darkMode ? 'text-white' : 'text-gray-800'} mb-2`}>
@@ -3208,7 +2885,7 @@ const ClassFeed = () => {
                 <div className="flex justify-end gap-4">
                   <motion.button
                     type="button"
-                    onClick={() => setShowNewPostForm(false)}
+                    onClick={closePostComposer}
                     className="px-6 py-2 rounded-lg bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600"
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
@@ -3223,83 +2900,10 @@ const ClassFeed = () => {
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
                   >
-                    Publish
+                    {editingPostId ? 'Update Post' : 'Publish'}
                   </motion.button>
                 </div>
               </form>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* AI Analysis Modal */}
-      <AnimatePresence>
-        {selectedAiSubmission && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
-            onClick={() => setSelectedAiSubmission(null)}
-          >
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              onClick={(e) => e.stopPropagation()}
-              className={`w-full max-w-3xl max-h-[80vh] overflow-y-auto rounded-xl shadow-2xl p-6 ${
-                darkMode ? 'bg-gray-800 text-white' : 'bg-white text-gray-900'
-              }`}
-            >
-              <div className="flex justify-between items-center mb-6">
-                <h2 className="text-2xl font-bold">AI Analysis Report</h2>
-                <button
-                  onClick={() => setSelectedAiSubmission(null)}
-                  className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
-                >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-
-              <div className="space-y-6">
-                <div className={`p-4 rounded-lg border ${
-                  selectedAiSubmission.ai_percentage > 50 
-                    ? 'bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-800' 
-                    : 'bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800'
-                }`}>
-                  <h3 className="text-lg font-semibold mb-2">Overall Result</h3>
-                  <p className="text-3xl font-bold">
-                    {selectedAiSubmission.ai_percentage}% AI Generated
-                  </p>
-                </div>
-
-                {selectedAiSubmission.ai_highlighted_html && (
-                  <div>
-                    <h3 className="text-lg font-semibold mb-3">Highlighted Text</h3>
-                    <div 
-                      className={`p-4 rounded-lg border prose dark:prose-invert max-w-none ${
-                        darkMode ? 'bg-gray-900 border-gray-700' : 'bg-gray-50 border-gray-200'
-                      }`}
-                      dangerouslySetInnerHTML={{ __html: selectedAiSubmission.ai_highlighted_html }}
-                    />
-                  </div>
-                )}
-
-                {selectedAiSubmission.ai_sentence_analysis && (
-                  <div>
-                    <h3 className="text-lg font-semibold mb-3">Sentence Analysis</h3>
-                    <div className={`p-4 rounded-lg border ${
-                      darkMode ? 'bg-gray-900 border-gray-700' : 'bg-gray-50 border-gray-200'
-                    }`}>
-                      <pre className="whitespace-pre-wrap text-sm font-mono">
-                        {selectedAiSubmission.ai_sentence_analysis}
-                      </pre>
-                    </div>
-                  </div>
-                )}
-              </div>
             </motion.div>
           </motion.div>
         )}
