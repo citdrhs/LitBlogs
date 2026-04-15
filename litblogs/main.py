@@ -317,10 +317,7 @@ async def login(login_data: LoginRequest, db: Session = Depends(get_db)):
 @app.post("/api/auth/google-signup")
 async def google_signup(token_data: dict, db: Session = Depends(get_db)):
     """Handle Google Sign Up"""
-    try:
-        # Debug print to see what we're receiving
-        print("Received token data:", token_data)
-        
+    try:        
         # Get the credential - check both possible locations
         credential = token_data.get("credential") or token_data.get("token")
         
@@ -369,9 +366,6 @@ async def google_signup(token_data: dict, db: Session = Depends(get_db)):
             )
         except ValueError as e:
             if "Token used too early" in str(e):
-                # If the error is about token timing, try to bypass the verification
-                # This is not ideal for production but can help during development
-                print("Attempting to bypass token timing verification")
                 
                 # Parse the token manually (not for production use)
                 import jwt
@@ -485,8 +479,6 @@ async def google_login(token_data: dict, db: Session = Depends(get_db)):
         except ValueError as e:
             if "Token used too early" in str(e):
                 # If the error is about token timing, try to bypass the verification
-                # This is not ideal for production but can help during development
-                print("Attempting to bypass token timing verification")
                 
                 # Parse the token manually (not for production use)
                 import jwt
@@ -3264,10 +3256,7 @@ async def download_file(
     current_user: models.User = Depends(get_current_user)
 ):
     """Force download a file with the specified filename"""
-    try:
-        # Print debug info
-        print(f"Download request - URL: {url}, Filename: {filename}")
-        
+    try:        
         # Extract the file path from the URL
         if url.startswith('http'):
             # Handle full URLs
@@ -3284,11 +3273,8 @@ async def download_file(
             # Assume it's already a file path
             file_path = url
         
-        print(f"Extracted file path: {file_path}")
-        
         # Construct the full path
         full_path = _upload_path(file_path)
-        print(f"Full file path: {full_path}")
         
         # Check if file exists
         if not full_path.exists():
@@ -3647,7 +3633,6 @@ def send_password_reset_email(email: str, token: str):
     """Send password reset email with reset link"""
     reset_url = f"{FRONTEND_URL}/reset-password?token={token}"
     if not all([EMAIL_HOST, EMAIL_USERNAME, EMAIL_PASSWORD, EMAIL_FROM]):
-        print("Email configuration missing. Skipping password reset email.")
         return False
     
     message = MIMEMultipart("alternative")
