@@ -61,6 +61,13 @@ const formatAssignmentDateInput = (dateValue) => {
   return new Date(parsed.getTime() - timezoneOffset).toISOString().slice(0, 16);
 };
 
+const serializeAssignmentDueDate = (dateValue) => {
+  if (!dateValue) return '';
+  const parsed = new Date(dateValue);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return parsed.toISOString();
+};
+
 const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) => {
   const [userInfo, setUserInfo] = useState(null);
   const [activeTab, setActiveTab] = useState(initialTab);
@@ -209,10 +216,11 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
     try {
       setSavingAssignment(true);
       const token = localStorage.getItem('token');
+      const serializedDueDate = serializeAssignmentDueDate(assignmentForm.due_date);
       const payload = {
         title: assignmentForm.title,
         description: assignmentForm.description,
-        due_date: assignmentForm.due_date,
+        due_date: serializedDueDate,
         visibility: assignmentForm.visibility,
         allow_late: assignmentForm.allow_late,
       };
