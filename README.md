@@ -6,6 +6,7 @@ A modern blogging platform for educational institutions, designed for teachers a
 - [Overview](#overview)
 - [System Requirements](#system-requirements)
 - [Production Deployment](#production-deployment)
+- [Environment Configuration](#environment-configuration)
 - [Maintenance Guide](#maintenance-guide)
 ## Overview
 
@@ -62,6 +63,8 @@ source myvenv/bin/activate # On Windows: myvenv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+`requirements.txt` now includes `pywebpush`, which is required for browser push notifications.
+
 3. Add the upload directory to the backend:
 While in /var/www/LitBlogs/litblogs, run the following command:
 ```bash
@@ -71,7 +74,7 @@ sudo mkdir -p images
 sudo mkdir -p files
 sudo mkdir -p videos
 sudo mkdir -p profile_images
-sudo mkdir -p temp
+sudo mkdir -p cover_images
 ```
 Then go back to /var/www/LitBlogs/litblogs
 
@@ -111,16 +114,11 @@ sudo systemctl start blog
 npm install --force
 ```
 
-2. Depending if it is a production or development environment, change the following urls of all pictures:
-```javascript
-".image.png" -> "/dren/image.png"
-```
-
-3. Run the frontend server:
+2. Run the frontend server:
 ```bash
 npm run build
 ```
-4. Go to the nginx directory and edit the file:
+3. Go to the nginx directory and edit the file:
 ```bash
 sudo nano /etc/nginx/sites-enabled/tutorial
 ```
@@ -166,14 +164,39 @@ server {
         proxy_pass_request_headers on;
     }
 
-    location /uploads/ {
-        alias /var/www/LitBlog/litblogs/uploads/;
-        autoindex off;
+    location ^~ /uploads/ {
+        return 307 /dren/api$uri$is_args$args;
     }
 
 }
 ```
 
+
+
+
+## Environment Configuration
+
+Push reminders (outside the app) require VAPID keys and related settings in your backend env.
+
+In `.env` (or your active environment file), set:
+
+```dotenv
+VAPID_PUBLIC_KEY=<your_public_key>
+VAPID_PRIVATE_KEY=<your_private_key>
+VAPID_SUBJECT=mailto:your-email@example.com
+PUSH_REMINDER_INTERVAL_SECONDS=300
+```
+
+Generate keys with:
+
+```bash
+npx web-push generate-vapid-keys
+```
+
+Important notes:
+- Push notifications require HTTPS in production.
+- In development, localhost works for service workers and notification testing.
+- The server checks reminders on startup, then every `PUSH_REMINDER_INTERVAL_SECONDS`.
 
 
 ## Maintenance Guide
