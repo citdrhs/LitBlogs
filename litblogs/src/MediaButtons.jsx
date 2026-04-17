@@ -38,7 +38,7 @@
                   {/* Video Upload */}
                   <input
                     type="file"
-                    accept="video/*"
+                    accept=".mp4,.webm,.ogg,.m4v,.avi,.mkv,video/mp4,video/webm,video/ogg,video/x-m4v,video/x-msvideo,video/x-matroska"
                     onChange={handleVideoUpload}
                     className="hidden"
                     id="video-upload"
@@ -52,6 +52,7 @@
                   {/* File Upload */}
                   <input
                     type="file"
+                    accept=".pdf,application/pdf"
                     onChange={handleFileUpload}
                     className="hidden"
                     id="file-upload"

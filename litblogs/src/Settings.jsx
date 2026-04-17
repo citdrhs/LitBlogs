@@ -70,6 +70,19 @@ const loadStoredSettings = () => {
   }
 }
 
+const urlBase64ToUint8Array = (base64String) => {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4)
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/")
+  const rawData = window.atob(base64)
+  const outputArray = new Uint8Array(rawData.length)
+
+  for (let i = 0; i < rawData.length; i += 1) {
+    outputArray[i] = rawData.charCodeAt(i)
+  }
+
+  return outputArray
+}
+
 const ToggleRow = ({ label, description, enabled, onToggle, darkMode }) => {
   return (
     <div className="flex items-start justify-between gap-4 py-4 border-b border-gray-200/70 dark:border-gray-700/70 last:border-b-0">
@@ -104,6 +117,9 @@ const Settings = ({ onDarkModeChange }) => {
   const [isSavingSettings, setIsSavingSettings] = useState(false)
   const [statusMessage, setStatusMessage] = useState("")
   const [errorMessage, setErrorMessage] = useState("")
+  const [pushSupported, setPushSupported] = useState(false)
+  const [pushSubscribed, setPushSubscribed] = useState(false)
+  const [pushBusy, setPushBusy] = useState(false)
   const userRole = (userInfo?.role || "").toString().toUpperCase()
   const isStudentUser = userRole === "STUDENT"
 
@@ -217,6 +233,151 @@ const Settings = ({ onDarkModeChange }) => {
 
     fetchSettings()
   }, [userInfo?.role])
+
+  useEffect(() => {
+    setPushSupported(
+      typeof window !== "undefined" &&
+      "serviceWorker" in navigator &&
+      "PushManager" in window &&
+      "Notification" in window
+    )
+  }, [])
+
+  useEffect(() => {
+    const fetchPushStatus = async () => {
+      const token = localStorage.getItem("token")
+      if (!token || !pushSupported) {
+        return
+      }
+
+      try {
+        const response = await axios.get("/push/subscription", {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        setPushSubscribed(Boolean(response?.data?.subscribed))
+      } catch {
+        setPushSubscribed(false)
+      }
+    }
+
+    fetchPushStatus()
+  }, [pushSupported])
+
+  const disableBrowserPush = async (silent = false) => {
+    const token = localStorage.getItem("token")
+    if (!token || !pushSupported) {
+      return
+    }
+
+    setPushBusy(true)
+    try {
+      const swUrl = `${import.meta.env.BASE_URL}push-sw.js`
+      const registration = await navigator.serviceWorker.register(swUrl, {
+        scope: import.meta.env.BASE_URL,
+      })
+      const subscription = await registration.pushManager.getSubscription()
+
+      if (subscription) {
+        await axios.delete("/push/unsubscribe", {
+          headers: { Authorization: `Bearer ${token}` },
+          data: {
+            subscription: subscription.toJSON(),
+          },
+        })
+        await subscription.unsubscribe()
+      }
+
+      setPushSubscribed(false)
+      if (!silent) {
+        setStatusMessage("Browser push notifications are now off.")
+        setErrorMessage("")
+      }
+    } catch (error) {
+      if (!silent) {
+        setErrorMessage(error?.response?.data?.detail || "Failed to disable browser push notifications.")
+      }
+    } finally {
+      setPushBusy(false)
+    }
+  }
+
+  const enableBrowserPush = async () => {
+    const token = localStorage.getItem("token")
+    if (!token) {
+      navigate("/sign-in")
+      return
+    }
+    if (!pushSupported) {
+      setErrorMessage("This browser does not support push notifications.")
+      return
+    }
+
+    if (!settings.emailNotifications || !settings.assignmentReminders) {
+      setErrorMessage("Turn on Email notifications and Assignment reminders first.")
+      return
+    }
+
+    setPushBusy(true)
+    try {
+      const keyResponse = await axios.get("/push/public-key", {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+
+      if (!keyResponse?.data?.enabled || !keyResponse?.data?.publicKey) {
+        setErrorMessage("Push notifications are not configured on the server.")
+        setPushBusy(false)
+        return
+      }
+
+      const permission = await Notification.requestPermission()
+      if (permission !== "granted") {
+        setErrorMessage("Notification permission was denied.")
+        setPushBusy(false)
+        return
+      }
+
+      const swUrl = `${import.meta.env.BASE_URL}push-sw.js`
+      const registration = await navigator.serviceWorker.register(swUrl, {
+        scope: import.meta.env.BASE_URL,
+      })
+
+      let subscription = await registration.pushManager.getSubscription()
+      if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(keyResponse.data.publicKey),
+        })
+      }
+
+      await axios.post(
+        "/push/subscribe",
+        {
+          subscription: subscription.toJSON(),
+        },
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      )
+
+      setPushSubscribed(true)
+      setErrorMessage("")
+      setStatusMessage("Browser push notifications are enabled.")
+    } catch (error) {
+      setErrorMessage(error?.response?.data?.detail || "Failed to enable browser push notifications.")
+    } finally {
+      setPushBusy(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!pushSupported || !pushSubscribed) {
+      return
+    }
+
+    if (!settings.emailNotifications || !settings.assignmentReminders) {
+      disableBrowserPush(true)
+    }
+  }, [settings.emailNotifications, settings.assignmentReminders, pushSupported, pushSubscribed])
 
   const handleClearClassCache = () => {
     localStorage.removeItem("class_info")
@@ -371,6 +532,48 @@ const Settings = ({ onDarkModeChange }) => {
               onToggle={() => toggleSetting("assignmentReminders")}
               darkMode={settings.darkMode}
             />
+            <div className="pt-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+              <div>
+                <p className="text-base font-semibold">Browser push notifications</p>
+                <p className={`text-sm ${settings.darkMode ? "text-gray-400" : "text-gray-600"}`}>
+                  Receive reminder notifications even when LitBlogs is not open.
+                </p>
+                {!pushSupported && (
+                  <p className={`text-xs mt-1 ${settings.darkMode ? "text-amber-300" : "text-amber-700"}`}>
+                    This browser does not support push notifications.
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {pushSubscribed ? (
+                  <button
+                    type="button"
+                    onClick={() => disableBrowserPush(false)}
+                    disabled={pushBusy}
+                    className={`px-4 py-2 rounded-lg border font-semibold transition ${
+                      settings.darkMode
+                        ? "border-red-400 text-red-200 hover:bg-red-900/40"
+                        : "border-red-400 text-red-700 hover:bg-red-50"
+                    } ${pushBusy ? "opacity-60 cursor-not-allowed" : ""}`}
+                  >
+                    {pushBusy ? "Working..." : "Disable"}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={enableBrowserPush}
+                    disabled={pushBusy || !pushSupported}
+                    className={`px-4 py-2 rounded-lg border font-semibold transition ${
+                      settings.darkMode
+                        ? "border-blue-400 text-blue-200 hover:bg-blue-900/40"
+                        : "border-blue-500 text-blue-700 hover:bg-blue-50"
+                    } ${(pushBusy || !pushSupported) ? "opacity-60 cursor-not-allowed" : ""}`}
+                  >
+                    {pushBusy ? "Working..." : "Enable"}
+                  </button>
+                )}
+              </div>
+            </div>
           </motion.section>
 
           <motion.section

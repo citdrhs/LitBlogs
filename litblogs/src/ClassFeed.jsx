@@ -23,6 +23,7 @@ import CommentThread from './components/CommentThread';
 import { formatRelativeTime, setupTimeUpdater } from './utils/timeUtils';
 import { mediaPath } from './utils/urlUtils';
 import ReactHtmlParser from 'react-html-parser';
+import { openPdfViewerModal } from './components/PdfViewerModal';
 import {
   applyGlobalUserSettings,
   getEditorFontSizePx,
@@ -350,6 +351,44 @@ const clearPostDraft = ({ classId, userId, editingPostId }) => {
   localStorage.removeItem(key);
 };
 
+const decodeHtmlEntities = (value = '') => {
+  if (typeof document === 'undefined') {
+    return value;
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.innerHTML = value;
+  return textarea.value;
+};
+
+const normalizePostContentForEditor = (content = '') => {
+  if (!content || typeof document === 'undefined') {
+    return content;
+  }
+
+  try {
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = content;
+
+    const fileActionContainers = tempDiv.querySelectorAll('.file-attachment .file-actions');
+    fileActionContainers.forEach((container) => {
+      if (container.innerHTML.includes('&lt;') || container.textContent?.includes('<button')) {
+        container.innerHTML = decodeHtmlEntities(container.innerHTML);
+      }
+
+      const removeButton = container.querySelector('.remove-btn');
+      if (removeButton && !removeButton.classList.contains('editor-only')) {
+        removeButton.classList.add('editor-only');
+      }
+    });
+
+    return tempDiv.innerHTML;
+  } catch (error) {
+    console.error('Failed to normalize post content for editor:', error);
+    return content;
+  }
+};
+
 const listPostDrafts = ({ classId, userId }) => {
   if (!classId || !userId) {
     return [];
@@ -569,6 +608,58 @@ const TINYMCE_CONFIG = {
       color: #e53e3e;
       border: 1px solid #fed7d7;
     }
+
+    /* Video block styling in editor */
+    figure.video-container {
+      position: relative;
+      margin: 14px 0;
+      max-width: 760px;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #0f172a;
+      box-shadow: 0 8px 22px rgba(2, 6, 23, 0.24);
+    }
+
+    figure.video-container video {
+      display: block;
+      width: 100%;
+      height: auto;
+      max-width: 100%;
+      background: #0f172a;
+    }
+
+    .video-delete-overlay {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 20;
+      opacity: 0;
+      transform: translateY(-4px);
+      transition: opacity 0.2s ease, transform 0.2s ease;
+      pointer-events: none;
+    }
+
+    figure.video-container:hover .video-delete-overlay {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+
+    .video-delete-btn {
+      background: rgba(239, 68, 68, 0.95) !important;
+      color: #fff !important;
+      border: none !important;
+      border-radius: 9999px !important;
+      width: 30px !important;
+      height: 30px !important;
+      cursor: pointer !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      font-size: 18px !important;
+      font-weight: 700 !important;
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3) !important;
+    }
     
     /* Fix dropdown spacing */
     .tox-collection__item-label {
@@ -592,7 +683,7 @@ const TINYMCE_CONFIG = {
     }
   `,
   statusbar: false,
-  extended_valid_elements: 'span[style|class],div[class|data-*|contenteditable],img[*|style|class|width|height|align|data-*],a[*],button[*]',
+  extended_valid_elements: 'span[style|class],div[class|data-*|contenteditable],img[*|style|class|width|height|align|data-*],a[*],button[*],figure[class|style|contenteditable|data-*],video[*|style|class|controls|preload|width|height],source[src|type]',
   inline_styles: true,
   paste_as_text: false,
   paste_data_images: true,
@@ -775,12 +866,12 @@ const TINYMCE_CONFIG = {
     // Add custom file upload button
     editor.ui.registry.addButton('customfileupload', {
       icon: 'upload',
-      tooltip: 'Upload File',
+      tooltip: 'Upload PDF',
       onAction: function() {
         // Create a file input element
         const input = document.createElement('input');
         input.setAttribute('type', 'file');
-        input.setAttribute('accept', '*/*'); // Accept all file types
+        input.setAttribute('accept', '.pdf,application/pdf');
         
         // Trigger click on the input element
         input.click();
@@ -789,6 +880,11 @@ const TINYMCE_CONFIG = {
         input.onchange = async function() {
           if (input.files && input.files[0]) {
             const file = input.files[0];
+            const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+            if (!isPdf) {
+              toast.error('Only PDF files are allowed.');
+              return;
+            }
             
             try {
               // Upload the file to the server
@@ -797,7 +893,7 @@ const TINYMCE_CONFIG = {
               
               const token = localStorage.getItem('token');
               const response = await axios.post(
-                '/upload',
+                '/upload/file',
                 formData,
                 {
                   headers: {
@@ -847,6 +943,11 @@ const TINYMCE_CONFIG = {
     editor.on('init', function() {
       // Add global function for file preview
       window.previewFile = function(url, type) {
+        if (type === 'pdf') {
+          openPdfViewerModal({ fileUrl: url, title: 'PDF Preview' });
+          return;
+        }
+
         // Create modal for preview
         const modal = document.createElement('div');
         modal.style.position = 'fixed';
@@ -896,12 +997,6 @@ const TINYMCE_CONFIG = {
           video.controls = true;
           video.style.maxWidth = '100%';
           content.appendChild(video);
-        } else if (type === 'pdf') {
-          const iframe = document.createElement('iframe');
-          iframe.src = url;
-          iframe.style.width = '800px';
-          iframe.style.height = '600px';
-          content.appendChild(iframe);
         } else if (type === 'text') {
           // For text files, fetch and display content
           fetch(url)
@@ -971,7 +1066,7 @@ const TINYMCE_CONFIG = {
         // Create a file input element
         const input = document.createElement('input');
         input.setAttribute('type', 'file');
-        input.setAttribute('accept', 'video/*');
+        input.setAttribute('accept', '.mp4,.webm,.ogg,.m4v,.avi,.mkv,video/mp4,video/webm,video/ogg,video/x-m4v,video/x-msvideo,video/x-matroska');
         
         // Handle file selection
         input.onchange = async function() {
@@ -986,9 +1081,8 @@ const TINYMCE_CONFIG = {
             }
             
             // Check file type
-            const validTypes = ['video/mp4', 'video/webm', 'video/ogg'];
-            if (!validTypes.includes(file.type)) {
-              toast.error('Please upload a valid video file (MP4, WebM, or OGG).');
+            if (!isAllowedVideoFile(file)) {
+              toast.error('Please upload a valid video file (MP4, WebM, OGG, M4V, AVI, or MKV). MOV is not supported.');
               return;
             }
             
@@ -1002,7 +1096,7 @@ const TINYMCE_CONFIG = {
               
               // Upload the video
               const token = localStorage.getItem('token');
-              const response = await axios.post('/upload', formData, {
+              const response = await axios.post('/upload/video', formData, {
                 headers: {
                   'Authorization': `Bearer ${token}`,
                   'Content-Type': 'multipart/form-data'
@@ -1034,40 +1128,33 @@ const TINYMCE_CONFIG = {
               console.log("Full video URL:", fullVideoUrl);
               
               // Create a cleaner HTML for the video with a delete button overlay
+              const fallbackType = (() => {
+                const ext = (file.name || '').split('.').pop()?.toLowerCase() || 'mp4';
+                const map = {
+                  mp4: 'video/mp4',
+                  webm: 'video/webm',
+                  ogg: 'video/ogg',
+                  m4v: 'video/x-m4v',
+                  avi: 'video/x-msvideo',
+                  mkv: 'video/x-matroska',
+                };
+                return map[ext] || 'video/mp4';
+              })();
+
               let videoHtml = `
-                <figure class="video-container" contenteditable="false">
-                  <video controls width="100%" style="max-width: 600px; border-radius: 4px; display: block;">
-                    <source src="${fullVideoUrl}" type="${file.type}">
+                <figure class="video-container mceNonEditable" contenteditable="false" style="position: relative; margin: 12px 0; max-width: 600px;">
+                  <video controls preload="metadata" width="100%" style="width: 100%; max-width: 600px; border-radius: 4px; display: block; background: #000;">
+                    <source src="${fullVideoUrl}" type="${file.type || fallbackType}">
                     Your browser does not support the video tag.
                   </video>
-                  <div class="editor-only-control" style="position: absolute; top: 8px; right: 8px; z-index: 10;">
-                    <button type="button" class="video-delete-btn" style="background: rgba(239, 68, 68, 0.9); color: white; border: none; border-radius: 50%; width: 28px; height: 28px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.2);" data-video-url="${videoUrl}" onclick="event.stopPropagation(); this.closest('.video-container').remove(); window.deleteVideoFromServer('${videoUrl}');">×</button>
+                  <div class="video-delete-overlay editor-only-control">
+                    <button type="button" class="video-delete-btn" data-video-url="${videoUrl}" onclick="event.stopPropagation(); this.closest('.video-container').remove(); window.deleteVideoFromServer('${videoUrl}');">×</button>
                   </div>
                 </figure>
               `;
               
               // Insert the video HTML
               editor.insertContent(videoHtml);
-              
-              // Add hover effect for the delete button using JavaScript
-              editor.on('NodeChange', function() {
-                const videoWrappers = editor.getBody().querySelectorAll('.video-container');
-                videoWrappers.forEach(wrapper => {
-                  if (!wrapper.dataset.eventAdded) {
-                    wrapper.dataset.eventAdded = 'true';
-                    
-                    const deleteOverlay = wrapper.querySelector('.video-delete-overlay');
-                    
-                    wrapper.addEventListener('mouseenter', function() {
-                      deleteOverlay.style.display = 'block';
-                    });
-                    
-                    wrapper.addEventListener('mouseleave', function() {
-                      deleteOverlay.style.display = 'none';
-                    });
-                  }
-                });
-              });
               
               // Dismiss loading toast and show success
               toast.dismiss(loadingToast);
@@ -1131,6 +1218,25 @@ function getFileType(filename) {
   }
 }
 
+function isAllowedVideoFile(file) {
+  if (!file) return false;
+
+  const mime = (file.type || '').toLowerCase();
+  const extension = (file.name || '').split('.').pop()?.toLowerCase() || '';
+
+  const allowedMimeTypes = new Set([
+    'video/mp4',
+    'video/webm',
+    'video/ogg',
+    'video/x-msvideo',
+    'video/x-matroska',
+    'video/x-m4v',
+  ]);
+  const allowedExtensions = new Set(['mp4', 'webm', 'ogg', 'm4v', 'avi', 'mkv']);
+
+  return allowedMimeTypes.has(mime) || allowedExtensions.has(extension);
+}
+
 function isPreviewable(fileType) {
   return ['image', 'video', 'pdf', 'text'].includes(fileType);
 }
@@ -1160,10 +1266,18 @@ function getFileIcon(fileType) {
 
 const processHTMLWithDOM = (html) => {
   if (!html) return '';
+
+  // Some saved editor payloads may contain escaped media markup.
+  // Decode first so parser can treat video/file blocks as HTML elements.
+  const normalizedHtml = html
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&');
   
   // Create a temporary div to parse the HTML
   const tempDiv = document.createElement('div');
-  tempDiv.innerHTML = html;
+  tempDiv.innerHTML = normalizedHtml;
   
   // Remove editor-only controls
   const editorControls = tempDiv.querySelectorAll('.editor-only-control, .video-delete-btn');
@@ -2157,7 +2271,7 @@ const ClassFeed = () => {
     }
 
     setPostTitle(draftPayload.postTitle || '');
-    setContent(draftPayload.content || '');
+    setContent(normalizePostContentForEditor(draftPayload.content || ''));
     setPostContent(clonePostContent(draftPayload.postContent));
   };
 
@@ -2271,7 +2385,7 @@ const ClassFeed = () => {
       // Set the form fields with the post data
       resetPostComposer();
       setPostTitle(post.title || '');
-      setContent(post.content || '');
+      setContent(normalizePostContentForEditor(post.content || ''));
       setEditingPostId(postId);
 
       const draft = readPostDraft({
@@ -2433,7 +2547,7 @@ const ClassFeed = () => {
 
       const post = response.data;
       setPostTitle(post.title || '');
-      setContent(post.content || '');
+      setContent(normalizePostContentForEditor(post.content || ''));
       setPostContent(createEmptyPostContent());
       toast.success('Draft discarded and post reset');
     } catch (error) {
@@ -2776,12 +2890,12 @@ const ClassFeed = () => {
                   return (
                     <div
                       key={assignment.id}
-                      className="rounded-xl border p-4 border-gray-200 bg-white"
+                      className="rounded-xl border p-4 border-gray-200 bg-white text-gray-800"
                     >
                       <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                         <div>
                           <h3 className="text-lg font-semibold">{assignment.title}</h3>
-                          <p className="text-sm text-gray-500">
+                          <p className="text-sm text-gray-600">
                             Due: {dueDate.toLocaleString()}
                           </p>
                         </div>
@@ -2923,7 +3037,7 @@ const ClassFeed = () => {
             </div>
           )}
 
-          <div className="mb-4 text-sm text-gray-600">
+          <div className="mb-4 text-sm text-gray-600 dark:text-gray-200">
             Showing {displayedPosts.length} of {posts.length} posts
             {searchQuery ? ` for "${searchQuery}"` : ''}
           </div>
@@ -2931,7 +3045,7 @@ const ClassFeed = () => {
           {/* Posts Grid */}
           <div className="space-y-8">
             {displayedPosts.length === 0 ? (
-              <div className="rounded-xl p-8 text-center bg-white text-gray-700 border border-gray-200">
+              <div className="rounded-xl p-8 text-center bg-white text-gray-700 border border-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:border-gray-600">
                 No posts match your current search/filter.
               </div>
             ) : displayedPosts.map((post) => (
@@ -3027,7 +3141,7 @@ const ClassFeed = () => {
                   className="html-content mb-4 cursor-pointer max-w-none text-gray-800 line-clamp-3"
                   onClick={() => openPost(post.id)}
                 >
-                  {ReactHtmlParser(truncateHTML(post.content, 150))}
+                  {ReactHtmlParser(processHTMLWithDOM(truncateHTML(post.content, 150)))}
                 </div>
                 
                 {/* Comments Section */}

@@ -41,6 +41,15 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import json
 import re
+import threading
+import time
+from sqlalchemy import and_
+
+try:
+    from pywebpush import webpush, WebPushException
+except Exception:
+    webpush = None
+    WebPushException = Exception
 
 def _should_reset_database_on_startup() -> bool:
     return os.getenv("RESET_DATABASE_ON_STARTUP", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -65,6 +74,14 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "https://drhscit.org/dren").rstrip("/")
 MICROSOFT_REDIRECT_URI = os.getenv("MICROSOFT_REDIRECT_URI", FRONTEND_URL).rstrip("/")
 CORS_ALLOWED_ORIGINS = _parse_csv_env(os.getenv("CORS_ALLOWED_ORIGINS"))
 FRONTEND_ORIGIN = _origin_from_url(FRONTEND_URL)
+VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY", "").strip()
+VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "").strip()
+VAPID_SUBJECT = os.getenv("VAPID_SUBJECT", "mailto:admin@litblogs.local").strip()
+WEB_PUSH_ENABLED = bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY and webpush)
+PUSH_REMINDER_INTERVAL_SECONDS = int(os.getenv("PUSH_REMINDER_INTERVAL_SECONDS", "300"))
+
+_push_scheduler_stop_event = threading.Event()
+_push_scheduler_thread: threading.Thread | None = None
 
 if FRONTEND_ORIGIN and FRONTEND_ORIGIN not in CORS_ALLOWED_ORIGINS:
     CORS_ALLOWED_ORIGINS.append(FRONTEND_ORIGIN)
@@ -79,7 +96,10 @@ async def lifespan(app: FastAPI):
         print("RESET_DATABASE_ON_STARTUP is enabled. Database was reset on startup.")
     else:
         initialize_database()
+
+    _start_push_scheduler()
     yield
+    _stop_push_scheduler()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -136,6 +156,27 @@ def _resolve_upload_bucket(file: UploadFile) -> str:
         return "videos"
     return "files"
 
+def _is_pdf_upload(file: UploadFile) -> bool:
+    content_type = (file.content_type or "").lower()
+    extension = Path(file.filename or "").suffix.lower()
+    return content_type == "application/pdf" or extension == ".pdf"
+
+def _is_allowed_video_upload(file: UploadFile) -> bool:
+    content_type = (file.content_type or "").lower()
+    extension = Path(file.filename or "").suffix.lower()
+
+    allowed_mime_types = {
+        "video/mp4",
+        "video/webm",
+        "video/ogg",
+        "video/x-msvideo",
+        "video/x-matroska",
+        "video/x-m4v",
+    }
+    allowed_extensions = {".mp4", ".webm", ".ogg", ".m4v", ".avi", ".mkv"}
+
+    return content_type in allowed_mime_types or extension in allowed_extensions
+
 def _is_admin_role(role) -> bool:
     if role is None:
         return False
@@ -169,6 +210,17 @@ class UserSettingsUpdateRequest(BaseModel):
     rememberDrafts: bool | None = None
     showProfileToClassmates: bool | None = None
     editorFontSize: str | None = None
+
+class PushSubscriptionKeysRequest(BaseModel):
+    p256dh: str
+    auth: str
+
+class PushSubscriptionRequest(BaseModel):
+    endpoint: str
+    keys: PushSubscriptionKeysRequest
+
+class PushSubscriptionEnvelopeRequest(BaseModel):
+    subscription: PushSubscriptionRequest
 
 # Add these constants
 SECRET_KEY = os.getenv("SECRET_KEY")
@@ -267,6 +319,168 @@ def _get_or_create_user_settings(db: Session, user: models.User) -> models.UserS
     db.commit()
     db.refresh(settings)
     return settings
+
+def _assignment_due_soon(due_date: datetime, now_utc: datetime) -> bool:
+    if not due_date:
+        return False
+
+    normalized_due = due_date
+    if normalized_due.tzinfo is not None:
+        normalized_due = normalized_due.astimezone(tz=None).replace(tzinfo=None)
+
+    window_end = now_utc + timedelta(hours=24)
+    return now_utc < normalized_due <= window_end
+
+def _make_push_payload(assignment: models.Assignment) -> dict:
+    return {
+        "title": "Assignment Reminder",
+        "body": f"{assignment.title} is due within 24 hours.",
+        "url": "/class-feed",
+        "tag": f"assignment-reminder-{assignment.id}",
+    }
+
+def _send_web_push(subscription: models.PushSubscription, payload: dict) -> bool:
+    if not WEB_PUSH_ENABLED:
+        return False
+
+    subscription_info = {
+        "endpoint": subscription.endpoint,
+        "keys": {
+            "p256dh": subscription.p256dh,
+            "auth": subscription.auth,
+        },
+    }
+
+    try:
+        webpush(
+            subscription_info=subscription_info,
+            data=json.dumps(payload),
+            vapid_private_key=VAPID_PRIVATE_KEY,
+            vapid_claims={"sub": VAPID_SUBJECT},
+        )
+        return True
+    except WebPushException as exc:
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+        if status_code in {404, 410}:
+            return False
+        return False
+    except Exception:
+        return False
+
+def _dispatch_assignment_push_reminders_once() -> None:
+    if not WEB_PUSH_ENABLED:
+        return
+
+    db = SessionLocal()
+    try:
+        now_utc = datetime.utcnow()
+        students = (
+            db.query(models.User)
+            .join(models.UserSettings, models.UserSettings.user_id == models.User.id)
+            .filter(
+                models.User.role == models.UserRole.STUDENT,
+                models.UserSettings.email_notifications.is_(True),
+                models.UserSettings.assignment_reminders.is_(True),
+            )
+            .all()
+        )
+
+        for student in students:
+            subscriptions = (
+                db.query(models.PushSubscription)
+                .filter(models.PushSubscription.user_id == student.id)
+                .all()
+            )
+            if not subscriptions:
+                continue
+
+            class_ids = [enrollment.class_id for enrollment in (student.enrolled_classes or [])]
+            if not class_ids:
+                continue
+
+            due_soon_assignments = (
+                db.query(models.Assignment)
+                .filter(models.Assignment.class_id.in_(class_ids))
+                .all()
+            )
+
+            for assignment in due_soon_assignments:
+                if not _assignment_due_soon(assignment.due_date, now_utc):
+                    continue
+
+                already_sent = (
+                    db.query(models.AssignmentReminderNotification)
+                    .filter(
+                        models.AssignmentReminderNotification.user_id == student.id,
+                        models.AssignmentReminderNotification.assignment_id == assignment.id,
+                    )
+                    .first()
+                )
+                if already_sent:
+                    continue
+
+                has_submitted = (
+                    db.query(models.AssignmentSubmission.id)
+                    .filter(
+                        models.AssignmentSubmission.assignment_id == assignment.id,
+                        models.AssignmentSubmission.student_id == student.id,
+                    )
+                    .first()
+                    is not None
+                )
+                if has_submitted:
+                    continue
+
+                payload = _make_push_payload(assignment)
+                delivered = False
+                stale_subscription_ids: list[int] = []
+
+                for subscription in subscriptions:
+                    success = _send_web_push(subscription, payload)
+                    if success:
+                        delivered = True
+                    else:
+                        stale_subscription_ids.append(subscription.id)
+
+                if stale_subscription_ids:
+                    db.query(models.PushSubscription).filter(
+                        models.PushSubscription.id.in_(stale_subscription_ids)
+                    ).delete(synchronize_session=False)
+
+                if delivered:
+                    db.add(
+                        models.AssignmentReminderNotification(
+                            user_id=student.id,
+                            assignment_id=assignment.id,
+                        )
+                    )
+
+            db.commit()
+    except Exception as exc:
+        print(f"Push reminder dispatcher error: {exc}")
+    finally:
+        db.close()
+
+def _push_scheduler_loop() -> None:
+    while not _push_scheduler_stop_event.is_set():
+        _dispatch_assignment_push_reminders_once()
+        _push_scheduler_stop_event.wait(PUSH_REMINDER_INTERVAL_SECONDS)
+
+def _start_push_scheduler() -> None:
+    global _push_scheduler_thread
+    if _push_scheduler_thread and _push_scheduler_thread.is_alive():
+        return
+
+    _push_scheduler_stop_event.clear()
+    _push_scheduler_thread = threading.Thread(target=_push_scheduler_loop, name="push-reminder-scheduler", daemon=True)
+    _push_scheduler_thread.start()
+
+def _stop_push_scheduler() -> None:
+    global _push_scheduler_thread
+    _push_scheduler_stop_event.set()
+    if _push_scheduler_thread and _push_scheduler_thread.is_alive():
+        _push_scheduler_thread.join(timeout=2)
+    _push_scheduler_thread = None
 
 # ---------- Authentication Endpoints ----------
 
@@ -1324,6 +1538,9 @@ async def upload_image(file: UploadFile = File(...), current_user: models.User =
 @app.post("/api/upload/video")
 async def upload_video(file: UploadFile = File(...), current_user: models.User = Depends(get_current_user)):
     try:
+        if not _is_allowed_video_upload(file):
+            raise HTTPException(status_code=400, detail="Unsupported video type. MOV is not allowed.")
+
         filename = _build_unique_filename(file.filename, "video")
         file_path = _upload_path("videos", filename)
         with file_path.open("wb") as buffer:
@@ -1335,6 +1552,9 @@ async def upload_video(file: UploadFile = File(...), current_user: models.User =
 @app.post("/api/upload/file")
 async def upload_file(file: UploadFile = File(...), current_user: models.User = Depends(get_current_user)):
     try:
+        if not _is_pdf_upload(file):
+            raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+
         filename = _build_unique_filename(file.filename, "file")
         file_path = _upload_path("files", filename)
         with file_path.open("wb") as buffer:
@@ -1351,6 +1571,11 @@ async def upload_file(
     """Upload a file and return its URL"""
     try:
         bucket = _resolve_upload_bucket(file)
+        if bucket == "files" and not _is_pdf_upload(file):
+            raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+        if bucket == "videos" and not _is_allowed_video_upload(file):
+            raise HTTPException(status_code=400, detail="Unsupported video type. MOV is not allowed.")
+
         user_dir = _upload_path(bucket, str(current_user.id))
         user_dir.mkdir(parents=True, exist_ok=True)
         
@@ -2846,6 +3071,85 @@ async def update_user_settings(
     db.commit()
     db.refresh(settings)
     return _serialize_user_settings(settings, current_user.role)
+
+@app.get("/api/push/public-key")
+async def get_push_public_key(current_user: models.User = Depends(get_current_user)):
+    return {
+        "enabled": WEB_PUSH_ENABLED,
+        "publicKey": VAPID_PUBLIC_KEY if WEB_PUSH_ENABLED else None,
+    }
+
+@app.get("/api/push/subscription")
+async def get_push_subscription_status(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    subscription = (
+        db.query(models.PushSubscription)
+        .filter(models.PushSubscription.user_id == current_user.id)
+        .first()
+    )
+    return {"subscribed": subscription is not None}
+
+@app.post("/api/push/subscribe")
+async def subscribe_push_notifications(
+    payload: PushSubscriptionEnvelopeRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    if not WEB_PUSH_ENABLED:
+        raise HTTPException(status_code=503, detail="Web push notifications are not configured on the server")
+
+    subscription = payload.subscription
+    endpoint = (subscription.endpoint or "").strip()
+    p256dh = (subscription.keys.p256dh or "").strip()
+    auth = (subscription.keys.auth or "").strip()
+
+    if not endpoint or not p256dh or not auth:
+        raise HTTPException(status_code=400, detail="Invalid push subscription payload")
+
+    existing = (
+        db.query(models.PushSubscription)
+        .filter(models.PushSubscription.endpoint == endpoint)
+        .first()
+    )
+
+    if existing:
+        existing.user_id = current_user.id
+        existing.p256dh = p256dh
+        existing.auth = auth
+    else:
+        db.add(
+            models.PushSubscription(
+                user_id=current_user.id,
+                endpoint=endpoint,
+                p256dh=p256dh,
+                auth=auth,
+            )
+        )
+
+    db.commit()
+    return {"subscribed": True}
+
+@app.delete("/api/push/unsubscribe")
+async def unsubscribe_push_notifications(
+    payload: PushSubscriptionEnvelopeRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    endpoint = (payload.subscription.endpoint or "").strip()
+    if endpoint:
+        db.query(models.PushSubscription).filter(
+            models.PushSubscription.user_id == current_user.id,
+            models.PushSubscription.endpoint == endpoint,
+        ).delete(synchronize_session=False)
+    else:
+        db.query(models.PushSubscription).filter(
+            models.PushSubscription.user_id == current_user.id
+        ).delete(synchronize_session=False)
+
+    db.commit()
+    return {"subscribed": False}
 
 @app.delete("/api/user/account")
 async def delete_user_account(

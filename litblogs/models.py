@@ -37,6 +37,12 @@ class User(Base):
     assignment_drafts = relationship("AssignmentDraft", back_populates="student", cascade="all, delete-orphan")
     assignment_submission_replies = relationship("AssignmentSubmissionReply", back_populates="user", cascade="all, delete-orphan")
     saved_posts = relationship("SavedPost", back_populates="user", cascade="all, delete-orphan")
+    push_subscriptions = relationship("PushSubscription", back_populates="user", cascade="all, delete-orphan")
+    assignment_reminder_notifications = relationship(
+        "AssignmentReminderNotification",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 class UserSettings(Base):
     __tablename__ = "user_settings"
@@ -55,6 +61,35 @@ class UserSettings(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User", back_populates="settings")
+
+class PushSubscription(Base):
+    __tablename__ = "push_subscriptions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    endpoint = Column(String(1024), unique=True, nullable=False)
+    p256dh = Column(String(255), nullable=False)
+    auth = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="push_subscriptions")
+
+
+class AssignmentReminderNotification(Base):
+    __tablename__ = "assignment_reminder_notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    assignment_id = Column(Integer, ForeignKey("assignments.id", ondelete="CASCADE"), nullable=False, index=True)
+    sent_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="assignment_reminder_notifications")
+    assignment = relationship("Assignment")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "assignment_id", name="uq_assignment_reminder_notification"),
+    )
 
 class Teacher(Base):
     __tablename__ = "teachers"

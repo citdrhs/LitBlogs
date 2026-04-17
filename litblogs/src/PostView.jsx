@@ -17,6 +17,7 @@ import './LitBlogs.css';
 import { IoMdHeart, IoMdHeartEmpty } from 'react-icons/io';
 import toast from 'react-hot-toast';
 import CommentThread from './components/CommentThread';
+import { mountInlinePdfViewers, openPdfViewerModal } from './components/PdfViewerModal';
 import { formatRelativeTime, setupTimeUpdater } from './utils/timeUtils';
 import { mediaPath } from './utils/urlUtils';
 import { shouldAutoPlayVideos } from './utils/userSettings';
@@ -404,29 +405,61 @@ const processHTMLWithDOM = (html) => {
       //   actionsDiv.appendChild(previewBtn);
       // }
       
-      // Add download button - make it a direct link with token
+      // Add preview and open actions
       if (fileUrl) {
-        const downloadBtn = document.createElement('a');
-        downloadBtn.className = 'download-btn';
-        downloadBtn.textContent = 'Preview';
-        downloadBtn.style.padding = '4px 8px';
-        downloadBtn.style.borderRadius = '4px';
-        downloadBtn.style.fontSize = '12px';
-        downloadBtn.style.cursor = 'pointer';
-        downloadBtn.style.backgroundColor = '#e0f2fe';
-        downloadBtn.style.color = '#0369a1';
-        downloadBtn.style.border = '1px solid #bae6fd';
-        downloadBtn.style.marginLeft = '4px';
-        downloadBtn.style.textDecoration = 'none';
-        downloadBtn.style.display = 'inline-block';
-        
-        // Set the href to directly download the file
         const fullUrl = mediaPath(fileUrl);
-        downloadBtn.href = fullUrl;
-        downloadBtn.target = '_blank';
-        downloadBtn.rel = 'noopener noreferrer';
-        
-        actionsDiv.appendChild(downloadBtn);
+        const fileType = getFileTypeFromUrl(fileUrl);
+
+        if (fileType === 'pdf') {
+          const pdfContainer = document.createElement('div');
+          pdfContainer.setAttribute('data-inline-pdf-viewer', 'true');
+          pdfContainer.setAttribute('data-pdf-url', fullUrl);
+          pdfContainer.setAttribute('data-pdf-title', fileName || 'PDF Document');
+          pdfContainer.style.width = '100%';
+          pdfContainer.style.display = 'block';
+          attachment.replaceWith(pdfContainer);
+          return;
+        }
+
+        if (isPreviewable(fileType)) {
+          const previewBtn = document.createElement('button');
+          previewBtn.className = 'preview-btn';
+          previewBtn.textContent = 'Preview';
+          previewBtn.setAttribute('type', 'button');
+          previewBtn.style.padding = '4px 8px';
+          previewBtn.style.borderRadius = '4px';
+          previewBtn.style.fontSize = '12px';
+          previewBtn.style.cursor = 'pointer';
+          previewBtn.style.backgroundColor = '#e0f2fe';
+          previewBtn.style.color = '#0369a1';
+          previewBtn.style.border = '1px solid #bae6fd';
+          previewBtn.style.marginRight = '4px';
+          previewBtn.addEventListener('click', function() {
+            if (typeof window.previewFile === 'function') {
+              window.previewFile(fullUrl, fileType);
+            }
+          });
+          actionsDiv.appendChild(previewBtn);
+        }
+
+        const openBtn = document.createElement('a');
+        openBtn.className = 'download-btn';
+        openBtn.textContent = 'Open';
+        openBtn.style.padding = '4px 8px';
+        openBtn.style.borderRadius = '4px';
+        openBtn.style.fontSize = '12px';
+        openBtn.style.cursor = 'pointer';
+        openBtn.style.backgroundColor = '#e6fffa';
+        openBtn.style.color = '#319795';
+        openBtn.style.border = '1px solid #b2f5ea';
+        openBtn.style.marginLeft = '4px';
+        openBtn.style.textDecoration = 'none';
+        openBtn.style.display = 'inline-block';
+        openBtn.href = fullUrl;
+        openBtn.target = '_blank';
+        openBtn.rel = 'noopener noreferrer';
+
+        actionsDiv.appendChild(openBtn);
       }
     }
   });
@@ -1028,8 +1061,11 @@ const PostView = () => {
 
     /* Video styles */
     .html-content video {
-      max-width: 600px !important;
-      width: 100% !important;
+      width: min(100%, 860px) !important;
+      max-width: 100% !important;
+      height: auto !important;
+      aspect-ratio: 16 / 9;
+      object-fit: contain;
       border-radius: 8px !important;
       margin: 20px 0 !important;
       display: block !important;
@@ -1056,9 +1092,13 @@ const PostView = () => {
   `;
 
   useEffect(() => {
-    // Add global function for file preview if it doesn't exist
-    if (!window.previewFile) {
-      window.previewFile = function(url, type) {
+    // Always register the page-level preview handler so attachments use this implementation.
+    window.previewFile = function(url, type) {
+        if (type === 'pdf') {
+          openPdfViewerModal({ fileUrl: url, title: 'PDF Preview' });
+          return;
+        }
+
         // Create modal for preview
         const modal = document.createElement('div');
         modal.style.position = 'fixed';
@@ -1109,12 +1149,6 @@ const PostView = () => {
           applyVideoPlaybackPreference(video);
           video.style.maxWidth = '100%';
           content.appendChild(video);
-        } else if (type === 'pdf') {
-          const iframe = document.createElement('iframe');
-          iframe.src = url;
-          iframe.style.width = '800px';
-          iframe.style.height = '600px';
-          content.appendChild(iframe);
         } else if (type === 'text') {
           // For text files, fetch and display content
           fetch(url)
@@ -1137,7 +1171,6 @@ const PostView = () => {
         modal.appendChild(content);
         document.body.appendChild(modal);
       };
-    }
     
     // Set up the time updater when the component mounts
     const timeUpdateInterval = setupTimeUpdater();
@@ -1172,6 +1205,11 @@ const PostView = () => {
           }
         }
       });
+
+      const cleanupInlinePdfViewers = mountInlinePdfViewers(contentRef.current);
+      return () => {
+        cleanupInlinePdfViewers();
+      };
     }
   }, [post?.content]);
 
