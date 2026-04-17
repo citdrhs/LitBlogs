@@ -363,7 +363,17 @@ const Settings = ({ onDarkModeChange }) => {
       setErrorMessage("")
       setStatusMessage("Browser push notifications are enabled.")
     } catch (error) {
-      setErrorMessage(error?.response?.data?.detail || "Failed to enable browser push notifications.")
+      const detail = error?.response?.data?.detail
+      const detailText = Array.isArray(detail)
+        ? detail.map((item) => item?.msg || JSON.stringify(item)).join("; ")
+        : (typeof detail === "string" ? detail : "")
+      const fallback = error?.message || "Failed to enable browser push notifications."
+      setErrorMessage(detailText || fallback)
+      console.error("Push enable failed:", {
+        message: error?.message,
+        status: error?.response?.status,
+        data: error?.response?.data,
+      })
     } finally {
       setPushBusy(false)
     }
