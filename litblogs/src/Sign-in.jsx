@@ -10,6 +10,7 @@ import { useMsal } from "@azure/msal-react";
 import { loginRequest } from "./config/msalConfig";
 import { FaMicrosoft } from 'react-icons/fa';
 import { resolveAppAsset } from './utils/urlUtils';
+import { applyGlobalUserSettings, saveLocalUserSettings } from './utils/userSettings';
 
 const SignIn = () => {
   const [email, setEmail] = useState("");
@@ -66,6 +67,78 @@ const SignIn = () => {
     }
   }, [darkMode]);
 
+  const buildStoredUserInfo = (authPayload = {}, profilePayload = {}) => ({
+    role: authPayload.role ?? profilePayload.role,
+    userId: authPayload.user_id ?? authPayload.id ?? profilePayload.id,
+    username: authPayload.username ?? profilePayload.username,
+    firstName: authPayload.first_name ?? profilePayload.first_name,
+    first_name: authPayload.first_name ?? profilePayload.first_name,
+    lastName: authPayload.last_name ?? profilePayload.last_name,
+    last_name: authPayload.last_name ?? profilePayload.last_name,
+    profile_image: profilePayload.profile_image ?? authPayload.profile_image ?? null,
+    cover_image: profilePayload.cover_image ?? authPayload.cover_image ?? null,
+    avatar_id: profilePayload.avatar_id ?? authPayload.avatar_id ?? null,
+    avatar_color: profilePayload.avatar_color ?? authPayload.avatar_color ?? null,
+  });
+
+  const persistSessionAndNavigate = async (authPayload = {}) => {
+    const token = authPayload?.access_token;
+    if (!token) {
+      throw new Error("Missing access token");
+    }
+
+    localStorage.setItem('token', token);
+
+    let profilePayload = {};
+    try {
+      const profileResponse = await axios.get('/user/profile', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      profilePayload = profileResponse?.data || {};
+    } catch (profileError) {
+      console.warn('Unable to fetch profile during sign-in bootstrap:', profileError);
+    }
+
+    const userInfo = buildStoredUserInfo(authPayload, profilePayload);
+    localStorage.setItem('user_info', JSON.stringify(userInfo));
+
+    // Pull account settings on sign-in so UI preferences apply immediately.
+    try {
+      const settingsResponse = await axios.get('/user/settings', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      const normalizedSettings = saveLocalUserSettings(settingsResponse?.data || {}, authPayload.role);
+      applyGlobalUserSettings(normalizedSettings);
+
+      localStorage.setItem('darkMode', JSON.stringify(Boolean(normalizedSettings.darkMode)));
+      if (normalizedSettings.darkMode) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+    } catch (settingsError) {
+      console.warn('Unable to fetch settings during sign-in bootstrap:', settingsError);
+    }
+
+    if (authPayload.role === 'STUDENT' && authPayload.class_info) {
+      const classInfo = {
+        id: authPayload.class_info.id,
+        name: authPayload.class_info.name,
+        code: authPayload.class_info.access_code
+      };
+      localStorage.setItem('class_info', JSON.stringify(classInfo));
+    }
+
+    if (authPayload.role === 'STUDENT') {
+      navigate('/student-hub');
+    } else if (authPayload.role === 'TEACHER') {
+      navigate('/teacher-dashboard');
+    } else if (authPayload.role === 'ADMIN') {
+      navigate('/admin-dashboard');
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsLoading(true);
@@ -84,36 +157,7 @@ const SignIn = () => {
         return;
       }
 
-      // Store the token
-      localStorage.setItem('token', response.data.access_token);
-      
-      // Store user info
-      const userInfo = {
-        role: response.data.role,
-        userId: response.data.user_id,
-        username: response.data.username,
-        firstName: response.data.first_name,
-      };
-      localStorage.setItem('user_info', JSON.stringify(userInfo));
-      
-      // For students, store class info if available
-      if (response.data.role === 'STUDENT' && response.data.class_info) {
-        const classInfo = {
-          id: response.data.class_info.id,
-          name: response.data.class_info.name,
-          code: response.data.class_info.access_code
-        };
-        localStorage.setItem('class_info', JSON.stringify(classInfo));
-      }
-      
-      // Redirect based on role
-      if (response.data.role === 'STUDENT') {
-        navigate('/student-hub');
-      } else if (response.data.role === 'TEACHER') {
-        navigate('/teacher-dashboard');
-      } else if (response.data.role === 'ADMIN') {
-        navigate('/admin-dashboard');
-      }
+      await persistSessionAndNavigate(response.data);
     } catch (error) {
       console.error('Login error:', error);
       
@@ -138,36 +182,7 @@ const SignIn = () => {
         token: response.credential
       });
       
-      // Store the token
-      localStorage.setItem('token', backendResponse.data.access_token);
-      
-      // Store user info
-      const userInfo = {
-        role: backendResponse.data.role,
-        userId: backendResponse.data.id,
-        username: backendResponse.data.username,
-        firstName: backendResponse.data.first_name,
-      };
-      localStorage.setItem('user_info', JSON.stringify(userInfo));
-      
-      // For students, store class info if available
-      if (backendResponse.data.role === 'STUDENT' && backendResponse.data.class_info) {
-        const classInfo = {
-          id: backendResponse.data.class_info.id,
-          name: backendResponse.data.class_info.name,
-          code: backendResponse.data.class_info.access_code
-        };
-        localStorage.setItem('class_info', JSON.stringify(classInfo));
-      }
-      
-      // Redirect based on role
-      if (backendResponse.data.role === 'STUDENT') {
-        navigate('/student-hub');
-      } else if (backendResponse.data.role === 'TEACHER') {
-        navigate('/teacher-dashboard');
-      } else if (backendResponse.data.role === 'ADMIN') {
-        navigate('/admin-dashboard');
-      }
+      await persistSessionAndNavigate(backendResponse.data);
     } catch (error) {
       console.error("Google Login Error:", error);
       
@@ -204,24 +219,7 @@ const SignIn = () => {
         }
       });
       
-      // Handle response same as Google login
-      localStorage.setItem('token', backendResponse.data.access_token);
-      const userInfo = {
-        role: backendResponse.data.role,
-        userId: backendResponse.data.user_id,
-        username: backendResponse.data.username,
-        firstName: backendResponse.data.first_name,
-      };
-      localStorage.setItem('user_info', JSON.stringify(userInfo));
-      
-      // Redirect based on role
-      if (backendResponse.data.role === 'STUDENT') {
-        navigate('/student-hub');
-      } else if (backendResponse.data.role === 'TEACHER') {
-        navigate('/teacher-dashboard');
-      } else if (backendResponse.data.role === 'ADMIN') {
-        navigate('/admin-dashboard');
-      }
+      await persistSessionAndNavigate(backendResponse.data);
       
     } catch (error) {
       console.error('Microsoft login error:', error);
