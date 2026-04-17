@@ -100,6 +100,7 @@ Then run the service called blog to start the backend(service was already create
 
 5. Run the backend server:
 ```bash
+chmod +x /var/www/LitBlogs/litblogs/run.sh
 sudo systemctl start blog
 ```
 
