@@ -7,6 +7,7 @@ import axios from "axios"
 import Navbar from "./components/Navbar"
 import Loader from "./components/Loader"
 import Footer from "./components/Footer"
+import { mediaPath } from "./utils/urlUtils"
 
 // Animated avatar options
 const AVATAR_OPTIONS = [
@@ -782,7 +783,7 @@ const StudentProfile = () => {
           <div className="h-64 w-full relative overflow-hidden">
             <img
               src={
-                coverImage ||
+                mediaPath(coverImage) ||
                 BACKGROUND_OPTIONS[0] ||
                 "/placeholder.svg"
               }
@@ -893,7 +894,7 @@ const StudentProfile = () => {
                 >
                   {image ? (
                     <img
-                      src={typeof image === "string" ? image : image}
+                      src={typeof image === "string" ? mediaPath(image) : image}
                       alt="Profile"
                       className="w-full h-full object-cover"
                     />

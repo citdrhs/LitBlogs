@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import Button from './Sign-out';
-import { resolveAppAsset } from '../utils/urlUtils';
+import { mediaPath, resolveAppAsset } from '../utils/urlUtils';
 
 const Navbar = ({ 
   userInfo, 
@@ -130,7 +130,7 @@ const Navbar = ({
               className="w-10 h-10 rounded-full bg-blue-500 text-white flex items-center justify-center hover:bg-blue-600 transition-colors duration-300 overflow-hidden"
             >
               {userInfo.profile_image ? (
-                <img src={userInfo.profile_image} alt="Profile" className="w-full h-full object-cover" />
+                <img src={mediaPath(userInfo.profile_image)} alt="Profile" className="w-full h-full object-cover" />
               ) : (
                 <span>
                   {userInfo.first_name?.[0]?.toUpperCase() || userInfo.firstName?.[0]?.toUpperCase() || userInfo.username?.[0]?.toUpperCase() || '?'}
