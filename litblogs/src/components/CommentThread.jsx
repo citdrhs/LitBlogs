@@ -3,6 +3,7 @@ import { IoMdHeart, IoMdHeartEmpty } from 'react-icons/io';
 import { motion, AnimatePresence } from 'framer-motion';
 import axios from 'axios';
 import toast from 'react-hot-toast';
+import { mediaPath } from '../utils/urlUtils';
 
 const CommentThread = ({ 
   comment, 
@@ -153,7 +154,15 @@ const CommentThread = ({
         onClick={toggleExpanded}
       >
         <div className="w-8 h-8 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center">
-          {comment.user.first_name?.[0] || comment.user.username?.[0] || '?'}
+          {comment.user?.profile_image ? (
+            <img
+              src={mediaPath(comment.user.profile_image)}
+              alt={comment.user.username || 'User'}
+              className="w-full h-full rounded-full object-cover"
+            />
+          ) : (
+            comment.user.first_name?.[0] || comment.user.username?.[0] || '?'
+          )}
         </div>
         <div className="flex-1">
           <div className="font-medium text-sm">

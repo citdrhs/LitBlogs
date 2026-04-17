@@ -5,6 +5,11 @@ import axios from "axios"
 import Navbar from "./components/Navbar"
 import Footer from "./components/Footer"
 import "./LitBlogs.css"
+import {
+  applyGlobalUserSettings,
+  normalizeUserSettings,
+  saveLocalUserSettings,
+} from "./utils/userSettings"
 
 const SETTINGS_KEY = "litblogs_settings"
 
@@ -56,12 +61,12 @@ const loadStoredSettings = () => {
 
   try {
     const parsed = JSON.parse(rawSettings)
-    return {
+    return normalizeUserSettings({
       ...defaults,
       ...parsed,
-    }
+    })
   } catch {
-    return defaults
+    return normalizeUserSettings(defaults)
   }
 }
 
@@ -96,8 +101,11 @@ const Settings = ({ onDarkModeChange }) => {
   const [settings, setSettings] = useState(loadStoredSettings)
   const [deleteConfirmation, setDeleteConfirmation] = useState("")
   const [isDeleting, setIsDeleting] = useState(false)
+  const [isSavingSettings, setIsSavingSettings] = useState(false)
   const [statusMessage, setStatusMessage] = useState("")
   const [errorMessage, setErrorMessage] = useState("")
+  const userRole = (userInfo?.role || "").toString().toUpperCase()
+  const isStudentUser = userRole === "STUDENT"
 
   const pageClasses = useMemo(
     () =>
@@ -127,7 +135,8 @@ const Settings = ({ onDarkModeChange }) => {
   }, [navigate])
 
   useEffect(() => {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
+    saveLocalUserSettings(settings, userInfo?.role)
+    applyGlobalUserSettings(settings)
   }, [settings])
 
   useEffect(() => {
@@ -144,22 +153,70 @@ const Settings = ({ onDarkModeChange }) => {
   }, [settings.darkMode, onDarkModeChange])
 
   const setSetting = (key, value) => {
-    setSettings((prev) => ({ ...prev, [key]: value }))
+    const nextSettings = normalizeUserSettings({ ...settings, [key]: value }, userInfo?.role)
+    setSettings(nextSettings)
+    persistSettings(nextSettings)
     setErrorMessage("")
     setStatusMessage("Preferences saved.")
   }
 
   const toggleSetting = (key) => {
-    setSettings((prev) => ({ ...prev, [key]: !prev[key] }))
+    const nextSettings = normalizeUserSettings({ ...settings, [key]: !settings[key] }, userInfo?.role)
+    setSettings(nextSettings)
+    persistSettings(nextSettings)
     setErrorMessage("")
     setStatusMessage("Preferences saved.")
   }
 
   const handleResetDefaults = () => {
-    setSettings(getDefaultSettings())
+    const nextSettings = normalizeUserSettings(getDefaultSettings(), userInfo?.role)
+    setSettings(nextSettings)
+    persistSettings(nextSettings)
     setErrorMessage("")
     setStatusMessage("Settings reset to default values.")
   }
+
+  const persistSettings = async (nextSettings) => {
+    const token = localStorage.getItem("token")
+    if (!token) {
+      return
+    }
+
+    try {
+      setIsSavingSettings(true)
+      const response = await axios.put("/user/settings", nextSettings, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const normalized = normalizeUserSettings(response.data, userInfo?.role)
+      setSettings((prev) => ({ ...prev, ...normalized }))
+    } catch (error) {
+      console.error("Failed to save settings:", error)
+      setErrorMessage(error?.response?.data?.detail || "Failed to save settings to your account.")
+    } finally {
+      setIsSavingSettings(false)
+    }
+  }
+
+  useEffect(() => {
+    const fetchSettings = async () => {
+      const token = localStorage.getItem("token")
+      if (!token) {
+        return
+      }
+
+      try {
+        const response = await axios.get("/user/settings", {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        const normalized = normalizeUserSettings(response.data, userInfo?.role)
+        setSettings(normalized)
+      } catch (error) {
+        console.error("Failed to fetch user settings:", error)
+      }
+    }
+
+    fetchSettings()
+  }, [userInfo?.role])
 
   const handleClearClassCache = () => {
     localStorage.removeItem("class_info")
@@ -205,7 +262,7 @@ const Settings = ({ onDarkModeChange }) => {
     setIsDeleting(true)
 
     try {
-      await axios.delete("/api/user/account", {
+      await axios.delete("/user/account", {
         params: { confirm: "DELETE" },
         headers: {
           Authorization: `Bearer ${token}`,
@@ -247,6 +304,11 @@ const Settings = ({ onDarkModeChange }) => {
             <p className={`mt-3 text-sm ${settings.darkMode ? "text-gray-500" : "text-gray-500"}`}>
               Changes are saved automatically on this device.
             </p>
+            {isSavingSettings && (
+              <p className={`mt-2 text-xs ${settings.darkMode ? "text-blue-300" : "text-blue-700"}`}>
+                Syncing your settings to your account...
+              </p>
+            )}
           </motion.div>
 
           {(statusMessage || errorMessage) && (
@@ -374,13 +436,19 @@ const Settings = ({ onDarkModeChange }) => {
             }`}
           >
             <h2 className="text-2xl font-semibold">Privacy & Data</h2>
-            <ToggleRow
-              label="Profile visible to classmates"
-              description="Allow classmates in shared classes to view your profile details."
-              enabled={settings.showProfileToClassmates}
-              onToggle={() => toggleSetting("showProfileToClassmates")}
-              darkMode={settings.darkMode}
-            />
+            {isStudentUser ? (
+              <ToggleRow
+                label="Profile visible to classmates"
+                description="Allow classmates in shared classes to view your profile details."
+                enabled={settings.showProfileToClassmates}
+                onToggle={() => toggleSetting("showProfileToClassmates")}
+                darkMode={settings.darkMode}
+              />
+            ) : (
+              <p className={`mt-2 text-sm ${settings.darkMode ? "text-gray-400" : "text-gray-600"}`}>
+                Teacher and admin profiles are shown with essential information only in shared contexts.
+              </p>
+            )}
 
             <div className="pt-4 flex flex-wrap gap-3">
               <button

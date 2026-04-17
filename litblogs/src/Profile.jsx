@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 import { motion } from "framer-motion"
 import axios from "axios"
@@ -101,6 +101,7 @@ const StudentProfile = () => {
   const [coverImage, setCoverImage] = useState(null)
   const [isEditing, setIsEditing] = useState(false)
   const [userPosts, setUserPosts] = useState([])
+  const [savedPosts, setSavedPosts] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [saving, setSaving] = useState(false)
@@ -110,6 +111,10 @@ const StudentProfile = () => {
   const [showCoverOptions, setShowCoverOptions] = useState(false)
   const [selectedAvatar, setSelectedAvatar] = useState(AVATAR_OPTIONS[0])
   const [avatarColor, setAvatarColor] = useState("bg-blue-500")
+  const profileOptionsRef = useRef(null)
+  const profileOptionsButtonRef = useRef(null)
+  const coverOptionsRef = useRef(null)
+  const coverOptionsButtonRef = useRef(null)
 
   const navigate = useNavigate()
   const { userId } = useParams()
@@ -238,6 +243,38 @@ const StudentProfile = () => {
     }
   }, [])
 
+  useEffect(() => {
+    const handlePointerDown = (event) => {
+      const profilePanel = profileOptionsRef.current
+      const profileButton = profileOptionsButtonRef.current
+      const coverPanel = coverOptionsRef.current
+      const coverButton = coverOptionsButtonRef.current
+
+      if (
+        showProfileOptions &&
+        profilePanel &&
+        !profilePanel.contains(event.target) &&
+        profileButton &&
+        !profileButton.contains(event.target)
+      ) {
+        setShowProfileOptions(false)
+      }
+
+      if (
+        showCoverOptions &&
+        coverPanel &&
+        !coverPanel.contains(event.target) &&
+        coverButton &&
+        !coverButton.contains(event.target)
+      ) {
+        setShowCoverOptions(false)
+      }
+    }
+
+    document.addEventListener("mousedown", handlePointerDown)
+    return () => document.removeEventListener("mousedown", handlePointerDown)
+  }, [showProfileOptions, showCoverOptions])
+
   const applyProfileData = (profileData, shouldPersist = isOwnProfile) => {
     setUserInfo(profileData)
     syncStoredUserInfo(profileData, shouldPersist)
@@ -270,7 +307,7 @@ const StudentProfile = () => {
           return
         }
 
-        const response = await axios.get("/api/user/profile", {
+        const response = await axios.get("/user/profile", {
           headers: {
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
@@ -291,7 +328,7 @@ const StudentProfile = () => {
 
     try {
       const token = localStorage.getItem("token")
-      const response = await axios.get(`/api/user/profile/${targetUserId}`, {
+      const response = await axios.get(`/user/profile/${targetUserId}`, {
         headers: {
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
@@ -317,7 +354,7 @@ const StudentProfile = () => {
       return { viewer: null, classIds: [] }
     }
 
-    const profileResponse = await axios.get("/api/user/profile", {
+    const profileResponse = await axios.get("/user/profile", {
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
@@ -328,7 +365,7 @@ const StudentProfile = () => {
     setViewerInfo(viewerProfile)
 
     try {
-      const classesResponse = await axios.get("/api/student/classes", {
+      const classesResponse = await axios.get("/student/classes", {
         headers: { Authorization: `Bearer ${token}` },
       })
       const classIds = getClassIds(classesResponse.data)
@@ -336,7 +373,7 @@ const StudentProfile = () => {
       return { viewer: viewerProfile, classIds }
     } catch (error) {
       try {
-        const classesResponse = await axios.get("/api/classes", {
+        const classesResponse = await axios.get("/classes", {
           headers: { Authorization: `Bearer ${token}` },
         })
         const classIds = getClassIds(classesResponse.data)
@@ -352,23 +389,35 @@ const StudentProfile = () => {
   // Load viewer info and profile data
   useEffect(() => {
     const initProfile = async () => {
-      const { viewer } = await fetchViewerContext()
-      const viewerId = getUserId(viewer)
-      const targetUserId = userId || viewerId
-      const isOwn = !userId || (viewerId && userId === viewerId)
-      setIsOwnProfile(isOwn)
+      try {
+        const { viewer } = await fetchViewerContext()
+        const viewerId = getUserId(viewer)
+        const targetUserId = userId || viewerId
+        const isOwn = !userId || (viewerId && userId === viewerId)
+        setIsOwnProfile(isOwn)
 
-      if (!targetUserId) {
-        navigate("/sign-in")
-        return
-      }
+        if (!targetUserId) {
+          navigate("/sign-in")
+          return
+        }
 
-      const profileData = await loadProfileData({ isOwn, targetUserId })
-      const profileRole = normalizeRole(profileData?.role)
-      if (profileRole === "STUDENT") {
-        await fetchUserPosts({ isOwn, targetUserId })
-      } else {
-        setUserPosts([])
+        const profileData = await loadProfileData({ isOwn, targetUserId })
+        const profileRole = normalizeRole(profileData?.role)
+        if (profileRole === "STUDENT") {
+          await fetchUserPosts({ isOwn, targetUserId })
+          if (isOwn) {
+            await fetchSavedPosts()
+          } else {
+            setSavedPosts([])
+          }
+        } else {
+          setUserPosts([])
+          setSavedPosts([])
+        }
+      } catch (error) {
+        console.error("Error initializing profile:", error)
+        setError("Failed to load profile data")
+        setLoading(false)
       }
     }
 
@@ -384,7 +433,7 @@ const StudentProfile = () => {
         return
       }
 
-      const endpoint = isOwn ? "/api/user/posts" : `/api/user/${targetUserId}/posts`
+      const endpoint = isOwn ? "/user/posts" : `/user/${targetUserId}/posts`
       const response = await axios.get(endpoint, {
         headers: { Authorization: `Bearer ${token}` },
       })
@@ -393,6 +442,31 @@ const StudentProfile = () => {
     } catch (error) {
       console.error("Error fetching user posts:", error)
       setError("Failed to load posts")
+    }
+  }
+
+  const fetchSavedPosts = async () => {
+    try {
+      const token = localStorage.getItem("token")
+      if (!token) {
+        navigate("/sign-in")
+        return
+      }
+
+      try {
+        const response = await axios.get("/user/saved-posts", {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        setSavedPosts(response.data || [])
+      } catch {
+        const fallback = await axios.get("/api/user/saved-posts", {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        setSavedPosts(fallback.data || [])
+      }
+    } catch (error) {
+      console.error("Error fetching saved posts:", error)
+      setError("Failed to load saved posts")
     }
   }
 
@@ -412,13 +486,15 @@ const StudentProfile = () => {
 
       // Update profile information
       const response = await axios.post(
-        "/api/user/update-profile",
+        "/user/update-profile",
         {
           first_name: firstName,
           last_name: lastName,
           bio: bio,
           avatar_id: selectedAvatar.id,
           avatar_color: avatarColor,
+          profile_image: image,
+          cover_image: coverImage,
         },
         {
           headers: { Authorization: `Bearer ${token}` },
@@ -463,7 +539,7 @@ const StudentProfile = () => {
       const token = localStorage.getItem("token")
       setUploadProgress(0)
 
-      const response = await axios.post("/api/user/upload-profile-image", formData, {
+      const response = await axios.post("/user/upload-profile-image", formData, {
         headers: {
           Authorization: `Bearer ${token}`,
           "Content-Type": "multipart/form-data",
@@ -513,7 +589,7 @@ const StudentProfile = () => {
       const token = localStorage.getItem("token")
       setUploadProgress(0)
 
-      const response = await axios.post("/api/user/upload-cover-image", formData, {
+      const response = await axios.post("/user/upload-cover-image", formData, {
         headers: {
           Authorization: `Bearer ${token}`,
           "Content-Type": "multipart/form-data",
@@ -555,20 +631,28 @@ const StudentProfile = () => {
     setImage(imageUrl)
     setShowProfileOptions(false)
 
-    setUserInfo((prev) => ({
-      ...prev,
-      profile_image: imageUrl,
-    }))
+    setUserInfo((prev) => {
+      const nextProfile = {
+        ...prev,
+        profile_image: imageUrl,
+      }
+      syncStoredUserInfo(nextProfile)
+      return nextProfile
+    })
   }
 
   const selectCoverImage = (imageUrl) => {
     setCoverImage(imageUrl)
     setShowCoverOptions(false)
 
-    setUserInfo((prev) => ({
-      ...prev,
-      cover_image: imageUrl,
-    }))
+    setUserInfo((prev) => {
+      const nextProfile = {
+        ...prev,
+        cover_image: imageUrl,
+      }
+      syncStoredUserInfo(nextProfile)
+      return nextProfile
+    })
   }
 
   const selectAvatar = (avatar) => {
@@ -647,6 +731,7 @@ const StudentProfile = () => {
   const hiddenPostsCount = isStudentProfile
     ? Math.max(userPosts.length - visiblePosts.length, 0)
     : 0
+  const shouldShowBioSection = isOwnProfile || Boolean((bio || "").trim())
 
   return (
     <div
@@ -654,19 +739,6 @@ const StudentProfile = () => {
     >
       {/* Navbar */}
       <Navbar userInfo={viewerInfo || userInfo} onSignOut={handleSignOut} darkMode={darkMode} logo="./logo.png" />
-
-      {/* Toggle Dark Mode Button */}
-      <motion.div
-        className="fixed top-5 right-4 z-10 transition-transform transform hover:scale-110"
-        whileHover={{ scale: 1.1 }}
-      >
-        <button
-          onClick={toggleDarkMode}
-          className={`${darkMode ? "bg-gray-700 hover:bg-gray-600" : "bg-white hover:bg-gray-100"} ${darkMode ? "text-white" : "text-gray-800"} p-3 rounded-full shadow-lg transition-all duration-200 transform hover:-translate-y-1`}
-        >
-          {darkMode ? "🌞" : "🌙"}
-        </button>
-      </motion.div>
 
       {/* Error/Success message if any */}
       {error && (
@@ -720,6 +792,7 @@ const StudentProfile = () => {
             {isEditing && isOwnProfile && (
               <div className="absolute bottom-4 right-4 flex gap-2">
                 <button
+                  ref={coverOptionsButtonRef}
                   onClick={() => setShowCoverOptions(!showCoverOptions)}
                   className="rounded-full bg-black/30 hover:bg-black/50 p-3 text-white transition-all duration-200 transform hover:scale-110"
                 >
@@ -770,7 +843,16 @@ const StudentProfile = () => {
 
             {/* Cover Image Options */}
             {showCoverOptions && (
-              <div className="absolute bottom-16 right-4 bg-white dark:bg-gray-800 rounded-lg shadow-xl p-3 z-10">
+              <div ref={coverOptionsRef} className="absolute bottom-16 right-4 bg-white dark:bg-gray-800 rounded-lg shadow-xl p-3 z-10">
+                <div className="flex justify-end mb-2">
+                  <button
+                    type="button"
+                    className="text-xs px-2 py-1 rounded bg-gray-100 dark:bg-gray-700"
+                    onClick={() => setShowCoverOptions(false)}
+                  >
+                    Close
+                  </button>
+                </div>
                 <div className="grid grid-cols-3 gap-2">
                   {BACKGROUND_OPTIONS.map((bgUrl, index) => (
                     <div
@@ -827,6 +909,7 @@ const StudentProfile = () => {
                 {isEditing && isOwnProfile && (
                   <div className="absolute bottom-0 right-0 flex">
                     <button
+                      ref={profileOptionsButtonRef}
                       onClick={() => setShowProfileOptions(!showProfileOptions)}
                       className={`w-10 h-10 rounded-full flex items-center justify-center ${darkMode ? "bg-gray-700" : "bg-white"} border ${darkMode ? "border-gray-600" : "border-gray-200"} shadow-md transition-all duration-200 transform hover:scale-110 mr-1`}
                     >
@@ -870,7 +953,16 @@ const StudentProfile = () => {
 
                 {/* Profile Image/Avatar Options */}
                 {showProfileOptions && (
-                  <div className="absolute -right-24 bottom-0 bg-white dark:bg-gray-800 rounded-lg shadow-xl p-3 z-10">
+                  <div ref={profileOptionsRef} className="absolute -right-24 bottom-0 bg-white dark:bg-gray-800 rounded-lg shadow-xl p-3 z-10">
+                    <div className="flex justify-end mb-2">
+                      <button
+                        type="button"
+                        className="text-xs px-2 py-1 rounded bg-gray-100 dark:bg-gray-700"
+                        onClick={() => setShowProfileOptions(false)}
+                      >
+                        Close
+                      </button>
+                    </div>
                     <div className="mb-3">
                       <h4 className="text-sm font-semibold mb-2">Choose Avatar</h4>
                       <div className="grid grid-cols-3 gap-2">
@@ -978,24 +1070,26 @@ const StudentProfile = () => {
         </div>
         
         {/* Bio Section */}
-            <div className="mb-8">
-              <h3 className={`text-lg font-semibold mb-2 ${darkMode ? "text-white" : "text-gray-800"} text-center`}>
-                About Me
-              </h3>
-              {isEditing ? (
-                <textarea
-                  value={bio}
-                  onChange={(e) => setBio(e.target.value)}
-                  className={`w-full p-4 rounded-lg border ${
-                    darkMode ? "bg-gray-700 border-gray-600 text-white" : "bg-white border-gray-300 text-gray-800"
-                  } focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none`}
-                  placeholder="Tell us about yourself..."
-                  rows={4}
-                />
-              ) : (
-                <p className={`${darkMode ? "text-gray-300" : "text-gray-700"} text-center`}>{bio}</p>
-              )}
-            </div>
+            {shouldShowBioSection && (
+              <div className="mb-8">
+                <h3 className={`text-lg font-semibold mb-2 ${darkMode ? "text-white" : "text-gray-800"} text-center`}>
+                  About Me
+                </h3>
+                {isEditing ? (
+                  <textarea
+                    value={bio}
+                    onChange={(e) => setBio(e.target.value)}
+                    className={`w-full p-4 rounded-lg border ${
+                      darkMode ? "bg-gray-700 border-gray-600 text-white" : "bg-white border-gray-300 text-gray-800"
+                    } focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none`}
+                    placeholder="Tell us about yourself..."
+                    rows={4}
+                  />
+                ) : (
+                  <p className={`${darkMode ? "text-gray-300" : "text-gray-700"} text-center`}>{bio}</p>
+                )}
+              </div>
+            )}
 
             {/* Stats Section */}
             <div className="mb-6 text-center">
@@ -1379,40 +1473,98 @@ const StudentProfile = () => {
           >
             <h2 className={`text-2xl font-bold mb-6 ${darkMode ? "text-white" : "text-gray-800"}`}>Saved Items</h2>
 
-            {/* Empty State for Saved Items */}
-            <div className={`text-center py-12 px-4 rounded-xl ${darkMode ? "bg-gray-700/50" : "bg-blue-50"}`}>
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="48"
-                height="48"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className={`mx-auto mb-4 ${darkMode ? "text-gray-400" : "text-blue-400"}`}
-              >
-                <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
-              </svg>
-              <h3 className={`text-xl font-semibold mb-2 ${darkMode ? "text-white" : "text-gray-800"}`}>
-                No Saved Items
-              </h3>
-              <p className={`mb-6 ${darkMode ? "text-gray-400" : "text-gray-600"}`}>
-                Save posts and resources to access them later.
-              </p>
-              <Link to="/student-hub">
-                <motion.button
-                  className={`px-6 py-3 rounded-full font-medium ${
-                    darkMode ? "bg-blue-600 hover:bg-blue-700" : "bg-blue-500 hover:bg-blue-600"
-                  } text-white shadow-lg transition-all duration-200`}
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
+            {savedPosts.length === 0 ? (
+              <div className={`text-center py-12 px-4 rounded-xl ${darkMode ? "bg-gray-700/50" : "bg-blue-50"}`}>
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="48"
+                  height="48"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className={`mx-auto mb-4 ${darkMode ? "text-gray-400" : "text-blue-400"}`}
                 >
-                  Browse Content
-                </motion.button>
-              </Link>
-            </div>
+                  <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
+                </svg>
+                <h3 className={`text-xl font-semibold mb-2 ${darkMode ? "text-white" : "text-gray-800"}`}>
+                  No Saved Items
+                </h3>
+                <p className={`mb-6 ${darkMode ? "text-gray-400" : "text-gray-600"}`}>
+                  Save posts and resources to access them later.
+                </p>
+                <Link to="/student-hub">
+                  <motion.button
+                    className={`px-6 py-3 rounded-full font-medium ${
+                      darkMode ? "bg-blue-600 hover:bg-blue-700" : "bg-blue-500 hover:bg-blue-600"
+                    } text-white shadow-lg transition-all duration-200`}
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                  >
+                    Browse Content
+                  </motion.button>
+                </Link>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {savedPosts.map((post) => (
+                  <motion.div
+                    key={`saved-${post.id}`}
+                    className={`p-5 rounded-xl border ${darkMode ? "bg-gray-700 border-gray-600" : "bg-white border-gray-200"} hover:shadow-lg transition-all duration-200`}
+                    whileHover={{ y: -3, scale: 1.01 }}
+                  >
+                    <Link to={`/class/${post.class_id}/post/${post.id}`}>
+                      <h3 className={`text-xl font-bold mb-2 ${darkMode ? "text-white" : "text-gray-800"}`}>
+                        {post.title}
+                      </h3>
+                    </Link>
+                    <div className="flex justify-between items-center">
+                      <div className={`text-sm ${darkMode ? "text-gray-400" : "text-gray-500"}`}>
+                        {new Date(post.created_at).toLocaleDateString()} • {post.class_name || "Class"}
+                      </div>
+                      <div className="flex items-center space-x-4">
+                        <span className="flex items-center">
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            className="h-4 w-4 mr-1"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"
+                            />
+                          </svg>
+                          {post.likes || 0}
+                        </span>
+                        <span className="flex items-center">
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            className="h-4 w-4 mr-1"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
+                            />
+                          </svg>
+                          {post.comments || 0}
+                        </span>
+                      </div>
+                    </div>
+                  </motion.div>
+                ))}
+              </div>
+            )}
           </motion.div>
         )}
 

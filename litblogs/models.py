@@ -31,10 +31,30 @@ class User(Base):
     blogs = relationship("Blog", back_populates="owner")
     likes = relationship("PostLike", back_populates="user", cascade="all, delete-orphan")
     comments = relationship("Comment", back_populates="user", cascade="all, delete-orphan")
+    settings = relationship("UserSettings", back_populates="user", uselist=False, cascade="all, delete-orphan")
     comment_likes = relationship("CommentLike", back_populates="user", cascade="all, delete-orphan")
     assignment_submissions = relationship("AssignmentSubmission", back_populates="student", cascade="all, delete-orphan")
     assignment_drafts = relationship("AssignmentDraft", back_populates="student", cascade="all, delete-orphan")
     assignment_submission_replies = relationship("AssignmentSubmissionReply", back_populates="user", cascade="all, delete-orphan")
+    saved_posts = relationship("SavedPost", back_populates="user", cascade="all, delete-orphan")
+
+class UserSettings(Base):
+    __tablename__ = "user_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    dark_mode = Column(Boolean, default=False, nullable=False)
+    reduced_motion = Column(Boolean, default=False, nullable=False)
+    email_notifications = Column(Boolean, default=True, nullable=False)
+    assignment_reminders = Column(Boolean, default=True, nullable=False)
+    auto_play_videos = Column(Boolean, default=False, nullable=False)
+    compact_feed = Column(Boolean, default=False, nullable=False)
+    remember_drafts = Column(Boolean, default=True, nullable=False)
+    show_profile_to_classmates = Column(Boolean, default=True, nullable=False)
+    editor_font_size = Column(String(16), default="medium", nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="settings")
 
 class Teacher(Base):
     __tablename__ = "teachers"
@@ -149,6 +169,22 @@ class Blog(Base):
     class_ = relationship("Class", back_populates="blogs")
     likes = relationship("PostLike", back_populates="post", cascade="all, delete-orphan")
     comments = relationship("Comment", back_populates="blog")
+    saved_by = relationship("SavedPost", back_populates="post", cascade="all, delete-orphan")
+
+class SavedPost(Base):
+    __tablename__ = "saved_posts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    post_id = Column(Integer, ForeignKey("blogs.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    post = relationship("Blog", back_populates="saved_by")
+    user = relationship("User", back_populates="saved_posts")
+
+    __table_args__ = (
+        UniqueConstraint('post_id', 'user_id', name='unique_saved_post'),
+    )
 
 class PostLike(Base):
     __tablename__ = "post_likes"

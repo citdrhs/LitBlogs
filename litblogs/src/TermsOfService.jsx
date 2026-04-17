@@ -64,19 +64,6 @@ const TermsOfService = () => {
         logo="/logo.png"
       />
 
-      {/* Toggle Dark Mode Button */}
-      <motion.div
-        className="absolute top-5 right-4 z-10 transition-transform transform hover:scale-110"
-        whileHover={{ scale: 1.1 }}
-      >
-        <button
-          onClick={toggleDarkMode}
-          className="bg-gray-800 text-white p-2 rounded-full shadow-lg"
-        >
-          {darkMode ? "🌞" : "🌙"}
-        </button>
-      </motion.div>
-
       {/* Content */}
       <div className="container mx-auto px-4 py-16 md:px-8 max-w-4xl">
         <motion.h1

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
+import { Link } from "react-router-dom";
 import { assetPath } from "../utils/urlUtils";
 
 const FAQ = ({ darkMode }) => {
@@ -16,9 +17,12 @@ const FAQ = ({ darkMode }) => {
       answer: (
         <div className="space-y-4 pt-2">
           <div className="flex items-center">
-            <button className="mt-3 px-4 py-2 bg-gradient-to-r from-purple-500 to-blue-500 text-white rounded-lg transition-transform hover:scale-105" onClick={() => window.location.href = '/Sign-in'}>
+            <Link
+              to="/Sign-in"
+              className="mt-3 inline-block px-4 py-2 bg-gradient-to-r from-purple-500 to-blue-500 text-white rounded-lg transition-transform hover:scale-105"
+            >
               Click here
-            </button>
+            </Link>
           </div>
           <p className="text-gray-600 dark:text-gray-300">
             Then click "Don't have an account? Sign Up". Enter the information and click sign up.

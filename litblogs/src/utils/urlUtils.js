@@ -65,5 +65,19 @@ export const mediaPath = (path = "") => {
     return path;
   }
 
-  return path.startsWith("/") ? path : `/${path}`;
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+
+  // Route uploaded media through the API namespace so it works behind
+  // production proxies that only forward /api to the backend.
+  if (normalizedPath.startsWith("/uploads/")) {
+    const relativePath = normalizedPath.slice("/uploads/".length);
+    return `${API_BASE_PATH}/uploads/${relativePath}`;
+  }
+
+  if (normalizedPath.startsWith("/api/uploads/")) {
+    const relativePath = normalizedPath.slice("/api/uploads/".length);
+    return `${API_BASE_PATH}/uploads/${relativePath}`;
+  }
+
+  return normalizedPath;
 };

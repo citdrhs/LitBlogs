@@ -357,7 +357,7 @@ const TeacherDashboard = () => {
       <motion.div 
         initial={{ x: -300 }}
         animate={{ x: 0 }}
-        className="fixed left-0 top-0 h-full w-64 backdrop-blur-md bg-gray-50/40 dark:bg-gray-800/10 border-r border-white/10 dark:border-gray-700/10"
+        className="fixed left-0 top-0 h-full w-64 bg-gray-100 dark:bg-gray-800 border-r border-gray-200 dark:border-gray-600 shadow-xl"
       >
         <div className="p-6">
           <motion.h2 
@@ -376,8 +376,8 @@ const TeacherDashboard = () => {
                 onClick={() => setActiveTab(tab)}
                 className={`w-full text-left p-3 rounded-lg transition-all ${
                   activeTab === tab 
-                    ? 'bg-blue-500/20 text-blue-500' 
-                    : 'hover:bg-white/5'
+                    ? 'bg-blue-500/30 dark:text-blue-100 text-blue-800' 
+                    : 'hover:bg-gray-100/80 dark:hover:bg-gray-700/60'
                 }`}
                 whileHover={{ x: 5 }}
                 whileTap={{ scale: 0.95 }}
@@ -558,7 +558,7 @@ const TeacherDashboard = () => {
                       {(classesTab === 'active' ? classes : archivedClasses).map(cls => (
                         <motion.div 
                           key={cls.id}
-                          className="p-6 rounded-lg backdrop-blur-md bg-white dark:bg-gray-800/10 border border-white/10 dark:border-gray-700/10 shadow-xl relative"
+                          className="p-6 rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 shadow-xl relative"
                           whileHover={{ scale: 1.02 }}
                         >
                           {/* Class menu (three dots) */}
@@ -659,7 +659,7 @@ const TeacherDashboard = () => {
                           <h3 className="text-xl font-semibold mb-2">{cls.name}</h3>
                           <p className="mb-4 opacity-80">{cls.description}</p>
                           <div className="flex justify-between items-center">
-                            <span className="px-3 py-1 rounded-full bg-blue-500/20 text-blue-500">
+                            <span className={`px-3 py-1 rounded-full ${darkMode ? 'bg-blue-500/25 text-blue-100 border border-blue-300/40' : 'bg-blue-500/20 text-blue-700 border border-blue-200'}`}>
                               Code: {cls.access_code || cls.joinCode || 'No code available'}
                             </span>
                             <span className="text-sm opacity-80">
@@ -705,7 +705,7 @@ const TeacherDashboard = () => {
                 
                 {allStudents.length > 0 ? (
                   <div className="overflow-x-auto">
-                    <table className={`w-full rounded-lg ${darkMode ? 'bg-gray-800/50' : 'bg-white/80'} shadow-lg`}>
+                    <table className={`w-full rounded-lg border ${darkMode ? 'bg-gray-800 border-gray-600' : 'bg-white border-gray-200'} shadow-lg`}>
                       <thead className={`${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
                         <tr>
                           <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Name</th>
@@ -778,7 +778,7 @@ const TeacherDashboard = () => {
                   ].map((card) => (
                     <div
                       key={card.label}
-                      className={`p-6 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'} shadow-xl`}
+                      className={`p-6 rounded-lg border ${darkMode ? 'bg-gray-800 border-gray-600' : 'bg-white border-gray-200'} shadow-xl`}
                     >
                       <p className="text-sm text-gray-500 dark:text-gray-400">{card.label}</p>
                       <p className="text-3xl font-bold mt-2">{card.value}</p>
@@ -787,7 +787,7 @@ const TeacherDashboard = () => {
                 </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  <div className={`p-6 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'} shadow-xl`}>
+                  <div className={`p-6 rounded-lg border ${darkMode ? 'bg-gray-800 border-gray-600' : 'bg-white border-gray-200'} shadow-xl`}>
                     <h3 className="text-xl font-semibold mb-4">Submission Health</h3>
                     <div className="space-y-4">
                       {[
@@ -818,7 +818,7 @@ const TeacherDashboard = () => {
                     </div>
                   </div>
 
-                  <div className={`p-6 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'} shadow-xl`}>
+                  <div className={`p-6 rounded-lg border ${darkMode ? 'bg-gray-800 border-gray-600' : 'bg-white border-gray-200'} shadow-xl`}>
                     <h3 className="text-xl font-semibold mb-4">Posts & Participation</h3>
                     <div className="space-y-3 text-sm text-gray-500 dark:text-gray-400">
                       <div className="flex items-center justify-between">
@@ -841,7 +841,7 @@ const TeacherDashboard = () => {
                   </div>
                 </div>
 
-                <div className={`p-6 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'} shadow-xl`}>
+                <div className={`p-6 rounded-lg border ${darkMode ? 'bg-gray-800 border-gray-600' : 'bg-white border-gray-200'} shadow-xl`}>
                   <h3 className="text-xl font-semibold mb-4">Engagement by Class</h3>
                   <div className="space-y-4">
                     {(analytics?.classes || []).map((row) => (
@@ -864,7 +864,7 @@ const TeacherDashboard = () => {
                   </div>
                 </div>
 
-                <div className={`p-6 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'} shadow-xl`}>
+                <div className={`p-6 rounded-lg border ${darkMode ? 'bg-gray-800 border-gray-600' : 'bg-white border-gray-200'} shadow-xl`}>
                   <div className="flex items-center justify-between mb-4">
                     <h3 className="text-xl font-semibold">Class Reports</h3>
                     <span className="text-sm text-gray-500 dark:text-gray-400">
@@ -908,18 +908,6 @@ const TeacherDashboard = () => {
           </motion.div>
         </motion.div>
       </div>
-      {/* Toggle Dark Mode Button */}
-      <motion.div
-        className="absolute top-5 right-4 z-10 transition-transform transform hover:scale-110"
-        whileHover={{ scale: 1.1 }}
-      >
-        <button
-          onClick={toggleDarkMode}
-          className="bg-gray-800 text-white p-2 rounded-full shadow-lg"
-        >
-          {darkMode ? "🌞" : "🌙"}
-        </button>
-      </motion.div>
 
       {/* Class Creation Modal */}
       <AnimatePresence>
@@ -935,7 +923,7 @@ const TeacherDashboard = () => {
               animate={{ scale: 1 }}
               exit={{ scale: 0.95 }}
               className={`p-6 rounded-lg backdrop-blur-md ${
-                darkMode ? 'bg-gray-800/90' : 'bg-white/90'
+                darkMode ? 'bg-gray-800 border border-gray-600' : 'bg-white border border-gray-200'
               } shadow-xl w-full max-w-md`}
             >
               <h2 className="text-2xl font-bold mb-6">Create New Class</h2>

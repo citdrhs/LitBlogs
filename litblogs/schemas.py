@@ -26,6 +26,7 @@ class BlogResponse(BaseModel):
     owner_id: int
     class_id: int
     author: str | None = None
+    author_profile_image: str | None = None
     likes: int = 0
     comments: int = 0
     

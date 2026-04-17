@@ -18,10 +18,11 @@ import ProtectedRoute from "./components/ProtectedRoute";
 import PrivacyPolicy from './PrivacyPolicy';
 import TermsOfService from './TermsOfService';
 import { useState, useEffect } from 'react';
+import { applyGlobalUserSettings, getLocalUserSettings } from './utils/userSettings';
 
 function App() {
   const [darkMode, setDarkMode] = useState(() => {
-    return JSON.parse(localStorage.getItem('darkMode')) ?? false;
+    return getLocalUserSettings().darkMode;
   });
 
   // Toggle dark mode function
@@ -40,7 +41,13 @@ function App() {
     } else {
       document.documentElement.classList.remove('dark');
     }
+
+    applyGlobalUserSettings({ ...getLocalUserSettings(), darkMode });
   }, [darkMode]);
+
+  useEffect(() => {
+    applyGlobalUserSettings(getLocalUserSettings());
+  }, []);
 
   return (
     <Routes>

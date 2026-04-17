@@ -194,23 +194,10 @@ const Help = () => {
       logo="/logo.png"
       />
 
-      {/* Toggle Dark Mode Button */}
-      <motion.div
-        className="absolute top-5 right-4 z-10 transition-transform transform hover:scale-110"
-        whileHover={{ scale: 1.1 }}
-      >
-        <button
-          onClick={toggleDarkMode}
-          className="bg-gray-800 text-white p-2 rounded-full shadow-lg"
-        >
-          {darkMode ? "🌞" : "🌙"}
-        </button>
-      </motion.div>
-
       {/* Content */}
-      <section className="py-24 text-center overflow-visible">
+      <section className="py-28 text-center overflow-visible">
         <motion.h2
-          className="relative -top-2 text-5xl md:text-7xl font-bold mb-4 bg-gradient-text bg-clip-text text-transparent pt-2 pb-3"
+          className="relative -top-2 text-5xl md:text-9xl font-bold mb-4 bg-gradient-text bg-clip-text text-transparent pt-2 pb-3"
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.8 }}
@@ -218,42 +205,13 @@ const Help = () => {
           How Can We Help You?
         </motion.h2>
         <motion.p
-          className="text-gray-600 dark:text-gray-400 text-xl mb-8 max-w-2xl mx-auto"
+          className="text-gray-600 dark:text-gray-400 text-xl mb-2 max-w-2xl mx-auto"
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.8, delay: 0.2 }}
         >
           Whether you're seeking writing tips, guidelines for submissions, or need assistance with the platform, we're here to support you!
         </motion.p>
-        <motion.button
-          onClick={() => {
-            document.getElementById('target-section').scrollIntoView({
-              behavior: 'smooth',
-            });
-          }}
-          className="bg-blue-600 text-white px-8 py-4 rounded-full text-lg flex items-center mx-auto shadow-lg"
-          whileHover={{
-            scale: 1.05,
-            backgroundColor: "#2563eb",
-            transition: { duration: 0.2 } // Fast transition for hover
-          }}
-          whileTap={{
-            scale: 0.95,
-            transition: { duration: 0.1 } // Fast transition for tap
-          }}
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{
-            scale: { type: "spring", stiffness: 500, damping: 30 }, // Set transition for scaling
-            opacity: { duration: 0.8, delay: 0.4 },
-            y: { duration: 0.8, delay: 0.4 }
-          }}
-        >
-          Contact Support
-          <svg className="w-5 h-5 ml-2 animate-bounce-horizontal" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8l4 4m0 0l-4 4m4-4H3" />
-          </svg>
-        </motion.button>
       </section>
 
       {/* Custom Video Player */}
@@ -420,33 +378,6 @@ const Help = () => {
       </section>
       {/* FAQ */}
       <FAQ darkMode={darkMode} />
-      {/* Contact Us */}
-      <div className="mt-10 max-w-4xl mx-auto text-center px-4 sm:px-6" id="target-section">
-        <h2 className="text-3xl font-bold mb-6 text-gray-800 dark:text-white">
-          Contact us and we will be happy to help!
-        </h2>
-
-        <form className="space-y-6">
-          <div>
-            <input
-              type="email"
-              placeholder="Enter your email"
-              onChange={(e) => setEmail(e.target.value)}
-              className={`w-full px-6 py-3 rounded-full ${darkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-200 text-gray-800'} border focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-400`}
-              required
-            />
-          </div>
-
-          <div>
-            <button
-              type="submit"
-              className="w-full py-3 rounded-full bg-blue-600 text-white font-semibold text-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
-            >
-              Submit
-            </button>
-          </div>
-        </form>
-      </div>
       <Footer darkMode={darkMode} />
     </div>
   );

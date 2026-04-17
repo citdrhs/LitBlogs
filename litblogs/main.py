@@ -123,6 +123,19 @@ def _upload_url(*parts: str) -> str:
     normalized_parts = [str(part).replace("\\", "/").strip("/") for part in parts if str(part).strip("/")]
     return f"/uploads/{'/'.join(normalized_parts)}"
 
+def _resolve_upload_bucket(file: UploadFile) -> str:
+    content_type = (file.content_type or "").lower()
+    extension = Path(file.filename or "").suffix.lower()
+
+    image_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"}
+    video_exts = {".mp4", ".webm", ".ogg", ".mov", ".m4v", ".avi", ".mkv"}
+
+    if content_type.startswith("image/") or extension in image_exts:
+        return "images"
+    if content_type.startswith("video/") or extension in video_exts:
+        return "videos"
+    return "files"
+
 def _is_admin_role(role) -> bool:
     if role is None:
         return False
@@ -146,11 +159,32 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 class LoginRequest(BaseModel):
     email: str
     password: str
+class UserSettingsUpdateRequest(BaseModel):
+    darkMode: bool | None = None
+    reducedMotion: bool | None = None
+    emailNotifications: bool | None = None
+    assignmentReminders: bool | None = None
+    autoPlayVideos: bool | None = None
+    compactFeed: bool | None = None
+    rememberDrafts: bool | None = None
+    showProfileToClassmates: bool | None = None
+    editorFontSize: str | None = None
 
 # Add these constants
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = os.getenv("ALGORITHM")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES"))
+DEFAULT_USER_SETTINGS = {
+    "darkMode": False,
+    "reducedMotion": False,
+    "emailNotifications": True,
+    "assignmentReminders": True,
+    "autoPlayVideos": False,
+    "compactFeed": False,
+    "rememberDrafts": True,
+    "showProfileToClassmates": True,
+    "editorFontSize": "medium",
+}
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
@@ -162,6 +196,77 @@ def get_password_hash(password: str):
 
 def verify_password(plain_password: str, hashed_password: str):
     return pwd_context.verify(plain_password, hashed_password)
+
+def _normalize_editor_font_size(value: str | None) -> str:
+    normalized = str(value or "").lower()
+    return normalized if normalized in {"small", "medium", "large"} else "medium"
+
+def _is_student_role(role) -> bool:
+    if role is None:
+        return False
+    if isinstance(role, models.UserRole):
+        return role == models.UserRole.STUDENT
+    if hasattr(role, "value"):
+        return str(role.value).upper() == "STUDENT"
+    return str(role).upper() == "STUDENT"
+
+def _normalize_user_settings_payload(raw_settings: dict, role) -> dict:
+    normalized = {**DEFAULT_USER_SETTINGS, **(raw_settings or {})}
+    normalized["darkMode"] = bool(normalized.get("darkMode"))
+    normalized["reducedMotion"] = bool(normalized.get("reducedMotion"))
+    normalized["emailNotifications"] = bool(normalized.get("emailNotifications"))
+    normalized["assignmentReminders"] = bool(normalized.get("assignmentReminders"))
+    normalized["autoPlayVideos"] = bool(normalized.get("autoPlayVideos"))
+    normalized["compactFeed"] = bool(normalized.get("compactFeed"))
+    normalized["rememberDrafts"] = bool(normalized.get("rememberDrafts"))
+    normalized["showProfileToClassmates"] = bool(normalized.get("showProfileToClassmates"))
+    normalized["editorFontSize"] = _normalize_editor_font_size(normalized.get("editorFontSize"))
+
+    if not _is_student_role(role):
+        normalized["showProfileToClassmates"] = False
+
+    return normalized
+
+def _serialize_user_settings(settings: models.UserSettings | None, role) -> dict:
+    if settings is None:
+        return _normalize_user_settings_payload({}, role)
+
+    payload = {
+        "darkMode": settings.dark_mode,
+        "reducedMotion": settings.reduced_motion,
+        "emailNotifications": settings.email_notifications,
+        "assignmentReminders": settings.assignment_reminders,
+        "autoPlayVideos": settings.auto_play_videos,
+        "compactFeed": settings.compact_feed,
+        "rememberDrafts": settings.remember_drafts,
+        "showProfileToClassmates": settings.show_profile_to_classmates,
+        "editorFontSize": settings.editor_font_size,
+    }
+    return _normalize_user_settings_payload(payload, role)
+
+def _apply_user_settings_to_model(settings_model: models.UserSettings, payload: dict, role) -> None:
+    normalized = _normalize_user_settings_payload(payload, role)
+    settings_model.dark_mode = normalized["darkMode"]
+    settings_model.reduced_motion = normalized["reducedMotion"]
+    settings_model.email_notifications = normalized["emailNotifications"]
+    settings_model.assignment_reminders = normalized["assignmentReminders"]
+    settings_model.auto_play_videos = normalized["autoPlayVideos"]
+    settings_model.compact_feed = normalized["compactFeed"]
+    settings_model.remember_drafts = normalized["rememberDrafts"]
+    settings_model.show_profile_to_classmates = normalized["showProfileToClassmates"]
+    settings_model.editor_font_size = normalized["editorFontSize"]
+
+def _get_or_create_user_settings(db: Session, user: models.User) -> models.UserSettings:
+    settings = db.query(models.UserSettings).filter(models.UserSettings.user_id == user.id).first()
+    if settings:
+        return settings
+
+    settings = models.UserSettings(user_id=user.id)
+    _apply_user_settings_to_model(settings, DEFAULT_USER_SETTINGS, user.role)
+    db.add(settings)
+    db.commit()
+    db.refresh(settings)
+    return settings
 
 # ---------- Authentication Endpoints ----------
 
@@ -1079,6 +1184,7 @@ async def create_class_post(
         "owner_id": new_post.owner_id,
         "class_id": new_post.class_id,
         "author": f"{current_user.first_name} {current_user.last_name}",
+        "author_profile_image": current_user.profile_image,
         "likes": len(new_post.likes) if hasattr(new_post, 'likes') else 0,
         "comments": len(new_post.comments) if hasattr(new_post, 'comments') else 0,
         "ai_percentage": new_post.ai_percentage,
@@ -1099,6 +1205,17 @@ async def get_class_posts(
         models.Blog.class_id == class_id
     ).order_by(models.Blog.created_at.desc()).all()
     
+    saved_ids = set()
+    if posts:
+        saved_post_ids = [post.id for post in posts]
+        saved_ids = {
+            entry.post_id
+            for entry in db.query(models.SavedPost).filter(
+                models.SavedPost.user_id == current_user.id,
+                models.SavedPost.post_id.in_(saved_post_ids),
+            ).all()
+        }
+
     # Format posts with author information
     formatted_posts = []
     for post in posts:
@@ -1110,8 +1227,10 @@ async def get_class_posts(
             "created_at": post.created_at,
             "owner_id": post.owner_id,
             "author": f"{author.first_name} {author.last_name}" if author else "Unknown Author",
+            "author_profile_image": author.profile_image if author else None,
             "likes": len(post.likes) if hasattr(post, 'likes') else 0,
             "comments": len(post.comments) if hasattr(post, 'comments') else 0,
+            "is_saved": post.id in saved_ids,
             "ai_percentage": post.ai_percentage,
             "ai_highlighted_html": post.ai_highlighted_html,
             "ai_sentence_analysis": post.ai_sentence_analysis
@@ -1231,7 +1350,8 @@ async def upload_file(
 ):
     """Upload a file and return its URL"""
     try:
-        user_dir = _upload_path(str(current_user.id))
+        bucket = _resolve_upload_bucket(file)
+        user_dir = _upload_path(bucket, str(current_user.id))
         user_dir.mkdir(parents=True, exist_ok=True)
         
         # Generate a unique filename
@@ -1243,7 +1363,7 @@ async def upload_file(
             shutil.copyfileobj(file.file, buffer)
         
         # Return the file URL
-        file_url = _upload_url(str(current_user.id), filename)
+        file_url = _upload_url(bucket, str(current_user.id), filename)
         
         return {
             "url": file_url,
@@ -2101,15 +2221,22 @@ async def get_class_post(
     # Get the author's information
     author = db.query(models.User).filter(models.User.id == post.owner_id).first()
     
+    is_saved = db.query(models.SavedPost).filter(
+        models.SavedPost.user_id == current_user.id,
+        models.SavedPost.post_id == post.id,
+    ).first() is not None
+
     # Return post with author info and content
     return {
         **post.__dict__,
         "author": {
             "id": author.id,
             "first_name": author.first_name,
-            "last_name": author.last_name
+            "last_name": author.last_name,
+            "profile_image": author.profile_image,
         },
-        "content": post.content  # Content already includes the markers
+        "content": post.content,  # Content already includes the markers
+        "is_saved": is_saved,
     }
 
 @app.put("/api/classes/{class_id}/posts/{post_id}")
@@ -2150,6 +2277,7 @@ async def update_class_post(
         "owner_id": db_post.owner_id,
         "class_id": db_post.class_id,
         "author": f"{current_user.first_name} {current_user.last_name}",
+        "author_profile_image": current_user.profile_image,
         "likes": len(db_post.likes) if hasattr(db_post, 'likes') else 0,
         "comments": len(db_post.comments) if hasattr(db_post, 'comments') else 0,
         "ai_percentage": db_post.ai_percentage,
@@ -2331,6 +2459,10 @@ async def update_profile(
             user.avatar_id = profile_data["avatar_id"]
         if "avatar_color" in profile_data:
             user.avatar_color = profile_data["avatar_color"]
+        if "profile_image" in profile_data:
+            user.profile_image = profile_data["profile_image"]
+        if "cover_image" in profile_data:
+            user.cover_image = profile_data["cover_image"]
             
         db.commit()
         db.refresh(user)
@@ -2691,6 +2823,30 @@ async def get_user_profile(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch profile: {str(e)}")
 
+@app.get("/api/user/settings")
+async def get_user_settings(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    settings = _get_or_create_user_settings(db, current_user)
+    return _serialize_user_settings(settings, current_user.role)
+
+@app.put("/api/user/settings")
+async def update_user_settings(
+    payload: UserSettingsUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    settings = _get_or_create_user_settings(db, current_user)
+    next_payload = {
+        **_serialize_user_settings(settings, current_user.role),
+        **payload.model_dump(exclude_none=True),
+    }
+    _apply_user_settings_to_model(settings, next_payload, current_user.role)
+    db.commit()
+    db.refresh(settings)
+    return _serialize_user_settings(settings, current_user.role)
+
 @app.delete("/api/user/account")
 async def delete_user_account(
     confirm: str,
@@ -2734,16 +2890,25 @@ async def get_public_user_profile(
         if viewer_classes.isdisjoint(target_classes):
             raise HTTPException(status_code=403, detail="Not authorized to view this profile")
 
+    role_value = target_user.role.value if hasattr(target_user.role, "value") else str(target_user.role)
+    is_owner_or_admin = current_user.id == target_user.id or current_user.is_admin
+    target_settings = _get_or_create_user_settings(db, target_user)
+
+    # Keep public teacher/admin profiles minimal for non-admin viewers.
+    allow_extended_profile = is_owner_or_admin or role_value == "STUDENT"
+    if role_value == "STUDENT" and not is_owner_or_admin and not target_settings.show_profile_to_classmates:
+        allow_extended_profile = False
+
     return {
         "id": target_user.id,
         "username": target_user.username,
-        "email": target_user.email,
+        "email": target_user.email if is_owner_or_admin else None,
         "first_name": target_user.first_name,
         "last_name": target_user.last_name,
-        "bio": target_user.bio,
-        "role": target_user.role.value if hasattr(target_user.role, "value") else target_user.role,
+        "bio": target_user.bio if allow_extended_profile else None,
+        "role": role_value,
         "profile_image": target_user.profile_image,
-        "cover_image": target_user.cover_image,
+        "cover_image": target_user.cover_image if allow_extended_profile else None,
         "avatar_id": target_user.avatar_id,
         "avatar_color": target_user.avatar_color,
         "class_ids": _get_user_class_ids(db, target_user),
@@ -2801,6 +2966,78 @@ async def get_user_posts(
         })
 
     return posts_with_class
+
+@app.post("/api/classes/{class_id}/posts/{post_id}/save")
+async def toggle_save_post(
+    class_id: int,
+    post_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Save or unsave a post for the current user."""
+    _ensure_class_access(db, current_user, class_id)
+
+    post = db.query(models.Blog).filter(
+        models.Blog.id == post_id,
+        models.Blog.class_id == class_id
+    ).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+
+    existing_saved = db.query(models.SavedPost).filter(
+        models.SavedPost.post_id == post_id,
+        models.SavedPost.user_id == current_user.id
+    ).first()
+
+    if existing_saved:
+        db.delete(existing_saved)
+        action = "unsaved"
+        is_saved = False
+    else:
+        db.add(models.SavedPost(post_id=post_id, user_id=current_user.id))
+        action = "saved"
+        is_saved = True
+
+    db.commit()
+
+    return {
+        "action": action,
+        "post_id": post_id,
+        "is_saved": is_saved,
+    }
+
+@app.get("/api/user/saved-posts")
+async def get_saved_posts(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Return posts saved by the current user."""
+    saved_entries = db.query(models.SavedPost).filter(
+        models.SavedPost.user_id == current_user.id
+    ).order_by(models.SavedPost.created_at.desc()).all()
+
+    saved_posts = []
+    for entry in saved_entries:
+        post = db.query(models.Blog).filter(models.Blog.id == entry.post_id).first()
+        if not post:
+            continue
+
+        class_ = db.query(models.Class).filter(models.Class.id == post.class_id).first()
+        saved_posts.append({
+            "id": post.id,
+            "title": post.title,
+            "content": post.content,
+            "created_at": post.created_at,
+            "class_id": post.class_id,
+            "class_name": class_.name if class_ else "Unknown Class",
+            "owner_id": post.owner_id,
+            "likes": len(post.likes) if hasattr(post, 'likes') else 0,
+            "comments": len(post.comments) if hasattr(post, 'comments') else 0,
+            "saved_at": entry.created_at,
+            "is_saved": True,
+        })
+
+    return saved_posts
 
 @app.post("/api/classes/{class_id}/posts/{post_id}/like")
 async def like_post(
@@ -3211,6 +3448,48 @@ async def get_class_students(
 # Add this after creating the app
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
+@app.get("/api/uploads/{file_path:path}")
+async def get_uploaded_file(file_path: str):
+    """Serve uploaded files with compatibility for both legacy and bucketed paths."""
+    normalized_path = file_path.replace("\\", "/").lstrip("/")
+
+    # 1) Exact path hit (works for /api/uploads/images/<user>/<file> and legacy /api/uploads/<user>/<file>)
+    direct_path = _upload_path(normalized_path)
+    if direct_path.exists() and direct_path.is_file():
+        return FileResponse(path=direct_path)
+
+    parts = [part for part in normalized_path.split("/") if part]
+
+    # 2) Legacy URL fallback: /api/uploads/<user>/<file> -> search bucketed locations
+    if len(parts) >= 2 and parts[0].isdigit():
+        user_id = parts[0]
+        trailing_parts = parts[1:]
+        for bucket in ("images", "videos", "files"):
+            candidate = _upload_path(bucket, user_id, *trailing_parts)
+            if candidate.exists() and candidate.is_file():
+                return FileResponse(path=candidate)
+
+    # 3) Bucketed URL fallback: /api/uploads/<bucket>/<user>/<file> -> legacy location
+    if len(parts) >= 3 and parts[0] in {"images", "videos", "files"} and parts[1].isdigit():
+        user_id = parts[1]
+        trailing_parts = parts[2:]
+        legacy_candidate = _upload_path(user_id, *trailing_parts)
+        if legacy_candidate.exists() and legacy_candidate.is_file():
+            return FileResponse(path=legacy_candidate)
+
+    # 4) Filename fallback: if paths changed, try locating the same filename anywhere under uploads.
+    if parts:
+        target_name = Path(parts[-1]).name
+        if target_name:
+            for candidate in UPLOAD_DIR.rglob(target_name):
+                if candidate.is_file():
+                    return FileResponse(path=candidate)
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"File not found: {normalized_path}"
+    )
+
 @app.delete("/api/upload/{file_path:path}")
 async def delete_file(
     file_path: str,
@@ -3218,9 +3497,17 @@ async def delete_file(
 ):
     """Delete an uploaded file"""
     try:
-        # Ensure the file belongs to the current user
+        # Ensure the file belongs to the current user.
+        # Supports both legacy uploads/<user_id>/... and new uploads/<bucket>/<user_id>/... layouts.
         user_dir = f"{current_user.id}"
-        if not file_path.startswith(user_dir):
+        allowed_prefixes = {
+            user_dir,
+            f"images/{user_dir}",
+            f"videos/{user_dir}",
+            f"files/{user_dir}",
+        }
+        normalized_path = file_path.replace("\\", "/").lstrip("/")
+        if not any(normalized_path.startswith(prefix) for prefix in allowed_prefixes):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You don't have permission to delete this file"
@@ -3257,20 +3544,21 @@ async def download_file(
 ):
     """Force download a file with the specified filename"""
     try:        
-        # Extract the file path from the URL
-        if url.startswith('http'):
-            # Handle full URLs
-            if '/uploads/' not in url:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid file URL"
-                )
-            file_path = url.split('/uploads/')[1]
+        # Extract the file path from the URL.
+        # Supports both /uploads/... and /api/uploads/... forms.
+        upload_match = re.search(r"(?:/api)?/uploads/(.+)$", url)
+        if upload_match:
+            file_path = upload_match.group(1)
         elif url.startswith('/uploads/'):
-            # Handle relative URLs
-            file_path = url[9:]  # Remove the /uploads/ prefix
+            file_path = url[9:]
+        elif url.startswith('/api/uploads/'):
+            file_path = url[13:]
+        elif url.startswith('http'):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid file URL"
+            )
         else:
-            # Assume it's already a file path
             file_path = url
         
         # Construct the full path
@@ -3439,70 +3727,117 @@ async def get_student_details(
     if not enrollment:
         raise HTTPException(status_code=404, detail="Student not enrolled in this class")
     
-    # Get student's posts in this class
+    # Core activity counts scoped to this class.
     posts_count = db.query(models.Blog).filter(
         models.Blog.owner_id == student_id,
         models.Blog.class_id == class_id
     ).count()
-    
-    # For comments and likes, we'll use a simpler approach since we're not sure of the exact model structure
-    # Instead of joining, we'll just return placeholder values
-    comments_count = 0
-    likes_count = 0
-    
-    # Return student details with activity metrics
+
+    comments_count = db.query(models.Comment).join(
+        models.Blog,
+        models.Comment.blog_id == models.Blog.id
+    ).filter(
+        models.Comment.user_id == student_id,
+        models.Blog.class_id == class_id
+    ).count()
+
+    likes_count = db.query(models.PostLike).join(
+        models.Blog,
+        models.PostLike.post_id == models.Blog.id
+    ).filter(
+        models.PostLike.user_id == student_id,
+        models.Blog.class_id == class_id
+    ).count()
+
+    # Build a real activity feed from posts, comments, likes, and enrollment.
+    post_events = db.query(models.Blog).filter(
+        models.Blog.owner_id == student_id,
+        models.Blog.class_id == class_id
+    ).order_by(models.Blog.created_at.desc()).limit(25).all()
+
+    comment_events = db.query(models.Comment, models.Blog).join(
+        models.Blog,
+        models.Comment.blog_id == models.Blog.id
+    ).filter(
+        models.Comment.user_id == student_id,
+        models.Blog.class_id == class_id
+    ).order_by(models.Comment.created_at.desc()).limit(25).all()
+
+    like_events = db.query(models.PostLike, models.Blog).join(
+        models.Blog,
+        models.PostLike.post_id == models.Blog.id
+    ).filter(
+        models.PostLike.user_id == student_id,
+        models.Blog.class_id == class_id
+    ).order_by(models.PostLike.created_at.desc()).limit(25).all()
+
+    activity_timeline = []
+
+    enrollment_ts = enrollment.enrolled_at or student.created_at or datetime.utcnow()
+    activity_timeline.append({
+        "type": "enrollment",
+        "title": "Joined Class",
+        "description": f"Enrolled in {db_class.name}",
+        "timestamp": enrollment_ts,
+    })
+
+    for post in post_events:
+        post_title = post.title or "Untitled Post"
+        activity_timeline.append({
+            "type": "post",
+            "title": "Created Post",
+            "description": f"Created a new post: '{post_title}'",
+            "timestamp": post.created_at,
+        })
+
+    for comment, blog in comment_events:
+        target_title = blog.title if blog and blog.title else "a class post"
+        activity_timeline.append({
+            "type": "comment",
+            "title": "Posted Comment",
+            "description": f"Commented on '{target_title}'",
+            "timestamp": comment.created_at,
+        })
+
+    for post_like, blog in like_events:
+        target_title = blog.title if blog and blog.title else "a class post"
+        activity_timeline.append({
+            "type": "like",
+            "title": "Liked Post",
+            "description": f"Liked '{target_title}'",
+            "timestamp": post_like.created_at,
+        })
+
+    activity_timeline.sort(key=lambda item: item.get("timestamp") or datetime.min, reverse=True)
+
+    recent_activity = [
+        {
+            "type": item["type"],
+            "description": item["description"],
+            "timestamp": item["timestamp"],
+        }
+        for item in activity_timeline[:5]
+    ]
+
+    # Simple weighted engagement score from real interaction counts.
+    engagement_points = (posts_count * 5) + (comments_count * 3) + likes_count
+    engagement_score = f"{min(100, engagement_points)}%"
+
+    # Return student details
     return {
         "id": student.id,
         "username": student.username,
         "email": student.email,
         "first_name": student.first_name,
         "last_name": student.last_name,
-        "enrollment_date": datetime.utcnow() - timedelta(days=30),  # Placeholder since enrollment.created_at doesn't exist
+        "enrollment_date": enrollment_ts,
         "posts_count": posts_count,
         "comments_count": comments_count,
         "likes_count": likes_count,
         "teacher_notes": enrollment.notes if hasattr(enrollment, 'notes') else None,
-        # Sample data for the UI - in a real app, you'd compute these from actual data
-        "engagement_score": "85%",
-        "recent_activity": [
-            {
-                "type": "post",
-                "description": "Created a new post: 'Understanding Variables in Python'",
-                "timestamp": datetime.utcnow() - timedelta(days=2, hours=3)
-            },
-            {
-                "type": "comment",
-                "description": "Commented on 'Introduction to Data Structures'",
-                "timestamp": datetime.utcnow() - timedelta(days=3, hours=7)
-            },
-            {
-                "type": "like",
-                "description": "Liked 'JavaScript Fundamentals'",
-                "timestamp": datetime.utcnow() - timedelta(days=4, hours=12)
-            }
-        ],
-        "activity_timeline": [
-            {
-                "title": "Joined Class",
-                "description": f"Enrolled in {db_class.name}",
-                "timestamp": datetime.utcnow() - timedelta(days=30)  # Placeholder
-            },
-            {
-                "title": "First Post",
-                "description": "Created first blog post",
-                "timestamp": datetime.utcnow() - timedelta(days=15)
-            },
-            {
-                "title": "Completed Assignment",
-                "description": "Submitted the Python basics assignment",
-                "timestamp": datetime.utcnow() - timedelta(days=10)
-            },
-            {
-                "title": "Active Participation",
-                "description": "Commented on 5 different posts",
-                "timestamp": datetime.utcnow() - timedelta(days=5)
-            }
-        ]
+        "engagement_score": engagement_score,
+        "recent_activity": recent_activity,
+        "activity_timeline": activity_timeline[:50],
     }
 
 @app.get("/api/classes/{class_id}/students/{student_id}/posts")

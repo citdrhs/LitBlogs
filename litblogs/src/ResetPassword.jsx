@@ -406,18 +406,6 @@ const ResetPassword = () => {
         )}
         </motion.div>
       </main>
-      
-      <motion.div
-        className="absolute top-6 right-6 z-10"
-        whileHover={{ scale: 1.1 }}
-      >
-        <button
-          onClick={toggleDarkMode}
-          className="bg-gray-800 text-white p-2 rounded-full shadow-lg"
-        >
-          {darkMode ? "🌞" : "🌙"}
-        </button>
-      </motion.div>
 
       {/* Loading Overlay */}
       <AnimatePresence>

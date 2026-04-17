@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import axios from 'axios';
@@ -22,6 +22,15 @@ import { IoMdHeart, IoMdHeartEmpty } from 'react-icons/io';
 import CommentThread from './components/CommentThread';
 import { formatRelativeTime, setupTimeUpdater } from './utils/timeUtils';
 import { mediaPath } from './utils/urlUtils';
+import ReactHtmlParser from 'react-html-parser';
+import {
+  applyGlobalUserSettings,
+  getEditorFontSizePx,
+  getLocalUserSettings,
+  normalizeUserSettings,
+  saveLocalUserSettings,
+  shouldRememberDrafts,
+} from './utils/userSettings';
 
 const expandableListStyles = `
   .expandable-list {
@@ -182,6 +191,10 @@ const getAssignmentDraftKey = ({ classId, assignmentId, userId }) => {
 };
 
 const readAssignmentDraft = ({ classId, assignmentId, userId }) => {
+  if (!shouldRememberDrafts()) {
+    return { hasDraft: false, content: '', savedAt: null };
+  }
+
   const key = getAssignmentDraftKey({ classId, assignmentId, userId });
   if (!key) {
     return { hasDraft: false, content: '', savedAt: null };
@@ -210,6 +223,10 @@ const readAssignmentDraft = ({ classId, assignmentId, userId }) => {
 };
 
 const writeAssignmentDraft = ({ classId, assignmentId, userId, content, savedAt }) => {
+  if (!shouldRememberDrafts()) {
+    return null;
+  }
+
   const key = getAssignmentDraftKey({ classId, assignmentId, userId });
   if (!key) {
     return null;
@@ -241,6 +258,140 @@ const createEmptyPostContent = () => ({
   codeSnippets: [],
   files: []
 });
+
+const clonePostContent = (value) => {
+  if (!value) {
+    return createEmptyPostContent();
+  }
+
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return createEmptyPostContent();
+  }
+};
+
+const getPostDraftKey = ({ classId, userId, editingPostId }) => {
+  if (!classId || !userId) {
+    return null;
+  }
+
+  const composerScope = editingPostId ? `edit:${editingPostId}` : 'new';
+  return `postDraft:${userId}:${classId}:${composerScope}`;
+};
+
+const readPostDraft = ({ classId, userId, editingPostId }) => {
+  const key = getPostDraftKey({ classId, userId, editingPostId });
+  if (!key) {
+    return { hasDraft: false, savedAt: null, payload: null };
+  }
+
+  try {
+    const storedValue = localStorage.getItem(key);
+    if (!storedValue) {
+      return { hasDraft: false, savedAt: null, payload: null };
+    }
+
+    const parsedValue = JSON.parse(storedValue);
+    return {
+      hasDraft: true,
+      savedAt: parsedValue?.savedAt || null,
+      payload: {
+        postTitle: parsedValue?.postTitle || '',
+        content: parsedValue?.content || '',
+        postContent: clonePostContent(parsedValue?.postContent),
+      },
+    };
+  } catch (error) {
+    console.error('Failed to read post draft:', error);
+    return { hasDraft: false, savedAt: null, payload: null };
+  }
+};
+
+const writePostDraft = ({ classId, userId, editingPostId, payload, savedAt }) => {
+  const key = getPostDraftKey({ classId, userId, editingPostId });
+  if (!key) {
+    return null;
+  }
+
+  const hasMeaningfulContent = Boolean(
+    payload?.postTitle?.trim() ||
+    payload?.content?.trim() ||
+    (payload?.postContent?.media?.length || 0) > 0 ||
+    (payload?.postContent?.files?.length || 0) > 0 ||
+    (payload?.postContent?.expandableLists?.length || 0) > 0 ||
+    (payload?.postContent?.codeSnippets?.length || 0) > 0
+  );
+
+  if (!hasMeaningfulContent) {
+    localStorage.removeItem(key);
+    return null;
+  }
+
+  const nextSavedAt = savedAt || new Date().toISOString();
+  localStorage.setItem(
+    key,
+    JSON.stringify({
+      postTitle: payload.postTitle || '',
+      content: payload.content || '',
+      postContent: clonePostContent(payload.postContent),
+      savedAt: nextSavedAt,
+    })
+  );
+  return nextSavedAt;
+};
+
+const clearPostDraft = ({ classId, userId, editingPostId }) => {
+  const key = getPostDraftKey({ classId, userId, editingPostId });
+  if (!key) {
+    return;
+  }
+
+  localStorage.removeItem(key);
+};
+
+const listPostDrafts = ({ classId, userId }) => {
+  if (!classId || !userId) {
+    return [];
+  }
+
+  const prefix = `postDraft:${userId}:${classId}:`;
+  const drafts = [];
+
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const key = localStorage.key(i);
+    if (!key || !key.startsWith(prefix)) {
+      continue;
+    }
+
+    const scope = key.slice(prefix.length);
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) {
+        continue;
+      }
+
+      const parsed = JSON.parse(raw);
+      drafts.push({
+        key,
+        scope,
+        editingPostId: scope.startsWith('edit:') ? Number(scope.split(':')[1]) : null,
+        postTitle: parsed?.postTitle || '',
+        content: parsed?.content || '',
+        postContent: clonePostContent(parsed?.postContent),
+        savedAt: parsed?.savedAt || null,
+      });
+    } catch (error) {
+      console.error('Failed to parse post draft:', error);
+    }
+  }
+
+  return drafts.sort((a, b) => {
+    const aTs = a.savedAt ? new Date(a.savedAt).getTime() : 0;
+    const bTs = b.savedAt ? new Date(b.savedAt).getTime() : 0;
+    return bTs - aTs;
+  });
+};
 
 const MOCK_POSTS = [
   {
@@ -284,7 +435,7 @@ const MediaPreview = ({ media, files, onRemove }) => {
       {files.length > 0 && (
         <div className="space-y-2">
           {files.map((file, index) => (
-            <div key={index} className="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-700 rounded-lg">
+            <div key={index} className="flex items-center justify-between p-2 bg-gray-50 rounded-lg">
               <div className="flex items-center gap-2">
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -309,7 +460,7 @@ const MediaPreview = ({ media, files, onRemove }) => {
 
 // Update the TinyMCE configuration to better preserve image attributes and styles
 const TINYMCE_CONFIG = {
-  height: 400,
+  height: 520,
   menubar: false,
   plugins: [
     'advlist', 'autolink', 'lists', 'link', 'image', 'charmap', 'preview',
@@ -334,7 +485,7 @@ const TINYMCE_CONFIG = {
       font-size: 14px;
       margin: 1rem;
       padding-bottom: 2rem;
-      max-height: 400px;
+      max-height: 520px;
       overflow-y: auto !important;
     }
     h1 { font-size: 1.8em; font-weight: bold; margin: 0.5em 0; }
@@ -488,7 +639,7 @@ const TINYMCE_CONFIG = {
         }
       })
       .then(response => {
-        resolve(response.data.url);
+        resolve(mediaPath(response.data.url));
       })
       .catch(error => {
         reject('Image upload failed: ' + error.message);
@@ -504,8 +655,10 @@ const TINYMCE_CONFIG = {
   convert_urls: false,
   relative_urls: false,
   
-  // Ensure all styles are preserved
-  valid_styles: '*[*]',
+  // Preserve only safe inline styles that we support end-to-end.
+  valid_styles: {
+    '*': 'color,background-color,font-size,font-family,text-align,font-weight,font-style,text-decoration'
+  },
   
   // Configure non-editable classes
   noneditable_noneditable_class: 'mceNonEditable',
@@ -599,7 +752,7 @@ const TINYMCE_CONFIG = {
                 );
                 
                 // Insert the uploaded image
-                editor.insertContent(`<img src="${response.data.url}" alt="${file.name}" style="max-width: 100%; height: auto;" />`);
+                editor.insertContent(`<img src="${mediaPath(response.data.url)}" alt="${file.name}" style="max-width: 100%; height: auto;" />`);
               } else if (data.source === 'url' && data.url) {
                 // Insert image from URL
                 editor.insertContent(`<img src="${data.url}" alt="Image from URL" style="max-width: 100%; height: auto;" />`);
@@ -1017,6 +1170,22 @@ const processHTMLWithDOM = (html) => {
   editorControls.forEach(control => {
     control.remove();
   });
+
+  // Let post previews inherit theme text color instead of persisting editor text color.
+  tempDiv.querySelectorAll('[style]').forEach((element) => {
+    const styleAttr = element.getAttribute('style') || '';
+    const cleanedStyle = styleAttr
+      .replace(/(^|;)\s*color\s*:[^;]+;?/gi, '$1')
+      .replace(/;;+/g, ';')
+      .trim()
+      .replace(/^;|;$/g, '');
+
+    if (cleanedStyle) {
+      element.setAttribute('style', cleanedStyle);
+    } else {
+      element.removeAttribute('style');
+    }
+  });
   
   // Track what types of media we've found
   let mediaTypes = {
@@ -1180,13 +1349,21 @@ const truncateHTML = (htmlContent, maxLength = 200) => {
   // For longer content, we need to truncate while preserving HTML structure
   return tempDiv.innerHTML + '<span class="text-blue-500">... (read more)</span>';
 };
+const getUploadRelativePath = (url = '') => {
+  const normalizedUrl = String(url || '');
+  const match = normalizedUrl.match(/(?:\/api)?\/uploads\/(.+)$/);
+  if (match && match[1]) {
+    return match[1];
+  }
+  return normalizedUrl.replace(/^\/+/, '');
+};
 
 // Add this function to handle file deletion
 async function deleteFileFromServer(url) {
   try {
     // Extract the file path from the URL
     // The URL format is /uploads/user_id/filename
-    const filePath = url.replace('/uploads/', '');
+    const filePath = getUploadRelativePath(url);
     
     const token = localStorage.getItem('token');
     await axios.delete(`/upload/${filePath}`, {
@@ -1210,10 +1387,7 @@ if (!window.deleteVideoFromServer) {
     if (!videoUrl) return;
     
     // Extract the file path from the URL
-    let filePath = videoUrl;
-    if (videoUrl.includes('/uploads/')) {
-      filePath = videoUrl.split('/uploads/')[1];
-    }
+    const filePath = getUploadRelativePath(videoUrl);
     
     // Get the token
     const token = localStorage.getItem('token');
@@ -1244,10 +1418,7 @@ function defineGlobalFunctions() {
     if (!videoUrl) return;
     
     // Extract the file path from the URL
-    let filePath = videoUrl;
-    if (videoUrl.includes('/uploads/')) {
-      filePath = videoUrl.split('/uploads/')[1];
-    }
+    const filePath = getUploadRelativePath(videoUrl);
     
     // Get the token
     const token = localStorage.getItem('token');
@@ -1325,6 +1496,8 @@ const ClassFeed = () => {
   const [menuOpen, setMenuOpen] = useState(null);
   const [likedPosts, setLikedPosts] = useState({});
   const [likesLoading, setLikesLoading] = useState({});
+  const [savedPosts, setSavedPosts] = useState({});
+  const [saveLoading, setSaveLoading] = useState({});
   const [likeEffects, setLikeEffects] = useState({});
   const [postCommentsVisible, setPostCommentsVisible] = useState({});
   const [postComments, setPostComments] = useState({});
@@ -1341,8 +1514,25 @@ const ClassFeed = () => {
   const [assignmentSubmitting, setAssignmentSubmitting] = useState(false);
   const [assignmentSubmissions, setAssignmentSubmissions] = useState({});
   const [expandedAssignmentId, setExpandedAssignmentId] = useState(null);
+  const [postDraftSavedAt, setPostDraftSavedAt] = useState(null);
+  const [postDrafts, setPostDrafts] = useState([]);
+  const suppressPostDraftAutosaveRef = useRef(false);
+  const [userSettings, setUserSettings] = useState(() => getLocalUserSettings());
   const isStudent = (userInfo?.role || '').toString().toUpperCase() === 'STUDENT';
   const assignmentDraftUserId = userInfo?.userId || userInfo?.id;
+  const postDraftUserId = userInfo?.userId || userInfo?.id;
+  const rememberDraftsEnabled = userSettings.rememberDrafts !== false;
+  const editorFontSizePx = getEditorFontSizePx(userSettings.editorFontSize);
+  const tinyMceConfig = useMemo(() => {
+    const nextContentStyle = TINYMCE_CONFIG.content_style.replace(
+      /font-size:\s*\d+px;/,
+      `font-size: ${editorFontSizePx}px;`
+    );
+    return {
+      ...TINYMCE_CONFIG,
+      content_style: nextContentStyle,
+    };
+  }, [editorFontSizePx]);
 
   // Add this to your component's useEffect that runs on mount
   useEffect(() => {
@@ -1368,6 +1558,20 @@ const ClassFeed = () => {
           return;
         }
 
+        try {
+          const settingsResponse = await axios.get('/user/settings', {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          const normalizedSettings = normalizeUserSettings(settingsResponse.data, userInfo?.role);
+          saveLocalUserSettings(normalizedSettings, userInfo?.role);
+          applyGlobalUserSettings(normalizedSettings);
+          setUserSettings(normalizedSettings);
+        } catch (settingsError) {
+          const localSettings = getLocalUserSettings(userInfo?.role);
+          applyGlobalUserSettings(localSettings);
+          setUserSettings(localSettings);
+        }
+
         // Use the correct endpoint
         const classResponse = await axios.get(`/classes/${classId}/details`, {
           headers: { Authorization: `Bearer ${token}` }
@@ -1379,6 +1583,11 @@ const ClassFeed = () => {
           headers: { Authorization: `Bearer ${token}` }
         });
         setPosts(postsResponse.data);
+        const savedInfo = {};
+        (postsResponse.data || []).forEach((post) => {
+          savedInfo[post.id] = Boolean(post.is_saved);
+        });
+        setSavedPosts(savedInfo);
 
         setAssignmentsLoading(true);
         const assignmentsResponse = await axios.get(`/classes/${classId}/assignments`, {
@@ -1403,7 +1612,7 @@ const ClassFeed = () => {
   }, [classId, navigate]);
 
   useEffect(() => {
-    if (!isStudent || !activeAssignment || !assignmentDraftUserId || !assignmentDraftReady) {
+    if (!isStudent || !activeAssignment || !assignmentDraftUserId || !assignmentDraftReady || !rememberDraftsEnabled) {
       return;
     }
 
@@ -1452,7 +1661,44 @@ const ClassFeed = () => {
     }, 500);
 
     return () => clearTimeout(autosaveTimer);
-  }, [assignmentSubmission, activeAssignment, assignmentDraftReady, assignmentDraftUserId, classId, isStudent]);
+  }, [assignmentSubmission, activeAssignment, assignmentDraftReady, assignmentDraftUserId, classId, isStudent, rememberDraftsEnabled]);
+
+  useEffect(() => {
+    if (!showNewPostForm || !postDraftUserId || !rememberDraftsEnabled) {
+      return;
+    }
+
+    const autosaveTimer = setTimeout(() => {
+      if (suppressPostDraftAutosaveRef.current) {
+        return;
+      }
+
+      const savedAt = writePostDraft({
+        classId,
+        userId: postDraftUserId,
+        editingPostId,
+        payload: {
+          postTitle,
+          content,
+          postContent,
+        },
+      });
+      setPostDraftSavedAt(savedAt);
+      setPostDrafts(listPostDrafts({ classId, userId: postDraftUserId }));
+    }, 500);
+
+    return () => clearTimeout(autosaveTimer);
+  }, [showNewPostForm, postDraftUserId, rememberDraftsEnabled, classId, editingPostId, postTitle, content, postContent]);
+
+  useEffect(() => {
+    setPostDrafts(listPostDrafts({ classId, userId: postDraftUserId }));
+  }, [classId, postDraftUserId]);
+
+  useEffect(() => {
+    if (!showNewPostForm) {
+      suppressPostDraftAutosaveRef.current = false;
+    }
+  }, [showNewPostForm]);
 
   useEffect(() => {
     if (darkMode) {
@@ -1470,6 +1716,48 @@ const ClassFeed = () => {
       }, 0);
     }
   }, [postContent.codeSnippets]);
+
+  useEffect(() => {
+    const autoPlayEnabled = userSettings.autoPlayVideos === true;
+    const videos = document.querySelectorAll('.html-content video');
+    videos.forEach((video) => {
+      video.autoplay = autoPlayEnabled;
+      video.loop = autoPlayEnabled;
+      video.muted = autoPlayEnabled;
+      if (autoPlayEnabled) {
+        video.setAttribute('playsinline', 'true');
+      }
+    });
+  }, [posts, userSettings.autoPlayVideos]);
+
+  useEffect(() => {
+    if (!isStudent || !userSettings.emailNotifications || !userSettings.assignmentReminders) {
+      return;
+    }
+
+    const nowMs = Date.now();
+    const dueSoonWindowMs = 24 * 60 * 60 * 1000;
+    const studentId = userInfo?.userId || userInfo?.id;
+
+    assignments.forEach((assignment) => {
+      const dueMs = new Date(assignment.due_date).getTime();
+      const isDueSoon = dueMs > nowMs && dueMs - nowMs <= dueSoonWindowMs;
+      const hasSubmitted = Boolean(assignment.my_submission);
+      if (!isDueSoon || hasSubmitted) {
+        return;
+      }
+
+      const reminderKey = `assignment-reminder:${studentId}:${assignment.id}`;
+      if (localStorage.getItem(reminderKey)) {
+        return;
+      }
+
+      toast(`Reminder: ${assignment.title} is due within 24 hours.`, {
+        icon: '⏰',
+      });
+      localStorage.setItem(reminderKey, new Date().toISOString());
+    });
+  }, [assignments, isStudent, userInfo?.id, userInfo?.userId, userSettings.assignmentReminders, userSettings.emailNotifications]);
 
   useEffect(() => {
     const styleSheet = document.createElement("style");
@@ -1537,6 +1825,11 @@ const ClassFeed = () => {
         });
         
         setPosts(response.data);
+        const savedInfo = {};
+        (response.data || []).forEach((post) => {
+          savedInfo[post.id] = Boolean(post.is_saved);
+        });
+        setSavedPosts(savedInfo);
         
         // Fetch comment counts immediately after posts load
         const counts = {};
@@ -1632,7 +1925,9 @@ const ClassFeed = () => {
   const handleAssignmentSubmissionChange = (event) => {
     const nextContent = event.target.value;
     setAssignmentSubmission(nextContent);
-    persistAssignmentDraftLocally(nextContent);
+    if (rememberDraftsEnabled) {
+      persistAssignmentDraftLocally(nextContent);
+    }
   };
 
   const closeAssignmentModal = () => {
@@ -1646,11 +1941,11 @@ const ClassFeed = () => {
   };
 
   const openAssignmentModal = async (assignment) => {
-    const localDraft = readAssignmentDraft({
+    const localDraft = rememberDraftsEnabled ? readAssignmentDraft({
       classId,
       assignmentId: assignment.id,
       userId: assignmentDraftUserId,
-    });
+    }) : { hasDraft: false, content: '', savedAt: null };
 
     const fallbackContent = localDraft.hasDraft
       ? localDraft.content
@@ -1665,6 +1960,11 @@ const ClassFeed = () => {
 
     const token = localStorage.getItem('token');
     if (!token) {
+      setAssignmentDraftReady(true);
+      return;
+    }
+
+    if (!rememberDraftsEnabled) {
       setAssignmentDraftReady(true);
       return;
     }
@@ -1827,6 +2127,18 @@ const ClassFeed = () => {
     return true;
   });
 
+  const visiblePostDrafts = postDrafts.filter((draft) => {
+    const title = (draft.postTitle || '').toLowerCase();
+    const contentText = stripHtml(draft.content || '').toLowerCase();
+    const label = draft.editingPostId ? `edit post ${draft.editingPostId}` : 'new post draft';
+    return (
+      !normalizedQuery ||
+      title.includes(normalizedQuery) ||
+      contentText.includes(normalizedQuery) ||
+      label.includes(normalizedQuery)
+    );
+  });
+
   const openPost = (postId) => {
     navigate(`/class/${classId}/post/${postId}`, {
       state: {
@@ -1839,13 +2151,65 @@ const ClassFeed = () => {
     });
   };
 
+  const applyPostDraftToComposer = (draftPayload) => {
+    if (!draftPayload) {
+      return;
+    }
+
+    setPostTitle(draftPayload.postTitle || '');
+    setContent(draftPayload.content || '');
+    setPostContent(clonePostContent(draftPayload.postContent));
+  };
+
+  const refreshPostDrafts = () => {
+    setPostDrafts(
+      listPostDrafts({
+        classId,
+        userId: postDraftUserId,
+      })
+    );
+  };
+
+  const persistCurrentPostDraft = (savedAt = null, { silent = false } = {}) => {
+    if (!postDraftUserId) {
+      if (!silent) {
+        toast.error('Unable to save draft right now.');
+      }
+      return null;
+    }
+
+    const nextSavedAt = writePostDraft({
+      classId,
+      userId: postDraftUserId,
+      editingPostId,
+      payload: {
+        postTitle,
+        content,
+        postContent,
+      },
+      savedAt,
+    });
+
+    setPostDraftSavedAt(nextSavedAt);
+    refreshPostDrafts();
+    return nextSavedAt;
+  };
+
   const resetPostComposer = () => {
     setPostTitle('');
     setContent('');
     setPostContent(createEmptyPostContent());
+    setPostDraftSavedAt(null);
   };
 
-  const closePostComposer = () => {
+  const closePostComposer = ({ persistDraft = true } = {}) => {
+    if (!persistDraft) {
+      suppressPostDraftAutosaveRef.current = true;
+    }
+
+    if (showNewPostForm && rememberDraftsEnabled && persistDraft) {
+      persistCurrentPostDraft(null, { silent: true });
+    }
     resetPostComposer();
     setEditingPostId(null);
     setShowNewPostForm(false);
@@ -1855,6 +2219,33 @@ const ClassFeed = () => {
     resetPostComposer();
     setEditingPostId(null);
     setShowNewPostForm(true);
+  };
+
+  const resumePostDraft = (draft) => {
+    if (!draft) {
+      return;
+    }
+
+    resetPostComposer();
+    setEditingPostId(draft.editingPostId || null);
+    applyPostDraftToComposer({
+      postTitle: draft.postTitle,
+      content: draft.content,
+      postContent: draft.postContent,
+    });
+    setPostDraftSavedAt(draft.savedAt);
+    setShowNewPostForm(true);
+    toast.success('Draft loaded');
+  };
+
+  const deletePostDraftByScope = (scope) => {
+    clearPostDraft({
+      classId,
+      userId: postDraftUserId,
+      editingPostId: scope.startsWith('edit:') ? Number(scope.split(':')[1]) : null,
+    });
+    refreshPostDrafts();
+    toast.success('Draft deleted');
   };
 
   const handleSignOut = () => {
@@ -1882,6 +2273,18 @@ const ClassFeed = () => {
       setPostTitle(post.title || '');
       setContent(post.content || '');
       setEditingPostId(postId);
+
+      const draft = readPostDraft({
+        classId,
+        userId: postDraftUserId,
+        editingPostId: postId,
+      });
+      if (draft.hasDraft && draft.payload) {
+        applyPostDraftToComposer(draft.payload);
+        setPostDraftSavedAt(draft.savedAt);
+        toast.success('Loaded your saved edit draft');
+      }
+
       setShowNewPostForm(true);
       
     } catch (error) {
@@ -1947,6 +2350,13 @@ const ClassFeed = () => {
         setPosts((prevPosts) => prevPosts.map((post) => (
           post.id === editingPostId ? { ...post, ...response.data } : post
         )));
+
+        clearPostDraft({
+          classId,
+          userId: postDraftUserId,
+          editingPostId,
+        });
+        refreshPostDrafts();
         
         toast.success('Post updated successfully');
       } else {
@@ -1961,16 +2371,75 @@ const ClassFeed = () => {
         
         // Add the new post to the state
         setPosts((prevPosts) => [response.data, ...prevPosts]);
+
+        clearPostDraft({
+          classId,
+          userId: postDraftUserId,
+          editingPostId: null,
+        });
+        refreshPostDrafts();
         
         toast.success('Post created successfully');
       }
       
-      closePostComposer();
+      closePostComposer({ persistDraft: false });
     } catch (error) {
       console.error('Error saving post:', error);
       toast.error(editingPostId ? 'Failed to update post' : 'Failed to create post');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSavePostDraft = () => {
+    const savedAt = persistCurrentPostDraft();
+    if (savedAt) {
+      toast.success('Post draft saved');
+    } else {
+      toast.error('Nothing to save in draft yet');
+    }
+  };
+
+  const handleDiscardPostDraft = async () => {
+    if (!confirm('Discard this saved draft? This cannot be undone.')) {
+      return;
+    }
+
+    clearPostDraft({
+      classId,
+      userId: postDraftUserId,
+      editingPostId,
+    });
+    refreshPostDrafts();
+    setPostDraftSavedAt(null);
+
+    if (!editingPostId) {
+      resetPostComposer();
+      toast.success('Draft discarded');
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        resetPostComposer();
+        toast.success('Draft discarded');
+        return;
+      }
+
+      const response = await axios.get(`/classes/${classId}/posts/${editingPostId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      const post = response.data;
+      setPostTitle(post.title || '');
+      setContent(post.content || '');
+      setPostContent(createEmptyPostContent());
+      toast.success('Draft discarded and post reset');
+    } catch (error) {
+      console.error('Error restoring post after draft discard:', error);
+      resetPostComposer();
+      toast.success('Draft discarded');
     }
   };
 
@@ -2043,6 +2512,31 @@ const ClassFeed = () => {
     } finally {
       // End loading
       setLikesLoading(prev => ({ ...prev, [postId]: false }));
+    }
+  };
+
+  const handleToggleSavePost = async (postId) => {
+    if (saveLoading[postId]) return;
+
+    setSaveLoading((prev) => ({ ...prev, [postId]: true }));
+    const previous = Boolean(savedPosts[postId]);
+    setSavedPosts((prev) => ({ ...prev, [postId]: !previous }));
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await axios.post(
+        `/classes/${classId}/posts/${postId}/save`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      setSavedPosts((prev) => ({ ...prev, [postId]: Boolean(response.data?.is_saved) }));
+    } catch (error) {
+      console.error('Error saving post:', error);
+      setSavedPosts((prev) => ({ ...prev, [postId]: previous }));
+      toast.error('Failed to update saved post');
+    } finally {
+      setSaveLoading((prev) => ({ ...prev, [postId]: false }));
     }
   };
 
@@ -2275,18 +2769,19 @@ const ClassFeed = () => {
                   const draft = assignment.my_draft;
                   const dueDate = new Date(assignment.due_date);
                   const isOverdue = new Date() > dueDate && !submission;
+                  const isDueSoon = !isOverdue && !submission && (dueDate.getTime() - Date.now()) <= (24 * 60 * 60 * 1000);
                   const isClosed = new Date() > dueDate && !assignment.allow_late && !submission;
                   const isPublicSubmission = assignment.visibility === 'class';
 
                   return (
                     <div
                       key={assignment.id}
-                      className={`rounded-xl border p-4 ${darkMode ? 'border-gray-700 bg-gray-900/40' : 'border-gray-200 bg-white'}`}
+                      className="rounded-xl border p-4 border-gray-200 bg-white"
                     >
                       <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                         <div>
                           <h3 className="text-lg font-semibold">{assignment.title}</h3>
-                          <p className="text-sm text-gray-500 dark:text-gray-400">
+                          <p className="text-sm text-gray-500">
                             Due: {dueDate.toLocaleString()}
                           </p>
                         </div>
@@ -2310,13 +2805,18 @@ const ClassFeed = () => {
                               Draft Saved
                             </span>
                           )}
+                          {userSettings.assignmentReminders && isDueSoon && (
+                            <span className="px-3 py-1 rounded-full text-xs font-semibold bg-orange-500/10 text-orange-500">
+                              Due Soon
+                            </span>
+                          )}
                           {isStudent && (
                             <button
                               onClick={() => openAssignmentModal(assignment)}
                               disabled={isClosed}
                               className={`px-4 py-2 rounded-lg text-sm font-medium ${
                                 isClosed
-                                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed dark:bg-gray-700 dark:text-gray-400'
+                                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
                                   : submission
                                   ? 'bg-emerald-500/10 text-emerald-500'
                                   : isOverdue
@@ -2330,16 +2830,14 @@ const ClassFeed = () => {
                           {isPublicSubmission && (
                             <button
                               onClick={() => navigate(`/class/${classId}/assignment/${assignment.id}/submissions`)}
-                              className={`px-4 py-2 rounded-lg text-sm font-medium ${
-                                darkMode ? 'bg-gray-700 text-gray-200' : 'bg-gray-100 text-gray-700'
-                              }`}
+                              className="px-4 py-2 rounded-lg text-sm font-medium bg-gray-100 text-gray-700"
                             >
                               Open Submissions
                             </button>
                           )}
                         </div>
                       </div>
-                      <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                      <p className="mt-2 text-sm text-gray-600">
                         {assignment.description || 'No description provided.'}
                       </p>
                       {!assignment.allow_late && (
@@ -2348,7 +2846,7 @@ const ClassFeed = () => {
                         </div>
                       )}
                       {submission && (
-                        <div className="mt-3 text-xs text-gray-500 dark:text-gray-400">
+                        <div className="mt-3 text-xs text-gray-500">
                           Submitted {new Date(submission.submitted_at).toLocaleString()} •{' '}
                           <span className={submission.is_late ? 'text-rose-500' : 'text-emerald-500'}>
                             {submission.is_late ? 'Late' : 'On time'}
@@ -2362,7 +2860,70 @@ const ClassFeed = () => {
               </div>
             </div>
 
-          <div className="mb-4 text-sm text-gray-500 dark:text-gray-400">
+          {visiblePostDrafts.length > 0 && (
+            <div className="mb-10 rounded-2xl p-6 shadow-lg bg-white text-gray-900 border border-gray-200">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-xl font-semibold">Your Drafts</h2>
+                  <p className="text-sm text-gray-500">
+                    Only visible to you. Click Resume to continue writing.
+                  </p>
+                </div>
+                <span className="text-xs font-semibold px-3 py-1 rounded-full bg-amber-500/10 text-amber-500">
+                  {visiblePostDrafts.length} Draft{visiblePostDrafts.length === 1 ? '' : 's'}
+                </span>
+              </div>
+
+              <div className="mt-4 space-y-4">
+                {visiblePostDrafts.map((draft) => {
+                  const previewText = stripHtml(draft.content || '').slice(0, 220);
+                  return (
+                    <div
+                      key={draft.key}
+                      className="rounded-xl border p-4 border-gray-200 bg-gray-50"
+                    >
+                      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h3 className="text-lg font-semibold">
+                              {draft.postTitle || (draft.editingPostId ? `Draft for Post #${draft.editingPostId}` : 'Untitled Draft')}
+                            </h3>
+                            <span className="text-xs font-semibold px-2 py-1 rounded-full bg-amber-500/10 text-amber-500">
+                              Draft
+                            </span>
+                          </div>
+                          <p className="mt-2 text-sm text-gray-700">
+                            {previewText || 'No body content yet.'}
+                          </p>
+                          <p className="mt-2 text-xs text-gray-600">
+                            {draft.savedAt
+                              ? `Saved ${new Date(draft.savedAt).toLocaleString()}`
+                              : 'Saved recently'}
+                          </p>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => resumePostDraft(draft)}
+                            className="px-4 py-2 rounded-lg text-sm font-medium bg-blue-500/10 text-blue-500 hover:bg-blue-500/20"
+                          >
+                            Resume
+                          </button>
+                          <button
+                            onClick={() => deletePostDraftByScope(draft.scope)}
+                            className="px-4 py-2 rounded-lg text-sm font-medium bg-rose-500/10 text-rose-500 hover:bg-rose-500/20"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <div className="mb-4 text-sm text-gray-600">
             Showing {displayedPosts.length} of {posts.length} posts
             {searchQuery ? ` for "${searchQuery}"` : ''}
           </div>
@@ -2370,7 +2931,7 @@ const ClassFeed = () => {
           {/* Posts Grid */}
           <div className="space-y-8">
             {displayedPosts.length === 0 ? (
-              <div className={`rounded-xl p-8 text-center ${darkMode ? 'bg-gray-800 text-gray-300' : 'bg-white text-gray-600'}`}>
+              <div className="rounded-xl p-8 text-center bg-white text-gray-700 border border-gray-200">
                 No posts match your current search/filter.
               </div>
             ) : displayedPosts.map((post) => (
@@ -2380,20 +2941,24 @@ const ClassFeed = () => {
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.3 }}
-                className={`mb-6 p-6 rounded-xl shadow-sm ${
-                  darkMode ? 'bg-gray-800' : 'bg-white'
-                } relative`}
+                className="mb-6 p-6 rounded-xl shadow-sm bg-white text-gray-900 border border-gray-200 relative"
               >
                 {/* Post Header and Details */}
                 <div className="flex justify-between items-start mb-4">
                   <div className="flex items-center">
-                    <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                      darkMode ? 'bg-gray-700' : 'bg-gray-200'
-                    }`}>
-                      {post.author?.[0] || '?'}
+                    <div className="w-10 h-10 rounded-full flex items-center justify-center bg-gray-200">
+                      {post.author_profile_image ? (
+                        <img
+                          src={mediaPath(post.author_profile_image)}
+                          alt={post.author || 'Author'}
+                          className="w-full h-full rounded-full object-cover"
+                        />
+                      ) : (
+                        post.author?.[0] || '?'
+                      )}
                       </div>
                     <div className="ml-3">
-                      <h3 className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                      <h3 className="font-medium text-gray-900">
                         {post.author || 'Unknown Author'}
                         </h3>
                       </div>
@@ -2406,9 +2971,9 @@ const ClassFeed = () => {
                         e.stopPropagation();
                         setMenuOpen(menuOpen === post.id ? null : post.id);
                       }}
-                      className="p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                      className="p-1 rounded-full hover:bg-gray-200 transition-colors"
                     >
-                      <svg className="w-5 h-5 text-gray-500 dark:text-gray-400" fill="currentColor" viewBox="0 0 20 20">
+                      <svg className="w-5 h-5 text-gray-500" fill="currentColor" viewBox="0 0 20 20">
                         <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" />
                           </svg>
                         </button>
@@ -2416,9 +2981,7 @@ const ClassFeed = () => {
                     {/* Dropdown menu */}
                     {menuOpen === post.id && (
                           <div 
-                        className={`absolute right-0 mt-1 w-48 rounded-md shadow-lg z-10 ${
-                          darkMode ? 'bg-gray-800 border border-gray-700' : 'bg-white border border-gray-200'
-                        }`}
+                        className="absolute right-0 mt-1 w-48 rounded-md shadow-lg z-10 bg-white border border-gray-200"
                           >
                         <div className="py-1" role="menu" aria-orientation="vertical">
                               <button
@@ -2427,9 +2990,7 @@ const ClassFeed = () => {
                               handleEditPost(post.id);
                               setMenuOpen(null);
                                 }}
-                            className={`w-full text-left px-4 py-2 text-sm ${
-                              darkMode ? 'text-gray-300 hover:bg-gray-700' : 'text-gray-700 hover:bg-gray-100'
-                            }`}
+                            className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
                             role="menuitem"
                               >
                                 Edit Post
@@ -2440,9 +3001,7 @@ const ClassFeed = () => {
                                   handleDeletePost(post.id);
                               setMenuOpen(null);
                                 }}
-                            className={`w-full text-left px-4 py-2 text-sm ${
-                              darkMode ? 'text-red-400 hover:bg-gray-700' : 'text-red-600 hover:bg-gray-100'
-                            }`}
+                            className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-gray-100"
                             role="menuitem"
                               >
                                 Delete Post
@@ -2455,22 +3014,21 @@ const ClassFeed = () => {
 
                 {/* Post Title - without label */}
                 <div 
-                  className={`mb-4 px-4 py-3 rounded-lg border cursor-pointer ${darkMode ? 'bg-gray-750 border-gray-600' : 'bg-blue-50 border-blue-100'}`}
+                  className="mb-4 px-4 py-3 rounded-lg border cursor-pointer bg-blue-50 border-blue-100"
                   onClick={() => openPost(post.id)}
                 >
-                  <h4 className={`text-xl font-bold ${darkMode ? 'text-white' : 'text-gray-800'}`}>
+                  <h4 className="text-xl font-bold text-gray-800">
                     {post.title}
                   </h4>
                 </div>
               
                 {/* Post Content */}
                 <div 
-                  className="html-content mb-4 cursor-pointer prose dark:prose-invert max-w-none"
+                  className="html-content mb-4 cursor-pointer max-w-none text-gray-800 line-clamp-3"
                   onClick={() => openPost(post.id)}
-                  dangerouslySetInnerHTML={{ 
-                    __html: truncateHTML(processHTMLWithDOM(post.content), 200) 
-                  }}
-                />
+                >
+                  {ReactHtmlParser(truncateHTML(post.content, 150))}
+                </div>
                 
                 {/* Comments Section */}
                 <AnimatePresence>
@@ -2480,14 +3038,22 @@ const ClassFeed = () => {
                       animate={{ height: 'auto', opacity: 1 }}
                       exit={{ height: 0, opacity: 0 }}
                       transition={{ duration: 0.3 }}
-                      className="mt-4 pt-4 border-t dark:border-gray-700 overflow-hidden"
+                      className="mt-4 pt-4 border-t border-gray-200 overflow-hidden"
                       onClick={(e) => e.stopPropagation()}
                     >
                       {/* New Comment Form */}
                       <form onSubmit={(e) => handleSubmitComment(post.id, e)} className="mb-4">
                         <div className="flex items-start gap-2">
-                          <div className="w-8 h-8 rounded-full bg-gray-300 dark:bg-gray-700 flex items-center justify-center flex-shrink-0 text-sm">
-                            {userInfo?.first_name?.[0] || '?'}
+                          <div className="w-8 h-8 rounded-full bg-gray-300 flex items-center justify-center flex-shrink-0 text-sm">
+                            {userInfo?.profile_image ? (
+                              <img
+                                src={mediaPath(userInfo.profile_image)}
+                                alt={userInfo?.username || 'User'}
+                                className="w-full h-full rounded-full object-cover"
+                              />
+                            ) : (
+                              userInfo?.first_name?.[0] || userInfo?.firstName?.[0] || '?'
+                            )}
                     </div>
                           <div className="flex-1">
                             <textarea
@@ -2497,7 +3063,7 @@ const ClassFeed = () => {
                                 [post.id]: e.target.value
                               }))}
                               placeholder="Add a comment..."
-                              className="w-full p-2 text-sm bg-gray-50 dark:bg-gray-800 border dark:border-gray-700 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              className="w-full p-2 text-sm bg-gray-50 border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
                               rows={1}
                             />
                             <div className="flex justify-end mt-1">
@@ -2541,14 +3107,14 @@ const ClassFeed = () => {
                           {commentCounts[post.id] > (postComments[post.id]?.length || 0) && (
                             <div 
                               onClick={() => openPost(post.id)}
-                              className="text-center py-2 text-sm text-blue-500 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
+                              className="text-center py-2 text-sm text-blue-500 hover:text-blue-700 cursor-pointer"
                             >
                               View all {commentCounts[post.id]} comments
                             </div>
                           )}
                         </div>
                       ) : (
-                        <div className="py-4 text-center text-gray-500 dark:text-gray-400 text-sm">
+                        <div className="py-4 text-center text-gray-700 text-sm">
                           No comments yet. Be the first to comment!
                         </div>
                       )}
@@ -2557,7 +3123,7 @@ const ClassFeed = () => {
                 </AnimatePresence>
                 
                 {/* Post Actions/Stats */}
-                <div className="flex items-center justify-between mt-4 pt-4 border-t dark:border-gray-700">
+                <div className="flex items-center justify-between mt-4 pt-4 border-t border-gray-200">
                   <div className="flex items-center space-x-6">
                     {/* Like button with animations */}
                     <button 
@@ -2565,7 +3131,7 @@ const ClassFeed = () => {
                         e.stopPropagation();
                         handleLikePost(post.id);
                       }}
-                      className="flex items-center space-x-1 text-gray-500 hover:text-red-500 dark:text-gray-400 dark:hover:text-red-400 transition-colors relative"
+                      className="flex items-center space-x-1 text-gray-700 hover:text-red-500 transition-colors relative"
                       disabled={likesLoading[post.id]}
                     >
                       <div className="relative">
@@ -2600,7 +3166,7 @@ const ClassFeed = () => {
                         e.stopPropagation();
                         toggleComments(post.id);
                       }}
-                      className="flex items-center space-x-1 text-gray-500 hover:text-blue-500 dark:text-gray-400 dark:hover:text-blue-400 transition-colors"
+                      className="flex items-center space-x-1 text-gray-700 hover:text-blue-500 transition-colors"
                     >
                       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
@@ -2608,10 +3174,24 @@ const ClassFeed = () => {
                       {/* Ensure we're checking if commentCounts[post.id] exists */}
                       <span>Comment{commentCounts[post.id] ? ` (${commentCounts[post.id]})` : ''}</span>
                     </button>
+
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleToggleSavePost(post.id);
+                      }}
+                      className={`flex items-center space-x-1 transition-colors ${savedPosts[post.id] ? 'text-blue-600' : 'text-gray-700 hover:text-blue-500'}`}
+                      disabled={saveLoading[post.id]}
+                    >
+                      <svg className="w-5 h-5" fill={savedPosts[post.id] ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v17l-7-4-7 4V5z" />
+                      </svg>
+                      <span>{savedPosts[post.id] ? 'Saved' : 'Save'}</span>
+                    </button>
                   </div>
                   
                   {/* Add the timestamp here */}
-                  <span className="text-sm text-gray-500 dark:text-gray-400" data-timestamp={post.created_at}>
+                  <span className="text-sm text-gray-600" data-timestamp={post.created_at}>
                     {formatRelativeTime(post.created_at)}
                   </span>
                 </div>
@@ -2634,31 +3214,29 @@ const ClassFeed = () => {
                 initial={{ scale: 0.9, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1 }}
                 exit={{ scale: 0.9, opacity: 0 }}
-                className={`${
-                  darkMode ? 'bg-gray-800' : 'bg-white'
-                } rounded-lg p-6 max-w-5xl w-full shadow-xl`}
+                className="bg-white rounded-lg p-6 max-w-5xl w-full shadow-xl text-gray-900"
               >
                 <div className="mb-4">
                   <h3 className="text-xl font-semibold">{activeAssignment.title}</h3>
-                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                  <p className="text-sm text-gray-500">
                     Due: {new Date(activeAssignment.due_date).toLocaleString()}
                   </p>
                 </div>
                 <div className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-                  <div className={`rounded-xl border p-4 ${darkMode ? 'border-gray-700 bg-gray-900/40' : 'border-gray-200 bg-gray-50'}`}>
-                    <div className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                  <div className="rounded-xl border p-4 border-gray-200 bg-gray-50">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
                       Assignment Prompt
                     </div>
                     <div className="mt-3 space-y-3">
                       <div>
-                        <div className="text-sm font-medium text-gray-500 dark:text-gray-400">Question</div>
-                        <div className="mt-1 text-base font-semibold text-gray-900 dark:text-gray-100">
+                        <div className="text-sm font-medium text-gray-500">Question</div>
+                        <div className="mt-1 text-base font-semibold text-gray-900">
                           {activeAssignment.title}
                         </div>
                       </div>
                       <div>
-                        <div className="text-sm font-medium text-gray-500 dark:text-gray-400">Details</div>
-                        <div className="mt-1 whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300">
+                        <div className="text-sm font-medium text-gray-500">Details</div>
+                        <div className="mt-1 whitespace-pre-wrap text-sm text-gray-700">
                           {activeAssignment.description || 'No additional instructions provided.'}
                         </div>
                       </div>
@@ -2666,9 +3244,11 @@ const ClassFeed = () => {
                   </div>
                   <div>
                     <div className="mb-2 flex items-center justify-between text-sm">
-                      <span className="font-medium text-gray-700 dark:text-gray-200">Your Response</span>
-                      <span className="text-xs text-gray-500 dark:text-gray-400">
-                        {!assignmentDraftReady
+                      <span className="font-medium text-gray-700">Your Response</span>
+                      <span className="text-xs text-gray-500">
+                        {!rememberDraftsEnabled
+                          ? 'Draft autosave is turned off in Settings'
+                          : !assignmentDraftReady
                           ? 'Loading saved draft...'
                           : assignmentDraftSavedAt
                           ? `Autosaved ${new Date(assignmentDraftSavedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
@@ -2680,18 +3260,15 @@ const ClassFeed = () => {
                       onChange={handleAssignmentSubmissionChange}
                       rows={14}
                       placeholder="Write your submission..."
-                      className={`w-full min-h-[320px] p-3 rounded-lg border ${
-                        darkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300'
-                      }`}
+                      className="w-full min-h-[320px] p-3 rounded-lg border bg-white border-gray-300 text-gray-900"
+                      style={{ fontSize: `${editorFontSizePx}px` }}
                     />
                   </div>
                 </div>
                 <div className="mt-4 flex justify-end gap-3">
                   <button
                     onClick={closeAssignmentModal}
-                    className={`px-4 py-2 rounded-lg ${
-                      darkMode ? 'bg-gray-700 text-gray-200' : 'bg-gray-100 text-gray-700'
-                    }`}
+                    className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700"
                   >
                     Cancel
                   </button>
@@ -2721,35 +3298,41 @@ const ClassFeed = () => {
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
-              className={`${
-                darkMode ? 'bg-gray-800' : 'bg-white'
-              } rounded-lg p-6 max-w-2xl w-full shadow-xl max-h-[90vh] overflow-y-auto`}
+              className="bg-white rounded-lg p-6 max-w-4xl w-full shadow-xl max-h-[90vh] overflow-y-auto text-gray-900"
             >
               <div className="mb-4 flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-gray-300 flex items-center justify-center">
-                  <svg
-                    className="w-6 h-6 text-gray-600"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth="2"
-                      d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
+                  {userInfo?.profile_image ? (
+                    <img
+                      src={mediaPath(userInfo.profile_image)}
+                      alt={userInfo?.username || 'User'}
+                      className="w-full h-full rounded-full object-cover"
                     />
-                  </svg>
+                  ) : (
+                    <svg
+                      className="w-6 h-6 text-gray-600"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth="2"
+                        d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
+                      />
+                    </svg>
+                  )}
                 </div>
-                <span className="text-sm text-gray-600 dark:text-gray-300">
+                <span className="text-sm text-gray-600">
                   Posting as {userInfo?.firstName || userInfo?.first_name || userInfo?.username || 'Current user'}
                 </span>
               </div>
 
               <form onSubmit={handleSubmit} className="space-y-4">
                 {/* Title Input - professional styling */}
-                <div className={`mb-5 p-4 rounded-lg border ${darkMode ? 'bg-gray-750 border-gray-600' : 'bg-blue-50 border-blue-100'}`}>
-                  <label htmlFor="post-title" className={`block text-base font-bold ${darkMode ? 'text-white' : 'text-gray-800'} mb-2`}>
+                <div className="mb-5 p-4 rounded-lg border bg-blue-50 border-blue-100">
+                  <label htmlFor="post-title" className="block text-base font-bold text-gray-800 mb-2">
                     Post Title (Required)
                   </label>
                 <input
@@ -2757,11 +3340,7 @@ const ClassFeed = () => {
                     id="post-title"
                     value={postTitle}
                     onChange={(e) => setPostTitle(e.target.value)}
-                    className={`w-full p-3 rounded-lg border text-lg ${
-                    darkMode 
-                        ? 'bg-gray-800 border-gray-600 text-white' 
-                        : 'bg-white border-blue-200 text-gray-800'
-                    }`}
+                    className="w-full p-3 rounded-lg border text-lg bg-white border-blue-200 text-gray-800"
                     placeholder="Enter a descriptive title for your post"
                   required
                 />
@@ -2774,7 +3353,7 @@ const ClassFeed = () => {
                 <div className="relative">
                   <Editor
                     apiKey="edr7zffd9q7v6okan1ka9dbc23ugp710ycjhcfroxd9undjo"
-                    init={TINYMCE_CONFIG}
+                    init={tinyMceConfig}
                     value={content}
                     onEditorChange={(content) => {
                       setContent(content);
@@ -2790,14 +3369,10 @@ const ClassFeed = () => {
                   
                   {/* Code Snippets Display */}
                   {postContent.codeSnippets.map((snippet, index) => (
-                    <div key={snippet.id} className="mt-4 rounded-lg overflow-hidden border dark:border-gray-600">
-                      <div className={`flex items-center justify-between p-2 ${
-                        darkMode ? 'bg-gray-700' : 'bg-gray-100'
-                      }`}>
+                    <div key={snippet.id} className="mt-4 rounded-lg overflow-hidden border border-gray-300">
+                      <div className="flex items-center justify-between p-2 bg-gray-100">
                         <div className="flex items-center gap-2">
-                          <span className={`text-sm font-mono ${
-                            darkMode ? 'text-gray-300' : 'text-gray-600'
-                          }`}>
+                          <span className="text-sm font-mono text-gray-600">
                             {snippet.language}
                           </span>
                         </div>
@@ -2813,9 +3388,7 @@ const ClassFeed = () => {
                           ×
                         </button>
                       </div>
-                      <div className={`p-4 font-mono text-sm ${
-                        darkMode ? 'bg-gray-800' : 'bg-gray-50'
-                      }`}>
+                      <div className="p-4 font-mono text-sm bg-gray-50">
                         <pre className="max-h-[250px] overflow-y-auto">
                           <code className={`language-${snippet.language || 'javascript'}`}>
                             {snippet.code.trim()}
@@ -2830,9 +3403,7 @@ const ClassFeed = () => {
                 {postContent.expandableLists.map(list => (
                   <div key={list.id} className="mt-4 border rounded-lg overflow-hidden">
                     <div 
-                      className={`p-4 cursor-pointer flex items-center gap-2 ${
-                        darkMode ? 'bg-gray-700' : 'bg-gray-100'
-                      }`}
+                      className="p-4 cursor-pointer flex items-center gap-2 bg-gray-100"
                       onClick={() => updateExpandableList(list.id, 'isCollapsed', !list.isCollapsed)}
                     >
                       <span className="transform transition-transform duration-200" style={{
@@ -2844,9 +3415,7 @@ const ClassFeed = () => {
                         type="text"
                         value={list.title}
                         onChange={(e) => updateExpandableList(list.id, 'title', e.target.value)}
-                        className={`flex-1 bg-transparent border-none focus:ring-0 ${
-                          darkMode ? 'text-white' : 'text-gray-900'
-                        }`}
+                        className="flex-1 bg-transparent border-none focus:ring-0 text-gray-900"
                         placeholder="Write a title"
                         onClick={e => e.stopPropagation()}
                       />
@@ -2868,11 +3437,7 @@ const ClassFeed = () => {
                         <textarea
                           value={list.content}
                           onChange={(e) => updateExpandableList(list.id, 'content', e.target.value)}
-                          className={`w-full p-2 rounded border ${
-                            darkMode 
-                              ? 'bg-gray-700 border-gray-600 text-white' 
-                              : 'bg-white border-gray-300'
-                          }`}
+                          className="w-full p-2 rounded border bg-white border-gray-300 text-gray-900"
                           placeholder="Add content to expand"
                           rows="3"
                         />
@@ -2882,11 +3447,37 @@ const ClassFeed = () => {
                 ))}
 
                 {/* Action Buttons */}
-                <div className="flex justify-end gap-4">
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-xs text-gray-500">
+                    {!rememberDraftsEnabled
+                      ? 'Draft autosave is turned off in Settings'
+                      : postDraftSavedAt
+                      ? `Autosaved ${new Date(postDraftSavedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+                      : 'Draft autosaves while you type'}
+                  </span>
+                  <div className="flex gap-4">
+                    <motion.button
+                      type="button"
+                      onClick={handleSavePostDraft}
+                      className="px-6 py-2 rounded-lg bg-amber-500 text-white hover:bg-amber-400"
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                    >
+                      Save Draft
+                    </motion.button>
+                    <motion.button
+                      type="button"
+                      onClick={handleDiscardPostDraft}
+                      className="px-6 py-2 rounded-lg bg-rose-600 text-white hover:bg-rose-500"
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                    >
+                      Discard Draft
+                    </motion.button>
                   <motion.button
                     type="button"
                     onClick={closePostComposer}
-                    className="px-6 py-2 rounded-lg bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600"
+                    className="px-6 py-2 rounded-lg bg-gray-200 hover:bg-gray-300"
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
                   >
@@ -2894,14 +3485,13 @@ const ClassFeed = () => {
                   </motion.button>
                   <motion.button
                     type="submit"
-                    className={`px-6 py-2 rounded-lg text-white ${
-                      darkMode ? 'bg-teal-600 hover:bg-teal-500' : 'bg-blue-600 hover:bg-blue-700'
-                    }`}
+                    className="px-6 py-2 rounded-lg text-white bg-blue-600 hover:bg-blue-700"
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
                   >
                     {editingPostId ? 'Update Post' : 'Publish'}
                   </motion.button>
+                  </div>
                 </div>
               </form>
             </motion.div>

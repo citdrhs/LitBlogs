@@ -19,7 +19,18 @@ import toast from 'react-hot-toast';
 import CommentThread from './components/CommentThread';
 import { formatRelativeTime, setupTimeUpdater } from './utils/timeUtils';
 import { mediaPath } from './utils/urlUtils';
+import { shouldAutoPlayVideos } from './utils/userSettings';
 import Footer from './components/Footer';
+
+const applyVideoPlaybackPreference = (video) => {
+  const autoPlayEnabled = shouldAutoPlayVideos();
+  video.autoplay = autoPlayEnabled;
+  video.loop = autoPlayEnabled;
+  video.muted = autoPlayEnabled;
+  if (autoPlayEnabled) {
+    video.setAttribute('playsinline', 'true');
+  }
+};
 
 // Function to determine file type from URL
 const getFileTypeFromUrl = (url) => {
@@ -139,6 +150,8 @@ const processHTMLWithDOM = (html) => {
   // Process videos directly
   const videos = tempContainer.querySelectorAll('video');
   videos.forEach(video => {
+    applyVideoPlaybackPreference(video);
+
     // Add styling directly to the video element
     video.style.maxWidth = '100%';
     video.style.borderRadius = '4px';
@@ -201,7 +214,7 @@ const processHTMLWithDOM = (html) => {
   const elementsWithColor = tempContainer.querySelectorAll('[style*="color"]');
   elementsWithColor.forEach(el => {
     const style = el.getAttribute('style');
-    const colorMatch = style.match(/color:\s*([^;]+)/i);
+    const colorMatch = style.match(/(?:^|;)\s*color\s*:\s*([^;]+)/i);
     if (colorMatch && colorMatch[1]) {
       const color = colorMatch[1].trim();
       el.style.setProperty('color', color, 'important');
@@ -212,12 +225,15 @@ const processHTMLWithDOM = (html) => {
   const elementsWithBg = tempContainer.querySelectorAll('[style*="background-color"]');
   elementsWithBg.forEach(el => {
     const style = el.getAttribute('style');
-    const bgMatch = style.match(/background-color:\s*([^;]+)/i);
+    const bgMatch = style.match(/(?:^|;)\s*background-color\s*:\s*([^;]+)/i);
+    const explicitColorMatch = style.match(/(?:^|;)\s*color\s*:\s*([^;]+)/i);
     if (bgMatch && bgMatch[1]) {
       const bgColor = bgMatch[1].trim();
       el.style.setProperty('background-color', bgColor, 'important');
-      // Make sure text remains visible with highlighting
-      el.style.setProperty('color', 'inherit', 'important');
+      // Only fallback color if no explicit text color is present.
+      if (!explicitColorMatch || !explicitColorMatch[1]) {
+        el.style.setProperty('color', 'inherit', 'important');
+      }
     }
   });
   
@@ -407,8 +423,8 @@ const processHTMLWithDOM = (html) => {
         // Set the href to directly download the file
         const fullUrl = mediaPath(fileUrl);
         downloadBtn.href = fullUrl;
-        downloadBtn.download = fileName; // This tells the browser to download instead of navigate
-        downloadBtn.target = '_blank'; // Open in new tab as fallback
+        downloadBtn.target = '_blank';
+        downloadBtn.rel = 'noopener noreferrer';
         
         actionsDiv.appendChild(downloadBtn);
       }
@@ -485,17 +501,6 @@ const processHTMLWithDOM = (html) => {
     }
   });
   
-  // Add this debugging code to the processHTMLWithDOM function
-  console.log("Original HTML:", html);
-  console.log("Processed HTML:", tempContainer.innerHTML);
-
-  // Also add specific debugging for videos
-  const allVideos = tempContainer.querySelectorAll('video');
-  console.log("Found videos:", allVideos.length);
-  allVideos.forEach((video, index) => {
-    console.log(`Video ${index} HTML:`, video.outerHTML);
-  });
-  
   return tempContainer.innerHTML;
 };
 
@@ -520,6 +525,8 @@ const PostView = () => {
   const [liked, setLiked] = useState(false);
   const [likeCount, setLikeCount] = useState(0);
   const [likeLoading, setLikeLoading] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saveLoading, setSaveLoading] = useState(false);
   const [showLikeEffect, setShowLikeEffect] = useState(false);
   const [comments, setComments] = useState([]);
   const [totalComments, setTotalComments] = useState(0);
@@ -530,12 +537,30 @@ const PostView = () => {
   const [commentSubmitting, setCommentSubmitting] = useState(false);
   const contentRef = useRef(null);
 
-  const toggleDarkMode = () => {
-    setDarkMode((prevDarkMode) => {
-      const newDarkMode = !prevDarkMode;
-      localStorage.setItem('darkMode', JSON.stringify(newDarkMode));
-      return newDarkMode;
-    });
+  const getInitialFromUser = (value) => {
+    if (!value) return '?';
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      return trimmed ? trimmed[0].toUpperCase() : '?';
+    }
+
+    const firstName = value.first_name || value.firstName || '';
+    const lastName = value.last_name || value.lastName || '';
+    const username = value.username || '';
+    const email = value.email || '';
+    const source = firstName || lastName || username || email;
+    return source ? source[0].toUpperCase() : '?';
+  };
+
+  const getDisplayNameFromUser = (value) => {
+    if (!value) return 'Unknown Author';
+    if (typeof value === 'string') return value;
+
+    const firstName = value.first_name || value.firstName || '';
+    const lastName = value.last_name || value.lastName || '';
+    const fullName = `${firstName} ${lastName}`.trim();
+    return fullName || value.username || value.email || 'Unknown Author';
   };
 
   useEffect(() => {
@@ -577,13 +602,6 @@ const PostView = () => {
           headers: { Authorization: `Bearer ${token}` }
         });
         
-        // Get user info from localStorage
-        const userInfoStr = localStorage.getItem('userInfo');
-        if (userInfoStr) {
-          const parsedUserInfo = JSON.parse(userInfoStr);
-          setUserInfo(parsedUserInfo);
-        }
-        
         // Process the post data
         const postData = response.data;
         
@@ -593,6 +611,7 @@ const PostView = () => {
         // Set like status
         setLiked(postData.user_liked || false);
         setLikeCount(postData.likes || 0);
+        setSaved(Boolean(postData.is_saved));
         
         // Load comments
         fetchComments();
@@ -795,6 +814,30 @@ const PostView = () => {
     }
   };
 
+  const handleToggleSave = async () => {
+    if (saveLoading || !post?.id) return;
+
+    setSaveLoading(true);
+    const previous = saved;
+    setSaved(!previous);
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await axios.post(
+        `/classes/${classId}/posts/${post.id}/save`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setSaved(Boolean(response.data?.is_saved));
+    } catch (error) {
+      console.error('Error saving post:', error);
+      setSaved(previous);
+      toast.error('Failed to update saved post');
+    } finally {
+      setSaveLoading(false);
+    }
+  };
+
   const handleLoadMoreComments = () => {
     fetchComments(comments.length);
   };
@@ -839,26 +882,15 @@ const PostView = () => {
       font-family: inherit;
     }
 
-    /* Remove Tailwind prose color overrides */
-    .prose :where(p, span, div, strong, em, b, i, u, strike):not(:where([class~="not-prose"] *)) {
-      color: unset !important;
-    }
-
-    /* Preserve inline styles */
-    .prose [style] {
-      color: unset !important;
-    }
-
-    .prose span[style*="color:"] {
-      color: var(--mce-color) !important;
-    }
-
-    .prose span[style*="background-color:"] {
-      background-color: var(--mce-bg) !important;
-    }
-
-    .prose span[style*="font-size:"] {
-      font-size: var(--mce-size) !important;
+    /* Let TinyMCE inline styles render naturally in full post view */
+    .prose [style*="color:"],
+    .prose [style*="background-color:"],
+    .prose [style*="font-size:"],
+    .prose [style*="font-family:"],
+    .prose [style*="text-decoration:"],
+    .prose [style*="font-weight:"],
+    .prose [style*="font-style:"] {
+      all: revert;
     }
 
     /* Basic formatting */
@@ -1074,6 +1106,7 @@ const PostView = () => {
           const video = document.createElement('video');
           video.src = url;
           video.controls = true;
+          applyVideoPlaybackPreference(video);
           video.style.maxWidth = '100%';
           content.appendChild(video);
         } else if (type === 'pdf') {
@@ -1120,6 +1153,8 @@ const PostView = () => {
       console.log("Found video elements after render:", videoElements.length);
       
       videoElements.forEach(video => {
+        applyVideoPlaybackPreference(video);
+
         // Ensure the video has proper styling
         video.style.maxWidth = '100%';
         video.style.borderRadius = '4px';
@@ -1211,6 +1246,7 @@ const PostView = () => {
           // Create a new video element with proper attributes
           const newVideo = document.createElement('video');
           newVideo.controls = true;
+          applyVideoPlaybackPreference(newVideo);
           newVideo.width = '100%';
           newVideo.style.maxWidth = '600px';
           newVideo.style.display = 'block';
@@ -1316,6 +1352,7 @@ const PostView = () => {
         if (!video.hasAttribute('controls')) {
           video.setAttribute('controls', 'true');
         }
+        applyVideoPlaybackPreference(video);
         
         // Make sure the video has proper styling
         video.style.maxWidth = '100%';
@@ -1349,6 +1386,8 @@ const PostView = () => {
     // Also check for videos that might already be in the DOM but missing controls
     const existingVideos = contentDiv.querySelectorAll('video');
     existingVideos.forEach((video, index) => {
+      applyVideoPlaybackPreference(video);
+
       if (!video.hasAttribute('controls')) {
         video.setAttribute('controls', 'true');
         video.load();
@@ -1414,10 +1453,10 @@ const PostView = () => {
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-white dark:bg-gray-800 rounded-lg shadow-xl overflow-hidden"
+          className="bg-white rounded-lg shadow-xl overflow-hidden border border-gray-200"
         >
           {/* Back Button */}
-          <div className="p-4 border-b dark:border-gray-700 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="p-4 border-b border-gray-200 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <motion.button
               onClick={handleBack}
               className="flex items-center gap-2 text-blue-500 hover:text-blue-600"
@@ -1431,17 +1470,13 @@ const PostView = () => {
 
             {currentReviewIndex >= 0 && reviewSequence.length > 1 && (
               <div className="flex items-center gap-2 self-start sm:self-auto">
-                <span className="text-xs text-gray-500 dark:text-gray-400">
+                <span className="text-xs text-gray-600">
                   Post {currentReviewIndex + 1} of {reviewSequence.length}
                 </span>
                 <button
                   onClick={() => handleReviewNavigation(previousReviewPost?.id)}
                   disabled={!previousReviewPost}
-                  className={`px-3 py-1.5 rounded-lg text-sm border transition-colors ${
-                    darkMode
-                      ? 'border-gray-600 text-gray-200 disabled:text-gray-500 disabled:border-gray-700'
-                      : 'border-gray-300 text-gray-700 disabled:text-gray-400'
-                  }`}
+                  className="px-3 py-1.5 rounded-lg text-sm border transition-colors border-gray-300 text-gray-700 disabled:text-gray-400"
                 >
                   Previous
                 </button>
@@ -1461,27 +1496,35 @@ const PostView = () => {
             {/* Author Info */}
             <div className="flex items-center space-x-3 mb-6">
               <div className="w-12 h-12 rounded-full bg-gray-300 flex items-center justify-center">
-                {post.author?.first_name?.[0] || '?'}
+                {post?.author?.profile_image ? (
+                  <img
+                    src={mediaPath(post.author.profile_image)}
+                    alt={getDisplayNameFromUser(post.author)}
+                    className="w-full h-full rounded-full object-cover"
+                  />
+                ) : (
+                  getInitialFromUser(post.author)
+                )}
               </div>
               <div>
-                <h3 className="font-medium text-lg dark:text-white">
-                  {post.author ? `${post.author.first_name} ${post.author.last_name}` : 'Unknown Author'}
+                <h3 className="font-medium text-lg text-gray-900">
+                  {getDisplayNameFromUser(post.author)}
                 </h3>
-                <span className="text-sm text-gray-500 dark:text-gray-400" data-timestamp={post.created_at}>
+                <span className="text-sm text-gray-600" data-timestamp={post.created_at}>
                   {formatRelativeTime(post.created_at)}
                 </span>
               </div>
             </div>
 
             {/* Post Title - without label */}
-            <div className={`mb-6 px-5 py-4 rounded-lg border ${darkMode ? 'bg-gray-750 border-gray-600' : 'bg-blue-50 border-blue-100'}`}>
-              <h1 className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-800'}`}>
+            <div className="mb-6 px-5 py-4 rounded-lg border bg-blue-50 border-blue-100">
+              <h1 className="text-2xl font-bold text-gray-800">
                 {post.title}
               </h1>
             </div>
 
             {/* Post Content */}
-            <div className="prose dark:prose-invert max-w-none mt-6">
+            <div className="max-w-none mt-6 text-gray-800">
               <style dangerouslySetInnerHTML={{ __html: richTextStyles }} />
               <div 
                 className="html-content"
@@ -1493,11 +1536,11 @@ const PostView = () => {
             </div>
 
             {/* Interactions */}
-            <div className="mt-8 pt-6 border-t dark:border-gray-700">
+            <div className="mt-8 pt-6 border-t border-gray-200">
               <div className="flex items-center space-x-6">
                 <button 
                   onClick={handleLike}
-                  className="flex items-center space-x-2 text-gray-500 hover:text-red-500 dark:text-gray-400 dark:hover:text-red-400 transition-colors"
+                  className="flex items-center space-x-2 text-gray-700 hover:text-red-500 transition-colors"
                   disabled={likeLoading}
                 >
                   <div className="relative">
@@ -1527,20 +1570,31 @@ const PostView = () => {
                 
                 <button 
                   onClick={handleCommentButtonClick}
-                  className="flex items-center space-x-2 text-gray-500 hover:text-blue-500 dark:text-gray-400 dark:hover:text-blue-400 transition-colors"
+                  className="flex items-center space-x-2 text-gray-700 hover:text-blue-500 transition-colors"
                 >
                   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                   </svg>
                   <span>Comment{totalComments > 0 ? ` (${totalComments})` : ''}</span>
                 </button>
+
+                <button
+                  onClick={handleToggleSave}
+                  className={`flex items-center space-x-2 transition-colors ${saved ? 'text-blue-600' : 'text-gray-700 hover:text-blue-500'}`}
+                  disabled={saveLoading}
+                >
+                  <svg className="w-6 h-6" fill={saved ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v17l-7-4-7 4V5z" />
+                  </svg>
+                  <span>{saved ? 'Saved' : 'Save'}</span>
+                </button>
               </div>
             </div>
 
             {/* Comments Section */}
-            <div id="comments-section" className="mt-8 pt-4 border-t dark:border-gray-700">
+            <div id="comments-section" className="mt-8 pt-4 border-t border-gray-200">
               <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-medium dark:text-white">
+                <h3 className="text-lg font-medium text-gray-900">
                   Comments ({totalComments})
                 </h3>
                 <button
@@ -1562,15 +1616,23 @@ const PostView = () => {
               {/* New Comment Form */}
               <form onSubmit={handleCommentSubmit} className="mb-6">
                 <div className="flex items-start gap-3">
-                  <div className="w-10 h-10 rounded-full bg-gray-300 dark:bg-gray-700 flex items-center justify-center flex-shrink-0">
-                    {userInfo?.first_name?.[0] || '?'}
+                  <div className="w-10 h-10 rounded-full bg-gray-300 flex items-center justify-center flex-shrink-0">
+                    {userInfo?.profile_image ? (
+                      <img
+                        src={mediaPath(userInfo.profile_image)}
+                        alt={getDisplayNameFromUser(userInfo)}
+                        className="w-full h-full rounded-full object-cover"
+                      />
+                    ) : (
+                      getInitialFromUser(userInfo)
+                    )}
                   </div>
                   <div className="flex-1">
                     <textarea
                       value={newComment}
                       onChange={(e) => setNewComment(e.target.value)}
                       placeholder="Add a comment..."
-                      className="w-full p-3 bg-gray-50 dark:bg-gray-800 border dark:border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full p-3 bg-gray-50 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                       rows={2}
                     />
                     <div className="flex justify-end mt-2">
@@ -1624,7 +1686,7 @@ const PostView = () => {
                           <div className="flex justify-center my-4">
                             <button
                               onClick={handleLoadMoreComments}
-                              className="px-4 py-2 text-sm text-blue-500 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 border border-blue-300 dark:border-blue-700 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/30"
+                              className="px-4 py-2 text-sm text-blue-500 hover:text-blue-700 border border-blue-300 rounded-lg hover:bg-blue-50"
                             >
                               Load more comments
                             </button>
@@ -1632,7 +1694,7 @@ const PostView = () => {
                         )}
                       </div>
                     ) : (
-                      <div className="py-8 text-center text-gray-500 dark:text-gray-400">
+                      <div className="py-8 text-center text-gray-700">
                         No comments yet. Be the first to comment!
                       </div>
                     )}

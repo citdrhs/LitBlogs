@@ -2,6 +2,28 @@
 @tailwind components;
 @tailwind utilities;
 
+body.compact-feed .glass-card {
+  padding-top: 0.75rem !important;
+  padding-bottom: 0.75rem !important;
+}
+
+body.compact-feed .space-y-6 > :not([hidden]) ~ :not([hidden]) {
+  margin-top: 0.75rem !important;
+}
+
+body.compact-feed .space-y-4 > :not([hidden]) ~ :not([hidden]) {
+  margin-top: 0.5rem !important;
+}
+
+html[data-reduced-motion="true"] *,
+html[data-reduced-motion="true"] *::before,
+html[data-reduced-motion="true"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
 @keyframes fadeIn {
   from {
     opacity: 0;
@@ -196,18 +218,13 @@ video::-webkit-media-controls {
 
 /* Add more for other colors */
 
-/* Target TinyMCE's specific color format */
-span[style*="color: #e03e2d"] {
-  color: #e03e2d !important;
+/* Keep styled text inline and allow TinyMCE inline color values to render */
+.html-content [style*="color:"] {
+  display: inline;
 }
 
-/* Target ALL colors more aggressively */
-[style*="color:"] {
-  color: currentColor !important;
-}
-
-span[style*="color"] {
-  color: currentColor !important;
+.html-content span[style*="color"] {
+  color: inherit;
 }
 
 /* Force color rendering - this will ensure colors show */
@@ -306,9 +323,9 @@ span[style*="color"] {
 }
 
 /* Handle the specific element TinyMCE is creating */
-span[data-mce-style*="color"],
-span[style*="color"] {
-  color: unset !important;
+.html-content span[data-mce-style*="color"],
+.html-content span[style*="color"] {
+  color: inherit;
 }
 
 /* Clear all the existing color-related rules and use this simple approach */
@@ -317,19 +334,19 @@ span[style*="color"] {
   font-family: inherit;
 }
 
-/* Force inline styles to work */
+/* Preserve TinyMCE inline text color styles in rendered content */
 .html-content span[style*="color"] {
-  color: unset !important;
+  color: inherit;
 }
 
 /* Make the specific color work */
-span[style*="color: #e03e2d"] {
+.html-content span[style*="color: #e03e2d"] {
   color: #e03e2d !important;
 }
 
-/* Add !important to all color-related inline styles */
-[style*="color:"] {
-  display: inline !important;
+/* Keep inline styled spans inline in rendered content */
+.html-content [style*="color:"] {
+  display: inline;
 }
 
 /* Add font-family support */
@@ -448,7 +465,7 @@ span[style*="font-family:"] {
 }
 
 /* Add !important to all font-family styles */
-span[style*="font-family:"] {
+.html-content span[style*="font-family:"] {
   font-family: inherit !important;
   display: inline !important;
 }
@@ -490,20 +507,19 @@ span[style*="font-family:"] {
 }
 
 /* Force font families */
-[style*="font-family"] {
+.html-content [style*="font-family"] {
   font-family: unset !important;
 }
 
-/* Add these specific rules for highlights */
-[style*="background-color:"] {
-  background-color: unset !important;
-  display: inline !important;
+/* Preserve TinyMCE highlight/background color styles in rendered content */
+.html-content [style*="background-color:"] {
+  display: inline;
 }
 
-/* Ensure text is visible over highlights */
-[style*="background-color:"][style*="color:"] {
-  background-color: unset !important;
-  color: unset !important;
+/* Keep TinyMCE color/highlight swatches visible in pickers */
+.tox .tox-collection__item[style*="background-color"],
+.tox .tox-swatches__picker-btn[style*="background-color"] {
+  background-color: revert !important;
 }
 
 /* Make fonts still work */
@@ -515,17 +531,11 @@ span[style*="font-family:"] {
   font-family: attr(data-font-family) !important;
 }
 
-/* Ensure highlights don't cover text */
+/* Let browser honor inline TinyMCE text/highlight styles naturally */
+.html-content [style*="color"],
 .html-content [style*="background-color"] {
-  background-color: unset !important;
-  position: relative !important;
-  z-index: 0 !important;
-}
-
-.html-content [style*="color"] {
-  color: unset !important;
-  position: relative !important;
-  z-index: 1 !important;
+  position: static;
+  z-index: auto;
 }
 
 /* Add heading preservations */

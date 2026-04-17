@@ -34,6 +34,7 @@ const StudentDetails = ({ darkMode }) => {
         );
         setStudent(studentResponse.data);
         setTeacherNotes(studentResponse.data.teacher_notes || '');
+        setRecentActivity(studentResponse.data.recent_activity || []);
         
         // Fetch class details
         const classResponse = await axios.get(
@@ -49,28 +50,27 @@ const StudentDetails = ({ darkMode }) => {
         );
         setPosts(postsResponse.data);
         
-        // Generate dynamic recent activity based on posts
-        const activities = [];
-        
-        // Add post activities
-        postsResponse.data.slice(0, 3).forEach(post => {
-          activities.push({
-            type: 'post',
-            description: `Created a new post: '${post.title}'`,
-            timestamp: post.created_at
+        // Fallback only when backend does not provide recent_activity.
+        if (!studentResponse.data.recent_activity?.length) {
+          const fallbackActivities = [];
+
+          postsResponse.data.slice(0, 3).forEach(post => {
+            fallbackActivities.push({
+              type: 'post',
+              description: `Created a new post: '${post.title}'`,
+              timestamp: post.created_at
+            });
           });
-        });
-        
-        // Add class enrollment activity
-        activities.push({
-          type: 'enrollment',
-          description: `Joined class: ${classResponse.data.name}`,
-          timestamp: studentResponse.data.enrollment_date
-        });
-        
-        // Sort by most recent first
-        activities.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-        setRecentActivity(activities);
+
+          fallbackActivities.push({
+            type: 'enrollment',
+            description: `Joined class: ${classResponse.data.name}`,
+            timestamp: studentResponse.data.enrollment_date
+          });
+
+          fallbackActivities.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+          setRecentActivity(fallbackActivities);
+        }
         
         setLoading(false);
       } catch (error) {

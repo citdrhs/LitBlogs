@@ -7,6 +7,32 @@ import Navbar from './components/Navbar';
 import { toast } from 'react-hot-toast';
 import Footer from './components/Footer';
 
+const stripInlineTextColor = (html = '') => {
+  if (!html || typeof document === 'undefined') {
+    return html || '';
+  }
+
+  const tempDiv = document.createElement('div');
+  tempDiv.innerHTML = html;
+
+  tempDiv.querySelectorAll('[style]').forEach((element) => {
+    const styleAttr = element.getAttribute('style') || '';
+    const cleanedStyle = styleAttr
+      .replace(/(^|;)\s*color\s*:[^;]+;?/gi, '$1')
+      .replace(/;;+/g, ';')
+      .trim()
+      .replace(/^;|;$/g, '');
+
+    if (cleanedStyle) {
+      element.setAttribute('style', cleanedStyle);
+    } else {
+      element.removeAttribute('style');
+    }
+  });
+
+  return tempDiv.innerHTML;
+};
+
 const StudentHub = () => {
   const navigate = useNavigate();
   const [classes, setClasses] = useState([]);
@@ -17,6 +43,7 @@ const StudentHub = () => {
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState('current');
   const [posts, setPosts] = useState([]);
+  const [postsLoading, setPostsLoading] = useState(false);
   const [darkMode, setDarkMode] = useState(() => {
     return JSON.parse(localStorage.getItem('darkMode')) ?? false;
   });
@@ -69,15 +96,31 @@ const StudentHub = () => {
 
   const fetchUserPosts = async () => {
     try {
+      setPostsLoading(true);
       const token = localStorage.getItem('token');
-      const response = await axios.get('/student/posts', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setPosts(response.data);
+      try {
+        const response = await axios.get('/student/posts', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        setPosts(response.data);
+      } catch {
+        const fallbackResponse = await axios.get('/api/student/posts', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        setPosts(fallbackResponse.data);
+      }
     } catch (error) {
       console.error('Failed to fetch posts:', error);
+    } finally {
+      setPostsLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (activeTab === 'posts' && posts.length === 0) {
+      fetchUserPosts();
+    }
+  }, [activeTab]);
 
   const joinClass = async (e) => {
     e.preventDefault();
@@ -124,7 +167,7 @@ const StudentHub = () => {
       />
       <div className="flex flex-1 pt-16">
         {/* Sidebar */}
-        <div className="w-64 bg-gray-50/60 dark:bg-gray-800/60 backdrop-blur-md h-full p-4 border-r border-white/10">
+        <div className="w-64 min-h-[calc(100vh-4rem)] self-stretch bg-gray-50/60 dark:bg-gray-700/60 backdrop-blur-md h-full p-4 border-r border-white/10">
           <div className="mb-8">
             <h2 className="text-xl font-bold mb-4">Navigation</h2>
             <div className="space-y-2">
@@ -133,7 +176,7 @@ const StudentHub = () => {
                 className={`w-full p-2 rounded-lg text-left transition-colors ${
                   activeTab === 'current' 
                     ? 'bg-blue-500 text-white' 
-                    : 'hover:bg-white/5'
+                    : 'text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
                 }`}
               >
                 Current Classes
@@ -143,7 +186,7 @@ const StudentHub = () => {
                 className={`w-full p-2 rounded-lg text-left transition-colors ${
                   activeTab === 'previous' 
                     ? 'bg-blue-500 text-white' 
-                    : 'hover:bg-white/5'
+                    : 'text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
                 }`}
               >
                 Previous Classes
@@ -153,7 +196,7 @@ const StudentHub = () => {
                 className={`w-full p-2 rounded-lg text-left transition-colors ${
                   activeTab === 'posts' 
                     ? 'bg-blue-500 text-white' 
-                    : 'hover:bg-white/5'
+                    : 'text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
                 }`}
               >
                 Post History
@@ -196,14 +239,14 @@ const StudentHub = () => {
                   classes.map(cls => (
                     <motion.div 
                       key={cls.id}
-                      className="p-6 rounded-lg backdrop-blur-md bg-white dark:bg-gray-800/10 border border-white/10 dark:border-gray-700/10 shadow-xl"
+                      className="p-6 rounded-lg bg-white dark:bg-gray-700 border dark:border-gray-600 border-gray-200 shadow-lg"
                       whileHover={{ scale: 1.02 }}
                       onClick={() => navigate(`/class-feed/${cls.id}`)}
                     >
-                      <h3 className="text-xl font-semibold mb-2">{cls.name}</h3>
-                      <p className="mb-4 opacity-80">{cls.description}</p>
+                      <h3 className="text-xl font-semibold mb-2 text-gray-900 dark:text-gray-200">{cls.name}</h3>
+                      <p className="mb-4 text-gray-700 dark:text-gray-300">{cls.description}</p>
                       <div className="flex justify-between items-center">
-                        <span className="text-sm opacity-80">
+                        <span className="text-sm text-gray-600 dark:text-gray-300">
                           Teacher: {cls.teacher_name}
                         </span>
                       </div>
@@ -229,13 +272,13 @@ const StudentHub = () => {
                   {archivedClasses.map(cls => (
                     <motion.div 
                       key={cls.id}
-                      className="p-6 rounded-lg backdrop-blur-md bg-white dark:bg-gray-800/10 border border-white/10 dark:border-gray-700/10 shadow-xl opacity-75"
+                      className="p-6 rounded-lg bg-white border border-gray-200 shadow-lg opacity-85"
                       whileHover={{ scale: 1.01 }}
                     >
-                      <h3 className="text-xl font-semibold mb-2">{cls.name}</h3>
-                      <p className="mb-4 opacity-80">{cls.description}</p>
+                      <h3 className="text-xl font-semibold mb-2 text-gray-900">{cls.name}</h3>
+                      <p className="mb-4 text-gray-700">{cls.description}</p>
                       <div className="flex justify-between items-center">
-                        <span className="text-sm opacity-80">
+                        <span className="text-sm text-gray-600">
                           Teacher: {cls.teacher_name}
                         </span>
                         <span className="px-2 py-1 text-xs rounded-full bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200">
@@ -258,22 +301,46 @@ const StudentHub = () => {
           {activeTab === 'posts' && (
             <div>
               <h1 className="text-3xl font-bold mb-6">Post History</h1>
-              <div className="space-y-4">
-                {posts.map((post) => (
-                  <motion.div
-                    key={post.id}
-                    className="p-6 rounded-lg backdrop-blur-md bg-gray-50/60 dark:bg-slate-800/60 border border-white/10 shadow-xl"
-                    whileHover={{ scale: 1.01 }}
-                  >
-                    <h3 className="text-xl font-semibold mb-2">{post.title}</h3>
-                    <p className="mb-4 opacity-80">{post.content}</p>
-                    <div className="flex justify-between items-center text-sm opacity-60">
-                      <span>Posted in: {post.class_name}</span>
-                      <span>{new Date(post.created_at).toLocaleDateString()}</span>
-                    </div>
-                  </motion.div>
-                ))}
-              </div>
+              {postsLoading ? (
+                <Loader />
+              ) : posts.length === 0 ? (
+                <div className="text-gray-500 dark:text-gray-400">No posts yet.</div>
+              ) : (
+                <div className="space-y-4">
+                  {posts.map((post) => (
+                    <motion.div
+                      key={post.id}
+                      className="p-6 rounded-lg bg-white border border-gray-200 shadow-lg"
+                      whileHover={{ scale: 1.01 }}
+                    >
+                      {/* Post Title and Preview */}
+                      <div className="mb-2">
+                        <h2 className="text-xl font-semibold text-gray-900">{post.title}</h2>
+                      </div>
+                      <div
+                        className="html-content text-gray-800 line-clamp-3"
+                        dangerouslySetInnerHTML={{ __html: stripInlineTextColor(post.content || '') }}
+                      />
+                     
+                      {/* Post Stats */}
+                        <div className="mt-4 flex items-center space-x-4 text-gray-500">
+                          <div className="flex items-center space-x-1">
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
+                            </svg>
+                            <span>{post.likes || 0}</span>
+                          </div>
+                          <div className="flex items-center space-x-1">
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                            </svg>
+                            <span>{post.comments || 0}</span>
+                          </div>
+                        </div>
+                    </motion.div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
