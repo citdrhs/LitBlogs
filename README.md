@@ -43,8 +43,8 @@ cd /var/www/
 ```
 Then clone the repository:
 ```bash
-git clone https://github.com/citdrhs/LitBlogs.git
-cd /LitBlogs/litblogs
+sudo git clone https://github.com/citdrhs/LitBlogs.git
+cd LitBlogs/litblogs
 ```
 Run the commmand with sudo if you need permissions to clone the repository.
 
@@ -52,6 +52,8 @@ Run the commmand with sudo if you need permissions to clone the repository.
 1. Create and activate a virtual environment:
 ```bash
 python -m venv myvenv
+sudo chown -R $USER:$USER /var/www/LitBlogs/litblogs/myvenv
+sudo chown -R $USER:$USER /var/www/LitBlogs/litblogs
 source myvenv/bin/activate # On Windows: myvenv\Scripts\activate
 ```
 
@@ -70,7 +72,6 @@ sudo mkdir -p files
 sudo mkdir -p videos
 sudo mkdir -p profile_images
 sudo mkdir -p temp
-sudo mkdir -p 2
 ```
 Then go back to /var/www/LitBlogs/litblogs
 
@@ -108,32 +109,17 @@ sudo systemctl start blog
 ```bash
 npm install --force
 ```
-2. Add the following to vite.config.js:
-```javascript
-base: '/dren/',
-```
-and
-```javascript
-<BrowserReact basename='/dren'>
-```
-in main.jsx
 
-3. Change the redirect/postLogoutRedirect URI in msalConfig.js to:
-```javascript
-redirectUri: 'https://drhscit.org/dren/',
-postLogoutRedirectUri: 'https://drhscit.org/dren/',
-```
-
-4. Depending if it is a production or development environment, change the following urls of all pictures:
+2. Depending if it is a production or development environment, change the following urls of all pictures:
 ```javascript
 ".image.png" -> "/dren/image.png"
 ```
 
-5. Run the frontend server:
+3. Run the frontend server:
 ```bash
 npm run build
 ```
-6. Go to the nginx directory and edit the file:
+4. Go to the nginx directory and edit the file:
 ```bash
 sudo nano /etc/nginx/sites-enabled/tutorial
 ```
