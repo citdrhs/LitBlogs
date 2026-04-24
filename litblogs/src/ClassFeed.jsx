@@ -2241,6 +2241,11 @@ const ClassFeed = () => {
     return true;
   });
 
+  const canManagePost = (post) => {
+    const postOwnerId = Number(post?.owner_id ?? post?.ownerId ?? 0);
+    return Boolean(currentUserId) && Boolean(postOwnerId) && postOwnerId === currentUserId;
+  };
+
   const visiblePostDrafts = postDrafts.filter((draft) => {
     const title = (draft.postTitle || '').toLowerCase();
     const contentText = stripHtml(draft.content || '').toLowerCase();
@@ -2371,6 +2376,12 @@ const ClassFeed = () => {
   };
 
   const handleEditPost = async (postId) => {
+    const targetPost = posts.find((post) => post.id === postId);
+    if (!canManagePost(targetPost)) {
+      toast.error('You can only edit your own posts.');
+      return;
+    }
+
     try {
       setLoading(true);
       const token = localStorage.getItem('token');
@@ -2410,6 +2421,12 @@ const ClassFeed = () => {
   };
 
   const handleDeletePost = async (postId) => {
+    const targetPost = posts.find((post) => post.id === postId);
+    if (!canManagePost(targetPost)) {
+      toast.error('You can only delete your own posts.');
+      return;
+    }
+
     if (!confirm('Are you sure you want to delete this post?')) return;
     
       try {
@@ -3079,51 +3096,52 @@ const ClassFeed = () => {
                     </div>
 
                   {/* Add post actions menu here */}
-                  <div className="relative flex items-center gap-2">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setMenuOpen(menuOpen === post.id ? null : post.id);
-                      }}
-                      className="p-1 rounded-full hover:bg-gray-200 transition-colors"
-                    >
-                      <svg className="w-5 h-5 text-gray-500" fill="currentColor" viewBox="0 0 20 20">
-                        <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" />
-                          </svg>
-                        </button>
+                  {canManagePost(post) && (
+                    <div className="relative flex items-center gap-2">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setMenuOpen(menuOpen === post.id ? null : post.id);
+                        }}
+                        className="p-1 rounded-full hover:bg-gray-200 transition-colors"
+                      >
+                        <svg className="w-5 h-5 text-gray-500" fill="currentColor" viewBox="0 0 20 20">
+                          <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" />
+                        </svg>
+                      </button>
 
-                    {/* Dropdown menu */}
-                    {menuOpen === post.id && (
-                          <div 
-                        className="absolute right-0 mt-1 w-48 rounded-md shadow-lg z-10 bg-white border border-gray-200"
-                          >
-                        <div className="py-1" role="menu" aria-orientation="vertical">
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                              handleEditPost(post.id);
-                              setMenuOpen(null);
-                                }}
-                            className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                            role="menuitem"
-                              >
-                                Edit Post
-                              </button>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDeletePost(post.id);
-                              setMenuOpen(null);
-                                }}
-                            className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-gray-100"
-                            role="menuitem"
-                              >
-                                Delete Post
-                              </button>
-                            </div>
+                      {menuOpen === post.id && (
+                        <div
+                          className="absolute right-0 mt-1 w-48 rounded-md shadow-lg z-10 bg-white border border-gray-200"
+                        >
+                          <div className="py-1" role="menu" aria-orientation="vertical">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleEditPost(post.id);
+                                setMenuOpen(null);
+                              }}
+                              className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                              role="menuitem"
+                            >
+                              Edit Post
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeletePost(post.id);
+                                setMenuOpen(null);
+                              }}
+                              className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-gray-100"
+                              role="menuitem"
+                            >
+                              Delete Post
+                            </button>
                           </div>
-                        )}
-                      </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                   </div>
 
                 {/* Post Title - without label */}

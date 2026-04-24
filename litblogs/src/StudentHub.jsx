@@ -176,7 +176,7 @@ const StudentHub = () => {
                 className={`w-full p-2 rounded-lg text-left transition-colors ${
                   activeTab === 'current' 
                     ? 'bg-blue-500 text-white' 
-                    : 'text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                    : 'text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
                 }`}
               >
                 Current Classes
@@ -186,7 +186,7 @@ const StudentHub = () => {
                 className={`w-full p-2 rounded-lg text-left transition-colors ${
                   activeTab === 'previous' 
                     ? 'bg-blue-500 text-white' 
-                    : 'text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                    : 'text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
                 }`}
               >
                 Previous Classes
@@ -196,7 +196,7 @@ const StudentHub = () => {
                 className={`w-full p-2 rounded-lg text-left transition-colors ${
                   activeTab === 'posts' 
                     ? 'bg-blue-500 text-white' 
-                    : 'text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                    : 'text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
                 }`}
               >
                 Post History

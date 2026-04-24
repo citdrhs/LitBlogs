@@ -1189,10 +1189,16 @@ def create_blog(blog: schemas.BlogCreate, owner_id: int, db: Session = Depends(g
     return new_blog
 
 @app.delete("/api/blogs/{blog_id}")
-def delete_blog(blog_id: int, db: Session = Depends(get_db)):
+def delete_blog(
+    blog_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
     blog = db.query(models.Blog).filter(models.Blog.id == blog_id).first()
     if not blog:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Blog not found")
+    if blog.owner_id != current_user.id and not current_user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to delete this blog")
     db.delete(blog)
     db.commit()
     return {"message": "Blog deleted"}
