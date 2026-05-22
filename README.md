@@ -128,30 +128,20 @@ server {
     listen 7001;
     listen [::]:7001;
     server_name drhscit.org www.drhscit.org;
-    root /var/www/LitBlogs/litblogs/dist;
+
+    root /home/litblogs/www/LitBlogs/litblogs/dist;
     index index.html;
-    # For React Router (SPA) at /dren path
+
+    # Frontend SPA
     location / {
-            rewrite ^/dren(.*)$ /$1 last;
-            try_files $uri $uri/ /dren/index.html;
-            #try_files $uri $uri/ /dren/$uri =404;
+        rewrite ^/dren(.*)$ /$1 last;
+        try_files $uri $uri/ /dren/index.html;
     }
 
-    #location ~* \.(js|mjs|css|json|webmanifest|map)$ {
-    #    add_header Content-Type application/javascript;
-    #    try_files $uri =404;
-    #}
-
-    #location ~* ^/(.*\.(png|jpg|jpeg|gif|svg|webmanifest|map))$ {
-        #rewrite ^/(.*)$ /dren/$1 break;
-        #root /var/www/LitBlog/litblogs/dist;
-        #try_files $uri =404;
-    #}
-
-    # API proxy - ensure this is working properly
+    # Backend API proxy
     location /dren/api/ {
         rewrite ^/dren/api/(.*)$ /api/$1 break;
-        proxy_pass http://localhost:8000;
+        proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
@@ -160,14 +150,13 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_cache_bypass $http_upgrade;
-        # Important for CORS preflight requests
         proxy_pass_request_headers on;
     }
 
+    # Uploads route
     location ^~ /uploads/ {
         return 307 /dren/api$uri$is_args$args;
     }
-
 }
 ```
 
