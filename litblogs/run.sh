@@ -1,3 +1,3 @@
 #!/bin/bash
-source /var/www/LitBlogs/litblogs/myvenv/bin/activate
-exec python /var/www/LitBlogs/litblogs/main.py
+source /home/litblogs/www/LitBlogs/litblogs/myvenv/bin/activate
+exec python /home/litblogs/www/LitBlogs/litblogs/main.py
