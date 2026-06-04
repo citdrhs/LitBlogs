@@ -38,13 +38,18 @@ The platform supports role-based access (students, teachers, admins), class mana
 4. Git
 
 ### Clone Repository
-Go to /var/www/ by running the following command:
+Run this to get into the LitBlogs account model:
 ```bash
-cd /var/www/
+sudo su litblogs
+```
+Go to /www/ by running the following command:
+```bash
+cd ~
+cd www
 ```
 Then clone the repository:
 ```bash
-sudo git clone https://github.com/citdrhs/LitBlogs.git
+git clone https://github.com/citdrhs/LitBlogs.git
 cd LitBlogs/litblogs
 ```
 Run the commmand with sudo if you need permissions to clone the repository.
@@ -53,8 +58,8 @@ Run the commmand with sudo if you need permissions to clone the repository.
 1. Create and activate a virtual environment:
 ```bash
 python -m venv myvenv
-sudo chown -R $USER:$USER /var/www/LitBlogs/litblogs/myvenv
-sudo chown -R $USER:$USER /var/www/LitBlogs/litblogs
+chown -R $USER:$USER /var/www/LitBlogs/litblogs/myvenv
+chown -R $USER:$USER /var/www/LitBlogs/litblogs
 source myvenv/bin/activate # On Windows: myvenv\Scripts\activate
 ```
 
@@ -66,17 +71,20 @@ pip install -r requirements.txt
 `requirements.txt` now includes `pywebpush`, which is required for browser push notifications.
 
 3. Add the upload directory to the backend:
-While in /var/www/LitBlogs/litblogs, run the following command:
+While in /www/LitBlogs/litblogs, run the following command:
 ```bash
-sudo mkdir -p uploads
+mkdir -p uploads
 cd uploads
-sudo mkdir -p images
-sudo mkdir -p files
-sudo mkdir -p videos
-sudo mkdir -p profile_images
-sudo mkdir -p cover_images
+mkdir -p images
+mkdir -p files
+mkdir -p videos
+mkdir -p profile_images
+mkdir -p cover_images
 ```
-Then go back to /var/www/LitBlogs/litblogs
+Then go back to the main account by running
+```bash
+exit
+```
 
 4. Install postgres:
 ```bash
@@ -103,12 +111,12 @@ Then run the service called blog to start the backend(service was already create
 
 5. Run the backend server:
 ```bash
-chmod +x /var/www/LitBlogs/litblogs/run.sh
+chmod +x /home/litblogs/www/LitBlogs/litblogs/run.sh
 sudo systemctl start blog
 ```
 
 ### Frontend Setup
-
+Go back to the litblogs account model and go to /www/LitBlogs/litblogs
 1. Install dependencies:
 ```bash
 npm install --force
@@ -117,6 +125,10 @@ npm install --force
 2. Run the frontend server:
 ```bash
 npm run build
+```
+Go back to the main account by running
+```bash
+exit
 ```
 3. Go to the nginx directory and edit the file:
 ```bash
