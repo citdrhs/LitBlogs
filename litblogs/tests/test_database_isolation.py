@@ -130,7 +130,7 @@ def test_explicit_test_database_url_selects_guarded_postgresql_without_connectin
     process_environment.update(
         {
             "APP_ENV": "test",
-            "DATABASE_URL": "sqlite:///must-not-be-selected.db",
+            "DATABASE_URL": "test-database-url-placeholder",
             "TEST_DATABASE_URL": SAFE_POSTGRES_URL,
             "TEST_POSTGRES_DATABASE": "litblog_ci",
             "ALLOW_TEST_DATABASE_DDL": "true",
