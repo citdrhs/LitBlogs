@@ -13,9 +13,22 @@ from yaml.constructor import ConstructorError
 
 ROOT = Path(__file__).resolve().parents[1]
 ACTION_PIN = re.compile(
-    r"^\s*uses:\s*(?P<owner>actions|github)/[^@\s]+@(?P<sha>[0-9a-f]{40})"
-    r"\s+#\s+v\d+(?:\.\d+){1,2}\s*$"
+    r"^\s*uses:\s*(?P<action>(?:actions|github)/[^@\s]+)@(?P<sha>[0-9a-f]{40})"
+    r"\s+#\s+(?P<version>v(?P<major>\d+)\.\d+\.\d+)\s*$"
 )
+MINIMUM_ACTION_GENERATIONS = {
+    "actions/checkout": 7,
+    "actions/setup-python": 7,
+    "actions/setup-node": 7,
+    "github/codeql-action": 4,
+}
+EXPECTED_ACTION_PINS = {
+    "actions/checkout": ("3d3c42e5aac5ba805825da76410c181273ba90b1", "v7.0.1"),
+    "actions/setup-python": ("5fda3b95a4ea91299a34e894583c3862153e4b97", "v7.0.0"),
+    "actions/setup-node": ("820762786026740c76f36085b0efc47a31fe5020", "v7.0.0"),
+    "github/codeql-action/init": ("db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28", "v4.37.8"),
+    "github/codeql-action/analyze": ("db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28", "v4.37.8"),
+}
 
 EXPECTED_CI_JOBS = {
     "backend-tests": "Backend tests",
@@ -118,13 +131,36 @@ def validate_action_pins(relative_path: str, text: str) -> None:
     for line_number, line in enumerate(text.splitlines(), start=1):
         if not re.match(r"^\s*uses:", line):
             continue
+        match = ACTION_PIN.match(line)
         expect(
-            ACTION_PIN.match(line) is not None,
+            match is not None,
             (
                 f"{relative_path}:{line_number} action must be GitHub-owned, pinned "
                 "to 40 lowercase hex characters, and have a version comment"
             ),
         )
+        if match is None:
+            continue
+
+        action = match.group("action")
+        action_family = (
+            "github/codeql-action" if action.startswith("github/codeql-action/") else action
+        )
+        minimum_major = MINIMUM_ACTION_GENERATIONS.get(action_family)
+        expect(
+            minimum_major is not None and int(match.group("major")) >= minimum_major,
+            f"{relative_path}:{line_number} {action} must use its current Node24 generation",
+        )
+        expected_pin = EXPECTED_ACTION_PINS.get(action)
+        expect(expected_pin is not None, f"{relative_path}:{line_number} unexpected action {action}")
+        if expected_pin is not None:
+            expect(
+                (match.group("sha"), match.group("version")) == expected_pin,
+                (
+                    f"{relative_path}:{line_number} {action} must use the reviewed peeled "
+                    f"commit for {expected_pin[1]}"
+                ),
+            )
 
 
 def validate_checkout_hardening(relative_path: str, workflow: dict[str, Any]) -> None:
@@ -250,21 +286,46 @@ def validate_ci() -> None:
     )
     expect("|| true" not in dependency_commands, "dependency audit must not suppress failures")
 
-    secret_commands = step_commands(jobs.get("secret-scan", {}))
+    secret_job = jobs.get("secret-scan", {})
+    secret_commands = step_commands(secret_job)
     for command in (
         "check-no-tracked-secrets.ps1",
         "check-no-tracked-secrets.tests.ps1",
+        "check-generic-secrets.tests.py",
         "check-generic-secrets.py",
+        "validate-repository-policy.py",
     ):
         expect(command in secret_commands, f"secret scan must run {command}")
+    secret_steps = secret_job.get("steps", []) if isinstance(secret_job, dict) else []
+    expect(
+        any(
+            isinstance(step, dict)
+            and str(step.get("uses", "")).startswith("actions/setup-python@")
+            for step in secret_steps
+        ),
+        "secret scan must set up the pinned Python runtime",
+    )
+    secret_pip_installs = [
+        line.strip()
+        for line in secret_commands.splitlines()
+        if "python -m pip install" in line
+    ]
+    expect(
+        secret_pip_installs == ["python -m pip install PyYAML==6.0.3"],
+        "secret scan must install only the exact pinned PyYAML validator dependency",
+    )
     expect("git log" not in secret_commands, "secret scan must not inspect legacy history")
     expect("git diff" not in secret_commands, "secret scan must inspect the proposed tree, not diffs")
 
     sast_commands = step_commands(jobs.get("sast", {}))
     expect("python -m ruff check ." in sast_commands, "SAST must run Ruff")
     expect(
-        "python -m bandit -r main.py database.py models.py schemas.py -ll" in sast_commands,
-        "SAST must run Bandit for medium/high findings",
+        (
+            'python -m bandit -r . -x '
+            '"./tests/*,./.venv/*,*/__pycache__/*,*/.pytest_cache/*,*/.ruff_cache/*" -ll'
+        )
+        in sast_commands,
+        "SAST must run Bandit across the complete backend runtime package",
     )
 
     expect("python-version: \"3.13\"" in text, "CI must use Python 3.13")
@@ -282,8 +343,8 @@ def validate_codeql() -> None:
     triggers = codeql.get("on", {})
     expect(
         isinstance(triggers, dict)
-        and set(triggers) == {"pull_request", "push", "schedule"},
-        "CodeQL triggers must be exactly pull_request, push, and schedule",
+        and set(triggers) == {"pull_request", "push", "merge_group", "schedule"},
+        "CodeQL triggers must be exactly pull_request, push, merge_group, and schedule",
     )
     push = triggers.get("push", {}) if isinstance(triggers, dict) else {}
     expect(

@@ -46,6 +46,20 @@ class GenericSecretScannerTests(unittest.TestCase):
             timeout=10,
         )
 
+    def assert_exit_code(
+        self, result: subprocess.CompletedProcess[str], expected: int
+    ) -> None:
+        if result.returncode != expected:
+            self.fail(f"scanner exited {result.returncode}; expected {expected}")
+
+    def assert_safe_marker(self, marker: str, output: str) -> None:
+        if marker not in output:
+            self.fail("scanner did not report the expected rule and location")
+
+    def assert_value_absent(self, value: str, result: subprocess.CompletedProcess[str]) -> None:
+        if value in result.stdout or value in result.stderr:
+            self.fail("scanner output exposed matched credential material")
+
     def track(self, relative_path: str, content: str) -> None:
         path = self.repository / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -57,7 +71,7 @@ class GenericSecretScannerTests(unittest.TestCase):
 
         result = self.run_scanner()
 
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_exit_code(result, 0)
         self.assertIn("No generic secrets detected", result.stdout)
 
     def test_detects_token_without_echoing_value(self) -> None:
@@ -66,10 +80,9 @@ class GenericSecretScannerTests(unittest.TestCase):
 
         result = self.run_scanner()
 
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("GITHUB_TOKEN settings.txt:1", result.stdout)
-        self.assertNotIn(synthetic_token, result.stdout)
-        self.assertNotIn(synthetic_token, result.stderr)
+        self.assert_exit_code(result, 1)
+        self.assert_safe_marker("GITHUB_TOKEN settings.txt:1", result.stdout)
+        self.assert_value_absent(synthetic_token, result)
 
     def test_scans_tracked_worktree_only(self) -> None:
         synthetic_key = "AKIA" + ("A" * 16)
@@ -79,7 +92,7 @@ class GenericSecretScannerTests(unittest.TestCase):
 
         result = self.run_scanner()
 
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_exit_code(result, 0)
 
     def test_detects_private_key_header_without_printing_material(self) -> None:
         private_key_header = "-----BEGIN " + "PRIVATE KEY-----"
@@ -87,9 +100,9 @@ class GenericSecretScannerTests(unittest.TestCase):
 
         result = self.run_scanner()
 
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("PRIVATE_KEY credential.pem:1", result.stdout)
-        self.assertNotIn(private_key_header, result.stdout)
+        self.assert_exit_code(result, 1)
+        self.assert_safe_marker("PRIVATE_KEY credential.pem:1", result.stdout)
+        self.assert_value_absent(private_key_header, result)
 
 
 if __name__ == "__main__":
