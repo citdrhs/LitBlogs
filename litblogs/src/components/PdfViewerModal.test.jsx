@@ -24,6 +24,8 @@ describe('PdfViewerModal', () => {
     'vbscript:msgbox(document.domain)',
     'blob:https://litblog.example.test/8a6f4db0',
     'file:///C:/course-reading.pdf',
+    '//files.example.test/x.pdf',
+    '\\\\files.example.test\\x.pdf',
     ' javascript:alert(document.domain)',
     'java\nscript:alert(document.domain)',
     '\t//files.example.test/course-reading.pdf',
@@ -40,8 +42,9 @@ describe('PdfViewerModal', () => {
 
   it.each([
     '/api/uploads/course-reading.pdf',
+    './course-reading.pdf',
+    '../course-reading.pdf',
     'http://files.example.test/course-reading.pdf',
-    '//files.example.test/course-reading.pdf',
   ])('preserves the safe web URL %s unchanged', (fileUrl) => {
     render(
       <PdfViewerModal fileUrl={fileUrl} title="Course reading" onClose={vi.fn()} />,

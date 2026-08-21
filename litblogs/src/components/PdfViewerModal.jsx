@@ -74,7 +74,11 @@ const hasUnsafeUrlCharacters = (fileUrl) => Array.from(fileUrl).some((character)
 });
 
 const getSafeFileUrl = (fileUrl) => {
-  if (!hasUsableFileUrl(fileUrl) || hasUnsafeUrlCharacters(fileUrl)) {
+  if (
+    !hasUsableFileUrl(fileUrl)
+    || hasUnsafeUrlCharacters(fileUrl)
+    || fileUrl.startsWith('//')
+  ) {
     return null;
   }
 
