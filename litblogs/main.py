@@ -931,8 +931,8 @@ async def microsoft_login(microsoft_data: dict, db: Session = Depends(get_db)):
         )
 
 # Add these constants at the top with your other constants
-MS_CLIENT_ID = "68975491-3428-4424-bb26-63bd8f7a75ad"
-MS_CLIENT_SECRET = "00475c0d-a0ba-46e9-96e0-fbb8c5926b93"  # Add your secret here
+MS_CLIENT_ID = os.getenv("MICROSOFT_CLIENT_ID")
+MS_CLIENT_SECRET = os.getenv("MICROSOFT_CLIENT_SECRET")
 MS_AUTHORITY = "https://login.microsoftonline.com/common"
 
 @app.post("/api/auth/microsoft-token")
