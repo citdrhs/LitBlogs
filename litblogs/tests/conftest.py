@@ -39,11 +39,30 @@ TEST_ENVIRONMENT = {
     "EMAIL_FROM": "tests@example.com",
 }
 
+
+def _assert_test_database_engine(candidate_engine):
+    dialect_name = getattr(getattr(candidate_engine, "dialect", None), "name", None)
+    if dialect_name != "sqlite":
+        raise RuntimeError(f"Refusing test DDL for non-SQLite database dialect: {dialect_name!r}")
+
+    configured_database = getattr(getattr(candidate_engine, "url", None), "database", None)
+    if not configured_database:
+        raise RuntimeError("Refusing test DDL because the SQLite database path is missing")
+
+    configured_path = Path(configured_database).resolve()
+    expected_path = TEST_DATABASE_PATH.resolve()
+    if configured_path != expected_path:
+        raise RuntimeError(
+            f"Refusing test DDL for {configured_path}; expected test database {expected_path}"
+        )
+
+
 os.environ.update(TEST_ENVIRONMENT)
 sys.path.insert(0, str(BACKEND_DIR))
 
-main = import_module("main")
 database = import_module("database")
+_assert_test_database_engine(database.engine)
+main = import_module("main")
 base = import_module("base")
 
 
@@ -59,14 +78,22 @@ def cleanup_test_environment():
 
 @pytest.fixture
 def client():
+    _assert_test_database_engine(database.engine)
     base.Base.metadata.drop_all(bind=database.engine)
 
+    _assert_test_database_engine(database.engine)
     with TestClient(main.app) as test_client:
         yield test_client
 
+    _assert_test_database_engine(database.engine)
     base.Base.metadata.drop_all(bind=database.engine)
 
 
 @pytest.fixture(scope="session")
 def database_existed_after_import():
     return DATABASE_EXISTED_AFTER_IMPORT
+
+
+@pytest.fixture(scope="session")
+def database_guard():
+    return _assert_test_database_engine
