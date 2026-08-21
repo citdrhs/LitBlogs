@@ -1,5 +1,20 @@
-import { useEffect, useId } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+} from 'react';
 import { createRoot } from 'react-dom/client';
+
+const focusableElementSelector = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
 
 const overlayStyles = {
   position: 'fixed',
@@ -18,6 +33,19 @@ const modalStyles = {
   borderRadius: '12px',
   overflow: 'hidden',
   boxShadow: '0 20px 45px rgba(0, 0, 0, 0.35)',
+};
+
+const dialogStyles = {
+  position: 'fixed',
+  inset: 0,
+  width: '100vw',
+  maxWidth: 'none',
+  height: '100vh',
+  maxHeight: 'none',
+  margin: 0,
+  padding: 0,
+  border: 'none',
+  background: 'transparent',
 };
 
 const headerStyles = {
@@ -121,6 +149,18 @@ const SafePdfLink = ({ fileUrl, fileName }) => (
   </a>
 );
 
+const getFocusableElements = (dialogElement) => (
+  Array.from(dialogElement.querySelectorAll(focusableElementSelector))
+    .filter((element) => element.tabIndex >= 0)
+);
+
+const canRestoreFocus = (element) => (
+  element instanceof HTMLElement
+  && element.isConnected
+  && !element.hasAttribute('disabled')
+  && element.getAttribute('aria-disabled') !== 'true'
+);
+
 const InlinePdfViewer = ({ fileUrl, title = 'PDF Document' }) => {
   if (!hasUsableFileUrl(fileUrl)) {
     return null;
@@ -150,23 +190,123 @@ const InlinePdfViewer = ({ fileUrl, title = 'PDF Document' }) => {
 const PdfViewerModal = ({ fileUrl, title = 'PDF Preview', onClose }) => {
   const titleId = useId();
   const descriptionId = useId();
+  const dialogRef = useRef(null);
+  const invokerRef = useRef(null);
+  const usesNativeDialogRef = useRef(false);
   const isOpen = hasUsableFileUrl(fileUrl);
   const safeFileUrl = getSafeFileUrl(fileUrl);
 
+  const restoreInvokerFocus = useCallback(() => {
+    if (canRestoreFocus(invokerRef.current)) {
+      invokerRef.current.focus();
+    }
+  }, []);
+
+  const closeNativeDialog = useCallback(() => {
+    const dialogElement = dialogRef.current;
+    if (!usesNativeDialogRef.current || !dialogElement?.open) {
+      return;
+    }
+
+    if (typeof dialogElement.close === 'function') {
+      dialogElement.close();
+    } else {
+      dialogElement.removeAttribute('open');
+    }
+  }, []);
+
+  const requestClose = useCallback(() => {
+    closeNativeDialog();
+    restoreInvokerFocus();
+    onClose?.();
+  }, [closeNativeDialog, onClose, restoreInvokerFocus]);
+
+  const containFocus = useCallback((event) => {
+    if (event.key !== 'Tab') {
+      return;
+    }
+
+    const dialogElement = dialogRef.current;
+    if (!dialogElement) {
+      return;
+    }
+
+    const focusableElements = getFocusableElements(dialogElement);
+    if (focusableElements.length === 0) {
+      event.preventDefault();
+      dialogElement.focus();
+      return;
+    }
+
+    const firstElement = focusableElements[0];
+    const lastElement = focusableElements[focusableElements.length - 1];
+    const activeElement = document.activeElement;
+
+    if (event.shiftKey && (activeElement === firstElement || !dialogElement.contains(activeElement))) {
+      event.preventDefault();
+      lastElement.focus();
+    } else if (!event.shiftKey && (activeElement === lastElement || !dialogElement.contains(activeElement))) {
+      event.preventDefault();
+      firstElement.focus();
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!isOpen) {
+      return undefined;
+    }
+
+    const dialogElement = dialogRef.current;
+    if (!dialogElement) {
+      return undefined;
+    }
+
+    if (!dialogElement.contains(document.activeElement)) {
+      invokerRef.current = document.activeElement;
+    }
+
+    usesNativeDialogRef.current = typeof dialogElement.showModal === 'function';
+    if (usesNativeDialogRef.current) {
+      if (!dialogElement.open) {
+        dialogElement.showModal();
+      }
+    } else {
+      dialogElement.setAttribute('open', '');
+    }
+
+    const [firstElement] = getFocusableElements(dialogElement);
+    (firstElement || dialogElement).focus();
+
+    return () => {
+      if (dialogElement.open) {
+        if (typeof dialogElement.close === 'function') {
+          dialogElement.close();
+        } else {
+          dialogElement.removeAttribute('open');
+        }
+      }
+      restoreInvokerFocus();
+    };
+  }, [isOpen, restoreInvokerFocus]);
+
   useEffect(() => {
-    if (!isOpen || typeof onClose !== 'function') {
+    if (!isOpen || usesNativeDialogRef.current) {
       return undefined;
     }
 
     const onKeyDown = (event) => {
       if (event.key === 'Escape') {
-        onClose();
+        event.preventDefault();
+        requestClose();
+        return;
       }
+
+      containFocus(event);
     };
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isOpen, onClose]);
+  }, [containFocus, isOpen, requestClose]);
 
   if (!isOpen) {
     return null;
@@ -175,40 +315,52 @@ const PdfViewerModal = ({ fileUrl, title = 'PDF Preview', onClose }) => {
   const fileName = safeFileUrl ? getFileName(safeFileUrl) : 'PDF document';
 
   return (
-    <div
-      style={overlayStyles}
+    <dialog
+      ref={dialogRef}
+      aria-modal="true"
+      aria-labelledby={titleId}
+      aria-describedby={descriptionId}
+      style={dialogStyles}
+      tabIndex={-1}
+      onCancel={(event) => {
+        event.preventDefault();
+        requestClose();
+      }}
       onClick={(event) => {
         if (event.target === event.currentTarget) {
-          onClose?.();
+          requestClose();
         }
       }}
-      role="presentation"
     >
       <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        aria-describedby={descriptionId}
-        style={modalStyles}
+        style={overlayStyles}
+        onClick={(event) => {
+          if (event.target === event.currentTarget) {
+            requestClose();
+          }
+        }}
+        role="presentation"
       >
-        <div style={headerStyles}>
-          <h2 id={titleId} style={{ margin: 0, fontSize: '18px', fontWeight: 600, color: '#111827' }}>{title}</h2>
-          <button type="button" aria-label="Close PDF preview" style={closeButtonStyles} onClick={onClose} autoFocus>
-            &times;
-          </button>
-        </div>
+        <div style={modalStyles}>
+          <div style={headerStyles}>
+            <h2 id={titleId} style={{ margin: 0, fontSize: '18px', fontWeight: 600, color: '#111827' }}>{title}</h2>
+            <button type="button" aria-label="Close PDF preview" style={closeButtonStyles} onClick={requestClose}>
+              &times;
+            </button>
+          </div>
 
-        <div style={contentStyles}>
-          <p style={fileNameStyles}>{fileName}</p>
-          <p id={descriptionId} style={{ margin: 0 }}>
-            {safeFileUrl
-              ? 'For safety, LitBlog does not render PDF files inside the application.'
-              : 'This PDF link cannot be opened safely.'}
-          </p>
-          {safeFileUrl && <SafePdfLink fileUrl={safeFileUrl} fileName={fileName} />}
+          <div style={contentStyles}>
+            <p style={fileNameStyles}>{fileName}</p>
+            <p id={descriptionId} style={{ margin: 0 }}>
+              {safeFileUrl
+                ? 'For safety, LitBlog does not render PDF files inside the application.'
+                : 'This PDF link cannot be opened safely.'}
+            </p>
+            {safeFileUrl && <SafePdfLink fileUrl={safeFileUrl} fileName={fileName} />}
+          </div>
         </div>
       </div>
-    </div>
+    </dialog>
   );
 };
 
