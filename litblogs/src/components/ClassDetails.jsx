@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import axios from 'axios';
-import Navbar from './Navbar';
 import { useNavigate } from 'react-router-dom';
 import Loader from './Loader';
 import ReactHtmlParser from 'react-html-parser';
@@ -69,7 +68,7 @@ const serializeAssignmentDueDate = (dateValue) => {
 };
 
 const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) => {
-  const [userInfo, setUserInfo] = useState(null);
+  const [, setUserInfo] = useState(null);
   const [activeTab, setActiveTab] = useState(initialTab);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);

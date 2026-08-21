@@ -10,13 +10,13 @@ import Footer from './components/Footer';
 const TeacherDashboard = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const [darkMode, setDarkMode] = useState(() => {
+  const [darkMode] = useState(() => {
     return JSON.parse(localStorage.getItem('darkMode')) ?? false;
   });
   const [activeTab, setActiveTab] = useState('Dashboard');
   const [showClassForm, setShowClassForm] = useState(false);
   const [newClass, setNewClass] = useState({ name: '', description: '' });
-  const [users, setUsers] = useState([]);
+  useState([]);
   const [classes, setClasses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -28,15 +28,6 @@ const TeacherDashboard = () => {
   const [classesTab, setClassesTab] = useState('active'); // 'active' or 'archived'
   const [menuOpen, setMenuOpen] = useState(null);
   const [analytics, setAnalytics] = useState(null);
-
-  // Add the toggleDarkMode function
-  const toggleDarkMode = () => {
-    setDarkMode((prevDarkMode) => {
-      const newDarkMode = !prevDarkMode;
-      localStorage.setItem('darkMode', JSON.stringify(newDarkMode));
-      return newDarkMode;
-    });
-  };
 
   // Apply dark mode class to document
   useEffect(() => {

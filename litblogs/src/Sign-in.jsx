@@ -5,7 +5,7 @@ import './LitBlogs.css'; // Import any custom styles here
 import axios from 'axios';
 import Loader from './components/Loader';
 import Footer from './components/Footer';
-import { GoogleLogin, GoogleOAuthProvider } from '@react-oauth/google';
+import { GoogleLogin } from '@react-oauth/google';
 import { useMsal } from "@azure/msal-react";
 import { loginRequest } from "./config/msalConfig";
 import { FaMicrosoft } from 'react-icons/fa';
@@ -39,14 +39,6 @@ const SignIn = () => {
 
   const toggleDropdown = () => {
     setIsDropdownOpen((prev) => !prev);
-  };
-
-  const toggleDarkMode = () => {
-    setDarkMode((prevDarkMode) => {
-      const newDarkMode = !prevDarkMode;
-      localStorage.setItem('darkMode', JSON.stringify(newDarkMode));
-      return newDarkMode;
-    });
   };
 
   useEffect(() => {

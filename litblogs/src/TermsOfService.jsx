@@ -10,15 +10,6 @@ const TermsOfService = () => {
   const navigate = useNavigate();
   const [userInfo, setUserInfo] = useState(null);
 
-  // Toggle dark mode
-  const toggleDarkMode = () => {
-    setDarkMode((prevDarkMode) => {
-      const newDarkMode = !prevDarkMode;
-      localStorage.setItem('darkMode', JSON.stringify(newDarkMode));
-      return newDarkMode;
-    });
-  };
-
   // Load dark mode preference from localStorage
   useEffect(() => {
     const storedDarkMode = JSON.parse(localStorage.getItem('darkMode'));

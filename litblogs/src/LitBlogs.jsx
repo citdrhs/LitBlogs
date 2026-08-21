@@ -11,8 +11,8 @@ const LitBlogs = () => {
   const [userInfo, setUserInfo] = useState(null);
   const [currentSlide, setCurrentSlide] = useState(0);
   const [darkMode, setDarkMode] = useState(false);
-  const [email, setEmail] = useState("");
-  const [newsletterMessage, setNewsletterMessage] = useState("");
+  useState("");
+  useState("");
   const slides = [
     assetPath("Classroom1.jpeg"),
     assetPath("Classroom2.jpeg"),
@@ -27,15 +27,6 @@ const LitBlogs = () => {
 
   const prevSlide = () => {
     setCurrentSlide((prev) => (prev > 0 ? prev - 1 : slides.length - 1));
-  };
-
-  // Toggle dark mode
-  const toggleDarkMode = () => {
-    setDarkMode((prevDarkMode) => {
-      const newDarkMode = !prevDarkMode;
-      localStorage.setItem('darkMode', JSON.stringify(newDarkMode));
-      return newDarkMode;
-    });
   };
 
   // Load dark mode preference from localStorage
@@ -57,17 +48,6 @@ const LitBlogs = () => {
       document.documentElement.classList.remove("dark");
     }
   }, [darkMode]);
-
-  // Handle newsletter submission
-  const handleNewsletterSubmit = (e) => {
-    e.preventDefault();
-    if (email && email.includes("@")) {
-      setNewsletterMessage("Thank you for subscribing!");
-      setEmail("");
-    } else {
-      setNewsletterMessage("Please enter a valid email address.");
-    }
-  };
 
   useEffect(() => {
     const storedUserInfo = localStorage.getItem('user_info');

@@ -5,14 +5,14 @@ import './LitBlogs.css'; // Import any custom styles here
 import axios from 'axios';
 import Loader from './components/Loader';
 import Footer from './components/Footer';
-import { GoogleOAuthProvider, GoogleLogin, useGoogleLogin } from '@react-oauth/google';
+import { GoogleLogin, useGoogleLogin } from '@react-oauth/google';
 import { useMsal } from "@azure/msal-react";
 import { loginRequest } from "./config/msalConfig";
 import { FaMicrosoft } from 'react-icons/fa';
 import { apiPath, resolveAppAsset } from './utils/urlUtils';
 
 const SignUp = () => {
-  const navigate = useNavigate();
+  useNavigate();
   const { instance } = useMsal();
   // State variables for form inputs
   const [firstName, setFirstName] = useState("");
@@ -61,15 +61,6 @@ const SignUp = () => {
   const toggleDropdown = () => {
     setIsDropdownOpen((prev) => !prev);
   };  
-  // Dark mode logic (same as previous)
-  const toggleDarkMode = () => {
-    setDarkMode((prevDarkMode) => {
-      const newDarkMode = !prevDarkMode;
-      localStorage.setItem('darkMode', JSON.stringify(newDarkMode));
-      return newDarkMode;
-    });
-  };
-
   useEffect(() => {
     const storedDarkMode = JSON.parse(localStorage.getItem('darkMode'));
     if (storedDarkMode !== null) {
@@ -112,7 +103,7 @@ const SignUp = () => {
     }
     
     // Check for special character
-    if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)) {
+    if (!/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(password)) {
       return "Password must contain at least one special character";
     }
     
@@ -128,12 +119,12 @@ const SignUp = () => {
     if (/[A-Z]/.test(password)) score++;
     if (/[a-z]/.test(password)) score++;
     if (/[0-9]/.test(password)) score++;
-    if (/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)) score++;
+    if (/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(password)) score++;
     
     // Extra points for stronger passwords
     if (password.length >= 12) score++; // Bonus for longer passwords
     if (/(?=.*[0-9].*[0-9])/.test(password)) score++; // Bonus for multiple numbers
-    if (/(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?].*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?])/.test(password)) score++; // Bonus for multiple special chars
+    if (/(?=.*[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?].*[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?])/.test(password)) score++; // Bonus for multiple special chars
     
     // Determine strength label and color
     let label, color;
@@ -319,7 +310,7 @@ const SignUp = () => {
     setErrorMessage('Google sign up failed. Please try again.');
   };
 
-  const googleSignUp = useGoogleLogin({
+  useGoogleLogin({
     onSuccess: async (tokenResponse) => {
       try {
         // Check if role is selected

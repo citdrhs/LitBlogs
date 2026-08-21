@@ -40,15 +40,15 @@ const StudentHub = () => {
   const [showJoinForm, setShowJoinForm] = useState(false);
   const [classCode, setClassCode] = useState('');
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [, setError] = useState(null);
   const [activeTab, setActiveTab] = useState('current');
   const [posts, setPosts] = useState([]);
   const [postsLoading, setPostsLoading] = useState(false);
-  const [darkMode, setDarkMode] = useState(() => {
+  const [darkMode] = useState(() => {
     return JSON.parse(localStorage.getItem('darkMode')) ?? false;
   });
   const [archivedClasses, setArchivedClasses] = useState([]);
-  const [classesTab, setClassesTab] = useState('active'); // 'active' or 'archived'
+  useState('active'); // Preserve the existing hook order.
 
   useEffect(() => {
     const storedUserInfo = localStorage.getItem('user_info');
@@ -142,7 +142,7 @@ const StudentHub = () => {
       setClassCode('');
       setLoading(false);
       toast.success('Successfully joined class!');
-    } catch (error) {
+    } catch {
       setLoading(false);
       setError('Failed to join class');
       toast.error('Failed to join class. Please check the class code.');
