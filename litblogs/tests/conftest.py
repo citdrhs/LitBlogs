@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 from importlib import import_module
 from pathlib import Path
@@ -6,14 +7,25 @@ from tempfile import TemporaryDirectory
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.engine import make_url
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 TEST_TEMP_DIR = TemporaryDirectory(prefix="litblogs-tests-")
 TEST_DATABASE_PATH = Path(TEST_TEMP_DIR.name) / "litblogs-test.db"
+DEFAULT_TEST_DATABASE_URL = f"sqlite:///{TEST_DATABASE_PATH.as_posix()}"
+EXPLICIT_TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "")
+EXPLICIT_TEST_POSTGRES_DATABASE = os.environ.get("TEST_POSTGRES_DATABASE", "")
+EXPLICIT_ALLOW_TEST_DATABASE_DDL = os.environ.get("ALLOW_TEST_DATABASE_DDL", "")
+SELECTED_TEST_DATABASE_URL = EXPLICIT_TEST_DATABASE_URL or DEFAULT_TEST_DATABASE_URL
+LOOPBACK_DATABASE_HOSTS = {"localhost", "127.0.0.1", "::1"}
+SYNTHETIC_POSTGRES_DATABASE = re.compile(r"^litblog_test_[a-z0-9][a-z0-9_]*$")
 
 TEST_ENVIRONMENT = {
     "APP_ENV": "test",
-    "DATABASE_URL": f"sqlite:///{TEST_DATABASE_PATH.as_posix()}",
+    "DATABASE_URL": SELECTED_TEST_DATABASE_URL,
+    "TEST_DATABASE_URL": EXPLICIT_TEST_DATABASE_URL,
+    "TEST_POSTGRES_DATABASE": EXPLICIT_TEST_POSTGRES_DATABASE,
+    "ALLOW_TEST_DATABASE_DDL": EXPLICIT_ALLOW_TEST_DATABASE_DDL,
     "SECRET_KEY": "test-only-secret-key-" + ("x" * 64),
     "ALGORITHM": "HS256",
     "ACCESS_TOKEN_EXPIRE_MINUTES": "30",
@@ -42,19 +54,53 @@ TEST_ENVIRONMENT = {
 
 def _assert_test_database_engine(candidate_engine):
     dialect_name = getattr(getattr(candidate_engine, "dialect", None), "name", None)
-    if dialect_name != "sqlite":
-        raise RuntimeError(f"Refusing test DDL for non-SQLite database dialect: {dialect_name!r}")
+    candidate_url = getattr(candidate_engine, "url", None)
 
-    configured_database = getattr(getattr(candidate_engine, "url", None), "database", None)
-    if not configured_database:
-        raise RuntimeError("Refusing test DDL because the SQLite database path is missing")
+    if dialect_name == "sqlite":
+        configured_database = getattr(candidate_url, "database", None)
+        if not configured_database:
+            raise RuntimeError("Refusing test DDL because the SQLite database path is missing")
 
-    configured_path = Path(configured_database).resolve()
-    expected_path = TEST_DATABASE_PATH.resolve()
-    if configured_path != expected_path:
+        configured_path = Path(configured_database).resolve()
+        expected_path = TEST_DATABASE_PATH.resolve()
+        if configured_path != expected_path:
+            raise RuntimeError(
+                f"Refusing test DDL for {configured_path}; expected test database {expected_path}"
+            )
+        return
+
+    if dialect_name != "postgresql":
+        raise RuntimeError(f"Refusing unsupported test database dialect: {dialect_name!r}")
+
+    test_database_url = os.environ.get("TEST_DATABASE_URL")
+    if not test_database_url:
+        raise RuntimeError("Refusing PostgreSQL test DDL without explicit TEST_DATABASE_URL")
+    if candidate_url != make_url(test_database_url):
+        raise RuntimeError("Refusing PostgreSQL test DDL because engine URL differs from TEST_DATABASE_URL")
+    if os.environ.get("ALLOW_TEST_DATABASE_DDL") != "true":
+        raise RuntimeError("Refusing PostgreSQL test DDL without ALLOW_TEST_DATABASE_DDL=true")
+
+    query_keys = set(candidate_url.query)
+    if query_keys & {"host", "hostaddr", "service"}:
+        raise RuntimeError("Refusing PostgreSQL test DDL with a connection target override")
+    if query_keys & {"database", "dbname"}:
+        raise RuntimeError("Refusing PostgreSQL test DDL with a database target override")
+
+    if candidate_url.host not in LOOPBACK_DATABASE_HOSTS:
+        raise RuntimeError("Refusing PostgreSQL test DDL unless the host is an exact loopback address")
+
+    expected_database = os.environ.get("TEST_POSTGRES_DATABASE")
+    if not expected_database:
+        raise RuntimeError("Refusing PostgreSQL test DDL without explicit TEST_POSTGRES_DATABASE")
+    if candidate_url.database != expected_database:
         raise RuntimeError(
-            f"Refusing test DDL for {configured_path}; expected test database {expected_path}"
+            "Refusing PostgreSQL test DDL because the engine database differs from "
+            "TEST_POSTGRES_DATABASE"
         )
+    if expected_database != "litblog_ci" and not SYNTHETIC_POSTGRES_DATABASE.fullmatch(
+        expected_database
+    ):
+        raise RuntimeError("Refusing PostgreSQL DDL for a non-synthetic test database name")
 
 
 os.environ.update(TEST_ENVIRONMENT)

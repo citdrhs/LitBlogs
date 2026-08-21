@@ -258,9 +258,34 @@ def validate_ci() -> None:
         re.search(r"python\s+-m\s+pytest\s+-q", backend_commands) is not None,
         "backend must run pytest",
     )
+
+    backend_steps = backend.get("steps", []) if isinstance(backend, dict) else []
+    pytest_steps = [
+        step
+        for step in backend_steps
+        if isinstance(step, dict)
+        and re.search(r"python\s+-m\s+pytest\s+-q", str(step.get("run", "")))
+    ]
+    expect(len(pytest_steps) == 1, "backend must have exactly one pytest step")
+    pytest_environment = pytest_steps[0].get("env", {}) if len(pytest_steps) == 1 else {}
+    guarded_postgres_url = (
+        "postgresql://litblog_ci:ci-only-postgres-password@localhost:5432/litblog_ci"
+    )
+    expected_pytest_environment = {
+        "APP_ENV": "test",
+        "TEST_DATABASE_URL": guarded_postgres_url,
+        "DATABASE_URL": guarded_postgres_url,
+        "TEST_POSTGRES_DATABASE": "litblog_ci",
+        "ALLOW_TEST_DATABASE_DDL": "true",
+        "RESET_DATABASE_ON_STARTUP": "false",
+    }
     expect(
-        "sqlite:///" in backend_commands,
-        "backend pytest must be explicitly isolated to a synthetic SQLite database",
+        pytest_environment == expected_pytest_environment,
+        "backend pytest must use the guarded synthetic PostgreSQL service environment",
+    )
+    expect(
+        "sqlite" not in str(pytest_environment).lower(),
+        "backend pytest must reject SQLite and exercise the PostgreSQL service",
     )
     expect(
         "python -m pip install -r requirements.txt -r requirements-dev.txt" in backend_commands,

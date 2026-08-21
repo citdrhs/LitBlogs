@@ -72,15 +72,16 @@ jobs:
                   cursor.execute("SELECT 1")
                   assert cursor.fetchone() == (1,)
           PY
-      - name: Run isolated backend tests
+      - name: Run guarded PostgreSQL backend tests
         working-directory: litblogs
         env:
           APP_ENV: test
-          DATABASE_URL: sqlite:////tmp/litblogs-ci-test.db
+          TEST_DATABASE_URL: postgresql://litblog_ci:ci-only-postgres-password@localhost:5432/litblog_ci
+          DATABASE_URL: postgresql://litblog_ci:ci-only-postgres-password@localhost:5432/litblog_ci
+          TEST_POSTGRES_DATABASE: litblog_ci
+          ALLOW_TEST_DATABASE_DDL: "true"
           RESET_DATABASE_ON_STARTUP: "false"
-        run: |
-          # Keep application tests isolated on sqlite:/// until the role integration layer.
-          python -m pytest -q
+        run: python -m pytest -q
 
   frontend-tests:
     name: Frontend tests
