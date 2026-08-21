@@ -11,6 +11,7 @@ from base import Base
 import models
 from models import User, Teacher, PasswordReset
 import schemas
+from security_utils import secure_code_matches
 from pydantic import BaseModel, EmailStr
 from typing import List
 from passlib.context import CryptContext
@@ -1228,7 +1229,7 @@ def verify_class_code(code_data: dict, db: Session = Depends(get_db)):
 @app.post("/api/verify-admin-code")
 def verify_admin_code(code_data: dict):
     admin_code = os.getenv("ADMIN_CODE")
-    if code_data.get("code") != admin_code:
+    if not secure_code_matches(code_data.get("code"), admin_code):
         raise HTTPException(status_code=400, detail="Invalid admin code")
     return {"valid": True}
 

@@ -23,11 +23,46 @@ function Add-TestResult {
     Write-Output "FAIL $message"
 }
 
+function Get-CurrentPowerShellExecutable {
+    try {
+        $currentExecutable = (Get-Process -Id $PID -ErrorAction Stop).Path
+        if ($currentExecutable -and (Test-Path -LiteralPath $currentExecutable -PathType Leaf)) {
+            return $currentExecutable
+        }
+    }
+    catch {
+        # Fall through to command discovery when the host does not expose its path.
+    }
+
+    $fallbackNames = if ($PSVersionTable.PSEdition -eq 'Core') {
+        @('pwsh', 'powershell')
+    }
+    else {
+        @('powershell.exe', 'pwsh')
+    }
+
+    foreach ($name in $fallbackNames) {
+        $command = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue
+        if ($command) {
+            return $command.Source
+        }
+    }
+
+    throw 'Unable to locate the current PowerShell executable.'
+}
+
 function Invoke-SecretChecker {
     param([string]$Repository)
 
+    $powerShellExecutable = Get-CurrentPowerShellExecutable
+    $powerShellArguments = @('-NoLogo', '-NoProfile')
+    if ($env:OS -eq 'Windows_NT') {
+        $powerShellArguments += @('-ExecutionPolicy', 'Bypass')
+    }
+    $powerShellArguments += @('-File', (Join-Path $Repository 'scripts\check-no-tracked-secrets.ps1'))
+
     $output = @(
-        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Repository 'scripts\check-no-tracked-secrets.ps1') 2>&1
+        & $powerShellExecutable @powerShellArguments 2>&1
     )
     return [pscustomobject]@{
         ExitCode = $LASTEXITCODE
@@ -75,6 +110,24 @@ try {
 
     & git -C $testRepo init -q
     & git -C $testRepo add -- '.gitignore' 'scripts/check-no-tracked-secrets.ps1'
+
+    $originalPath = $env:PATH
+    $gitDirectory = Split-Path -Parent (Get-Command git -ErrorAction Stop).Source
+    $ranWithoutPowerShellOnPath = $false
+    try {
+        $env:PATH = $gitDirectory
+        try {
+            $restrictedPathResult = Invoke-SecretChecker $testRepo
+            $ranWithoutPowerShellOnPath = $restrictedPathResult.ExitCode -eq 0
+        }
+        catch {
+            $ranWithoutPowerShellOnPath = $false
+        }
+    }
+    finally {
+        $env:PATH = $originalPath
+    }
+    Add-TestResult 'uses the current PowerShell executable without PATH lookup' $ranWithoutPowerShellOnPath
 
     Set-Content -LiteralPath (Join-Path $testRepo 'nested\config.env') -Value 'TEST_MARKER=opaque-test-placeholder'
     & git -C $testRepo check-ignore -q -- 'nested/config.env'
