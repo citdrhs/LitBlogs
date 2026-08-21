@@ -40,7 +40,6 @@ Set-Location litblogs
 python -m pip install -r requirements.txt -r requirements-dev.txt
 python -m pytest -q
 python -m ruff check .
-python -m bandit -r main.py database.py models.py schemas.py -ll
 python -m pip_audit -r requirements.txt
 npm ci
 npm run test:run
@@ -48,6 +47,7 @@ npm run lint
 npm run build
 npm audit --omit=dev --audit-level=high
 Set-Location ..
+python scripts/run-backend-bandit.py
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-no-tracked-secrets.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-no-tracked-secrets.tests.ps1
 python scripts/check-generic-secrets.tests.py
@@ -56,7 +56,7 @@ python scripts/validate-repository-policy.py
 git diff --check
 ```
 
-Run `python -m pre_commit run --all-files` as a fast deterministic pre-review check. The local hooks cover the proposed-tree secret scan, repository policy, backend Ruff, and frontend lint; the full commands above remain the source of truth.
+Run `python -m pre_commit run --all-files` as a fast deterministic pre-review check. The local hooks cover the proposed-tree secret scan, repository policy, backend Ruff, backend Bandit, and frontend lint; the full commands above remain the source of truth.
 
 ## Journey, authorization, and data evidence
 

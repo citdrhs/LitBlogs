@@ -243,5 +243,4 @@ jobs:
         working-directory: litblogs
         run: python -m ruff check .
       - name: Run Bandit medium/high scan
-        working-directory: litblogs
-        run: python -m bandit -r . -x "./tests/*,./.venv/*,*/__pycache__/*,*/.pytest_cache/*,*/.ruff_cache/*" -ll
+        run: python scripts/run-backend-bandit.py

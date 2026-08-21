@@ -24,6 +24,14 @@ repos:
           - ruff==0.16.4
         pass_filenames: false
         files: ^litblogs/.*\.py$
+      - id: backend-bandit
+        name: backend Bandit medium/high scan
+        entry: python scripts/run-backend-bandit.py
+        language: python
+        additional_dependencies:
+          - bandit==1.9.4
+        pass_filenames: false
+        files: ^(?:litblogs/.*\.py$|scripts/run-backend-bandit\.py$)
       - id: frontend-lint
         name: frontend ESLint
         entry: npm --prefix litblogs run lint

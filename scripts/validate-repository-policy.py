@@ -29,6 +29,14 @@ EXPECTED_ACTION_PINS = {
     "github/codeql-action/init": ("db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28", "v4.37.8"),
     "github/codeql-action/analyze": ("db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28", "v4.37.8"),
 }
+BACKEND_BANDIT_COMMAND = "python scripts/run-backend-bandit.py"
+EXPECTED_BANDIT_EXCLUSIONS = (
+    "./tests/*",
+    "./.venv/*",
+    "*/__pycache__/*",
+    "*/.pytest_cache/*",
+    "*/.ruff_cache/*",
+)
 
 EXPECTED_CI_JOBS = {
     "backend-tests": "Backend tests",
@@ -345,12 +353,12 @@ def validate_ci() -> None:
     sast_commands = step_commands(jobs.get("sast", {}))
     expect("python -m ruff check ." in sast_commands, "SAST must run Ruff")
     expect(
-        (
-            'python -m bandit -r . -x '
-            '"./tests/*,./.venv/*,*/__pycache__/*,*/.pytest_cache/*,*/.ruff_cache/*" -ll'
-        )
-        in sast_commands,
-        "SAST must run Bandit across the complete backend runtime package",
+        BACKEND_BANDIT_COMMAND in sast_commands,
+        "SAST must use the shared backend Bandit runner",
+    )
+    expect(
+        "python -m bandit" not in sast_commands,
+        "SAST must not duplicate the shared backend Bandit command",
     )
 
     expect("python-version: \"3.13\"" in text, "CI must use Python 3.13")
@@ -529,6 +537,14 @@ def validate_repository_documents() -> None:
         "check-no-tracked-secrets",
     ):
         expect(phrase in contributing, f"CONTRIBUTING.md must document {phrase}")
+    expect(
+        BACKEND_BANDIT_COMMAND in contributing,
+        "CONTRIBUTING.md must use the same shared backend Bandit runner as CI",
+    )
+    expect(
+        "python -m bandit" not in contributing,
+        "CONTRIBUTING.md must not duplicate the backend Bandit command",
+    )
 
     security = read_text("SECURITY.md").lower()
     for phrase in (
@@ -548,16 +564,25 @@ def validate_repository_documents() -> None:
         and repositories[0].get("repo") == "local",
         "pre-commit must use only deterministic local hooks",
     )
-    hook_ids = {
-        hook.get("id")
+    hooks_by_id = {
+        hook.get("id"): hook
         for repository in repositories
         if isinstance(repository, dict)
         for hook in repository.get("hooks", [])
         if isinstance(hook, dict)
     }
     expect(
-        hook_ids == {"secret-check", "repository-policy", "backend-ruff", "frontend-lint"},
-        "pre-commit hook IDs must cover secrets, policy, Ruff, and frontend lint",
+        set(hooks_by_id)
+        == {"secret-check", "repository-policy", "backend-ruff", "backend-bandit", "frontend-lint"},
+        "pre-commit hook IDs must cover secrets, policy, Ruff, Bandit, and frontend lint",
+    )
+    bandit_hook = hooks_by_id.get("backend-bandit", {})
+    expect(
+        isinstance(bandit_hook, dict)
+        and bandit_hook.get("entry") == BACKEND_BANDIT_COMMAND
+        and bandit_hook.get("language") == "python"
+        and bandit_hook.get("additional_dependencies") == ["bandit==1.9.4"],
+        "pre-commit Bandit hook must invoke the shared runner with pinned Bandit",
     )
 
     expect(
@@ -568,6 +593,16 @@ def validate_repository_documents() -> None:
         (ROOT / "scripts/check-generic-secrets.tests.py").is_file(),
         "missing generic secret scanner regression suite",
     )
+    bandit_runner = read_text("scripts/run-backend-bandit.py")
+    for fragment in (
+        *EXPECTED_BANDIT_EXCLUSIONS,
+        '"-r"',
+        '"."',
+        '"-x"',
+        '"-ll"',
+        "cwd=BACKEND_ROOT",
+    ):
+        expect(fragment in bandit_runner, f"shared backend Bandit runner must include {fragment}")
 
 
 def main() -> int:
