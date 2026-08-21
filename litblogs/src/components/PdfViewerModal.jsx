@@ -1,12 +1,5 @@
-import { useEffect } from 'react';
+import { useEffect, useId } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Worker, Viewer } from '@react-pdf-viewer/core';
-import { defaultLayoutPlugin } from '@react-pdf-viewer/default-layout';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
-import '@react-pdf-viewer/core/lib/styles/index.css';
-import '@react-pdf-viewer/default-layout/lib/styles/index.css';
-
-const PDF_WORKER_URL = pdfWorkerUrl;
 
 const overlayStyles = {
   position: 'fixed',
@@ -20,14 +13,11 @@ const overlayStyles = {
 };
 
 const modalStyles = {
-  width: 'min(1100px, 95vw)',
-  height: 'min(850px, 90vh)',
+  width: 'min(560px, 95vw)',
   backgroundColor: '#ffffff',
   borderRadius: '12px',
   overflow: 'hidden',
   boxShadow: '0 20px 45px rgba(0, 0, 0, 0.35)',
-  display: 'flex',
-  flexDirection: 'column',
 };
 
 const headerStyles = {
@@ -48,49 +38,91 @@ const closeButtonStyles = {
   padding: '2px 6px',
 };
 
-const PDF_LAYER_FIX_STYLES = `
-  .inline-pdf-root {
-    width: 100%;
-    max-width: 100%;
-    background: #fff;
+const contentStyles = {
+  padding: '24px',
+  color: '#334155',
+};
+
+const fileNameStyles = {
+  margin: '0 0 12px',
+  color: '#0f172a',
+  fontWeight: 600,
+  overflowWrap: 'anywhere',
+};
+
+const openLinkStyles = {
+  display: 'inline-block',
+  marginTop: '8px',
+  padding: '10px 14px',
+  borderRadius: '8px',
+  backgroundColor: '#2563eb',
+  color: '#ffffff',
+  fontWeight: 600,
+  textDecoration: 'none',
+};
+
+const hasUsableFileUrl = (fileUrl) => (
+  typeof fileUrl === 'string' && fileUrl.trim().length > 0
+);
+
+const getFileName = (fileUrl) => {
+  const path = fileUrl.split(/[?#]/, 1)[0];
+  const encodedFileName = path.split('/').filter(Boolean).pop();
+
+  if (!encodedFileName) {
+    return 'PDF document';
   }
 
-  .inline-pdf-root .rpv-core__viewer,
-  .inline-pdf-root .rpv-core__page-layer,
-  .inline-pdf-root .rpv-core__inner-page,
-  .inline-pdf-root .rpv-core__text-layer,
-  .inline-pdf-root .rpv-core__text-layer * {
-    font-family: initial !important;
-    text-shadow: none !important;
+  try {
+    return decodeURIComponent(encodedFileName);
+  } catch {
+    return encodedFileName;
   }
+};
 
-  .inline-pdf-root .rpv-core__text-layer,
-  .inline-pdf-root .rpv-core__text-layer * {
-    color: transparent !important;
-    -webkit-text-fill-color: transparent !important;
-  }
-`;
+const SafePdfLink = ({ fileUrl, fileName }) => (
+  <a
+    href={fileUrl}
+    target="_blank"
+    rel="noopener noreferrer"
+    download={fileName}
+    style={openLinkStyles}
+  >
+    Open or download {fileName}
+  </a>
+);
 
 const InlinePdfViewer = ({ fileUrl, title = 'PDF Document' }) => {
-  const defaultLayoutPluginInstance = defaultLayoutPlugin();
+  if (!hasUsableFileUrl(fileUrl)) {
+    return null;
+  }
+
+  const fileName = getFileName(fileUrl);
 
   return (
-    <div className="inline-pdf-root" style={{ border: '1px solid #e5e7eb', borderRadius: '10px', overflow: 'hidden', margin: '12px 0', width: '100%', maxWidth: '100%' }}>
-      <style>{PDF_LAYER_FIX_STYLES}</style>
-      <div style={{ padding: '8px 12px', borderBottom: '1px solid #e5e7eb', backgroundColor: '#f8fafc', color: '#0f172a', fontWeight: 600 }}>
-        {title}
-      </div>
-      <div style={{ height: '620px' }}>
-        <Worker workerUrl={PDF_WORKER_URL}>
-          <Viewer fileUrl={fileUrl} plugins={[defaultLayoutPluginInstance]} />
-        </Worker>
-      </div>
-    </div>
+    <section
+      className="inline-pdf-root"
+      aria-label={title}
+      style={{ border: '1px solid #e5e7eb', borderRadius: '10px', margin: '12px 0', padding: '16px', width: '100%', maxWidth: '100%', backgroundColor: '#ffffff' }}
+    >
+      <div style={{ color: '#0f172a', fontWeight: 600 }}>{title}</div>
+      <p style={{ ...fileNameStyles, marginTop: '12px' }}>{fileName}</p>
+      <p style={{ margin: 0 }}>This PDF is not rendered inside LitBlog.</p>
+      <SafePdfLink fileUrl={fileUrl} fileName={fileName} />
+    </section>
   );
 };
 
 const PdfViewerModal = ({ fileUrl, title = 'PDF Preview', onClose }) => {
+  const titleId = useId();
+  const descriptionId = useId();
+  const isOpen = hasUsableFileUrl(fileUrl);
+
   useEffect(() => {
+    if (!isOpen || typeof onClose !== 'function') {
+      return undefined;
+    }
+
     const onKeyDown = (event) => {
       if (event.key === 'Escape') {
         onClose();
@@ -99,26 +131,44 @@ const PdfViewerModal = ({ fileUrl, title = 'PDF Preview', onClose }) => {
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
+  }, [isOpen, onClose]);
 
-  if (!fileUrl) {
+  if (!isOpen) {
     return null;
   }
 
+  const fileName = getFileName(fileUrl);
+
   return (
-    <div style={overlayStyles} onClick={onClose} role="presentation">
-      <div style={modalStyles} onClick={(event) => event.stopPropagation()}>
+    <div
+      style={overlayStyles}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose?.();
+        }
+      }}
+      role="presentation"
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+        style={modalStyles}
+      >
         <div style={headerStyles}>
-          <div style={{ fontWeight: 600, color: '#111827' }}>{title}</div>
-          <button type="button" aria-label="Close PDF preview" style={closeButtonStyles} onClick={onClose}>
+          <h2 id={titleId} style={{ margin: 0, fontSize: '18px', fontWeight: 600, color: '#111827' }}>{title}</h2>
+          <button type="button" aria-label="Close PDF preview" style={closeButtonStyles} onClick={onClose} autoFocus>
             &times;
           </button>
         </div>
 
-        <div style={{ flex: 1, minHeight: 0 }}>
-          <Worker workerUrl={PDF_WORKER_URL}>
-            <Viewer fileUrl={fileUrl} />
-          </Worker>
+        <div style={contentStyles}>
+          <p style={fileNameStyles}>{fileName}</p>
+          <p id={descriptionId} style={{ margin: 0 }}>
+            For safety, LitBlog does not render PDF files inside the application.
+          </p>
+          <SafePdfLink fileUrl={fileUrl} fileName={fileName} />
         </div>
       </div>
     </div>
@@ -126,7 +176,7 @@ const PdfViewerModal = ({ fileUrl, title = 'PDF Preview', onClose }) => {
 };
 
 export const openPdfViewerModal = ({ fileUrl, title }) => {
-  if (!fileUrl) {
+  if (!hasUsableFileUrl(fileUrl)) {
     return;
   }
 
@@ -162,7 +212,7 @@ export const mountInlinePdfViewers = (containerElement) => {
   placeholders.forEach((placeholder) => {
     const fileUrl = placeholder.getAttribute('data-pdf-url');
     const title = placeholder.getAttribute('data-pdf-title') || 'PDF Document';
-    if (!fileUrl) {
+    if (!hasUsableFileUrl(fileUrl)) {
       return;
     }
 
