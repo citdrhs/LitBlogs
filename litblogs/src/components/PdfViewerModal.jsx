@@ -65,6 +65,31 @@ const hasUsableFileUrl = (fileUrl) => (
   typeof fileUrl === 'string' && fileUrl.trim().length > 0
 );
 
+const hasUnsafeUrlCharacters = (fileUrl) => Array.from(fileUrl).some((character) => {
+  const codePoint = character.codePointAt(0);
+  return codePoint <= 0x20
+    || codePoint === 0x7f
+    || character === '\\'
+    || /\s/u.test(character);
+});
+
+const getSafeFileUrl = (fileUrl) => {
+  if (!hasUsableFileUrl(fileUrl) || hasUnsafeUrlCharacters(fileUrl)) {
+    return null;
+  }
+
+  try {
+    const parsedUrl = new URL(fileUrl, document.baseURI);
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  return fileUrl;
+};
+
 const getFileName = (fileUrl) => {
   const path = fileUrl.split(/[?#]/, 1)[0];
   const encodedFileName = path.split('/').filter(Boolean).pop();
@@ -97,7 +122,8 @@ const InlinePdfViewer = ({ fileUrl, title = 'PDF Document' }) => {
     return null;
   }
 
-  const fileName = getFileName(fileUrl);
+  const safeFileUrl = getSafeFileUrl(fileUrl);
+  const fileName = safeFileUrl ? getFileName(safeFileUrl) : 'PDF document';
 
   return (
     <section
@@ -107,8 +133,12 @@ const InlinePdfViewer = ({ fileUrl, title = 'PDF Document' }) => {
     >
       <div style={{ color: '#0f172a', fontWeight: 600 }}>{title}</div>
       <p style={{ ...fileNameStyles, marginTop: '12px' }}>{fileName}</p>
-      <p style={{ margin: 0 }}>This PDF is not rendered inside LitBlog.</p>
-      <SafePdfLink fileUrl={fileUrl} fileName={fileName} />
+      <p style={{ margin: 0 }}>
+        {safeFileUrl
+          ? 'This PDF is not rendered inside LitBlog.'
+          : 'This PDF link cannot be opened safely.'}
+      </p>
+      {safeFileUrl && <SafePdfLink fileUrl={safeFileUrl} fileName={fileName} />}
     </section>
   );
 };
@@ -117,6 +147,7 @@ const PdfViewerModal = ({ fileUrl, title = 'PDF Preview', onClose }) => {
   const titleId = useId();
   const descriptionId = useId();
   const isOpen = hasUsableFileUrl(fileUrl);
+  const safeFileUrl = getSafeFileUrl(fileUrl);
 
   useEffect(() => {
     if (!isOpen || typeof onClose !== 'function') {
@@ -137,7 +168,7 @@ const PdfViewerModal = ({ fileUrl, title = 'PDF Preview', onClose }) => {
     return null;
   }
 
-  const fileName = getFileName(fileUrl);
+  const fileName = safeFileUrl ? getFileName(safeFileUrl) : 'PDF document';
 
   return (
     <div
@@ -166,9 +197,11 @@ const PdfViewerModal = ({ fileUrl, title = 'PDF Preview', onClose }) => {
         <div style={contentStyles}>
           <p style={fileNameStyles}>{fileName}</p>
           <p id={descriptionId} style={{ margin: 0 }}>
-            For safety, LitBlog does not render PDF files inside the application.
+            {safeFileUrl
+              ? 'For safety, LitBlog does not render PDF files inside the application.'
+              : 'This PDF link cannot be opened safely.'}
           </p>
-          <SafePdfLink fileUrl={fileUrl} fileName={fileName} />
+          {safeFileUrl && <SafePdfLink fileUrl={safeFileUrl} fileName={fileName} />}
         </div>
       </div>
     </div>
