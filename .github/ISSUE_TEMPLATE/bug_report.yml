@@ -1,0 +1,61 @@
+name: Bug report
+description: Report a reproducible LitBlog defect without sharing sensitive data.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve LitBlog. Do not include credentials, private logs, or student/teacher personal data. Report security issues through the private advisory link instead.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Provide the minimum sanitized steps needed to reproduce the problem.
+      placeholder: |
+        1. Sign in as a test role...
+        2. Open...
+        3. Observe...
+    validations:
+      required: true
+  - type: dropdown
+    id: role
+    attributes:
+      label: Affected journey
+      options:
+        - Student
+        - Teacher
+        - Administrator
+        - Public or signed-out user
+        - Multiple roles
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Branch name or commit SHA, without environment details.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: Add redacted screenshots or concise error text. Never attach raw logs or PII.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed credentials, private logs, and personally identifiable information.
+          required: true
+        - label: This is not a security vulnerability requiring private disclosure.
+          required: true

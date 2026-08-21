@@ -1,39 +1,27 @@
 # Security Policy
 
-## Supported Versions
+## Supported versions
 
-We actively maintain the latest version of LitBlogs. Security fixes should be applied to the current production deployment and the main development branch.
+The latest LitBlog release and the current `main` branch receive security fixes. Unsupported deployments should be upgraded before requesting a patch.
 
-## Reporting a Vulnerability
+## Report vulnerabilities privately
 
-If you discover a security vulnerability in LitBlogs, please report it privately and do not open a public issue.
+Do not open a public issue. Submit a [private repository security advisory](https://github.com/Antigro09/LitBlog/security/advisories/new) so the maintainers can investigate without exposing students, teachers, systems, or credentials.
 
-Please contact the project maintainers or the school IT/client contact through the appropriate private channel for this repository.
+Include a concise description, affected feature, sanitized reproduction steps, likely impact, and the version or commit tested. Use synthetic accounts and values. Do not attach logs, database exports, screenshots, or requests containing personally identifiable information (PII). If a minimal redacted excerpt is essential, remove names, email addresses, school identifiers, tokens, cookies, hostnames, and other identifying values first.
 
-When reporting a vulnerability, please include:
-- A clear description of the issue
-- The affected page, endpoint, or feature
-- Steps to reproduce the problem
-- Any proof of concept, screenshots, or logs if available
-- The impact of the issue and who might be affected
+Report issues such as:
 
-## What to Report
+- authentication or authorization bypasses;
+- cross-user exposure of student, teacher, or administrator data;
+- injection, cross-site scripting, unsafe file/media handling, or request forgery;
+- exposed secrets, tokens, private keys, or production configuration; and
+- security control or deployment misconfiguration.
 
-Examples of security issues worth reporting include:
-- Authentication or authorization bypasses
-- Exposure of student, teacher, or admin data
-- Cross-site scripting or injection vulnerabilities
-- File upload or media handling issues that expose the system
-- Secrets, API keys, or tokens exposed in code or deployment files
-- Misconfigured CORS, CSP, or server settings that weaken protections
+## Suspected credential exposure or incident
 
-## What Not to Report Publicly
+Treat a suspected disclosure as an incident. Stop using and sharing the affected value, preserve only sanitized evidence, notify the maintainers through the private advisory, and rotate or revoke the credential through its issuing system. Removing a value from Git does not invalidate it. Maintainers should review access logs through an approved private channel, assess affected data and users, document containment and recovery, and follow applicable school or organizational incident procedures.
 
-Please do not publicly disclose:
-- Passwords, tokens, private keys, or database credentials
-- Student or teacher personal data
-- Internal server details or configuration secrets
+## Responsible disclosure
 
-## Responsible Disclosure
-
-We ask that you allow the maintainers reasonable time to investigate and fix the issue before public disclosure.
+Allow reasonable time for triage, remediation, credential rotation, and coordinated notification before public disclosure. The maintainers will use the private advisory to acknowledge the report and coordinate next steps.

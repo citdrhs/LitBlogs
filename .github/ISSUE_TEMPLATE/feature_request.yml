@@ -1,0 +1,50 @@
+name: Feature request
+description: Propose a focused LitBlog improvement with student and teacher impact.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Explain the problem before the solution. Do not include student/teacher personal data, credentials, or private logs.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user need or workflow gap should LitBlog address?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe observable acceptance criteria without prescribing implementation details.
+    validations:
+      required: true
+  - type: textarea
+    id: journeys
+    attributes:
+      label: Student and teacher journeys
+      description: Explain the effect on each role, including roles that must not gain access.
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy and authorization considerations
+      description: Identify data boundaries, negative authorization cases, and any retention concerns.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What simpler workflow or existing feature could address the need?
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: This request contains no credentials or personally identifiable information.
+          required: true

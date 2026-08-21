@@ -1,0 +1,32 @@
+minimum_pre_commit_version: 4.0.0
+repos:
+  - repo: local
+    hooks:
+      - id: secret-check
+        name: proposed-tree generic secret scan
+        entry: python scripts/check-generic-secrets.py
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: repository-policy
+        name: repository policy validation
+        entry: python scripts/validate-repository-policy.py
+        language: python
+        additional_dependencies:
+          - PyYAML==6.0.3
+        pass_filenames: false
+        files: ^(?:\.github/|CONTRIBUTING\.md$|SECURITY\.md$|\.pre-commit-config\.yaml$|scripts/)
+      - id: backend-ruff
+        name: backend Ruff
+        entry: python scripts/run-backend-ruff.py
+        language: python
+        additional_dependencies:
+          - ruff==0.16.4
+        pass_filenames: false
+        files: ^litblogs/.*\.py$
+      - id: frontend-lint
+        name: frontend ESLint
+        entry: npm --prefix litblogs run lint
+        language: system
+        pass_filenames: false
+        files: ^litblogs/(?:src/|.*\.(?:js|jsx|mjs|cjs))

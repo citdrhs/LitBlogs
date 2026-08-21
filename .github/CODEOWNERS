@@ -1,0 +1,14 @@
+# Default ownership
+* @Antigro09
+
+# Delivery, security, and dependency controls require explicit owner review.
+/.github/ @Antigro09
+/scripts/ @Antigro09
+/SECURITY.md @Antigro09
+/CONTRIBUTING.md @Antigro09
+/litblogs/.env.example @Antigro09
+/litblogs/main.py @Antigro09
+/litblogs/database.py @Antigro09
+/litblogs/security_utils.py @Antigro09
+/litblogs/requirements*.txt @Antigro09
+/litblogs/package*.json @Antigro09
