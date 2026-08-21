@@ -1,20 +1,9 @@
+import { normalizeRuntimeBasePath } from "./basePath.js";
+
 const ABSOLUTE_URL_PATTERN = /^(https?:)?\/\//i;
 const trimString = (value) => typeof value === "string" ? value.trim() : value;
 
-const normalizeBasePath = (value = "/") => {
-  const normalizedValue = value.trim();
-  if (!normalizedValue || /^\/+$/u.test(normalizedValue)) {
-    return "";
-  }
-
-  const withoutTrailingSlash = normalizedValue.replace(/\/+$/u, "");
-
-  return withoutTrailingSlash.startsWith("/")
-    ? withoutTrailingSlash
-    : `/${withoutTrailingSlash}`;
-};
-
-export const APP_BASE_PATH = normalizeBasePath(import.meta.env.BASE_URL || "/");
+export const APP_BASE_PATH = normalizeRuntimeBasePath(import.meta.env.BASE_URL || "/");
 export const ROUTER_BASENAME = APP_BASE_PATH || undefined;
 export const FRONTEND_URL = typeof window === "undefined"
   ? (APP_BASE_PATH || "/")
