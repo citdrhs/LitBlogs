@@ -1227,7 +1227,7 @@ def verify_class_code(code_data: dict, db: Session = Depends(get_db)):
 
 @app.post("/api/verify-admin-code")
 def verify_admin_code(code_data: dict):
-    admin_code = os.getenv("ADMIN_CODE", "your_default_admin_code")
+    admin_code = os.getenv("ADMIN_CODE")
     if code_data.get("code") != admin_code:
         raise HTTPException(status_code=400, detail="Invalid admin code")
     return {"valid": True}
