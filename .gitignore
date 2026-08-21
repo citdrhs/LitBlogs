@@ -2,7 +2,7 @@
 .worktrees/
 
 # Environment files (commit only sanitized examples)
-.env
+*.env
 .env.*
 !.env.example
 
