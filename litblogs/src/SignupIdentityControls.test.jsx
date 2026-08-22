@@ -38,6 +38,7 @@ beforeAll(async () => {
   vi.stubEnv("VITE_GOOGLE_CLIENT_ID", "987654321.apps.googleusercontent.com");
   vi.stubEnv("VITE_MICROSOFT_CLIENT_ID", "2f1c67a1-91e2-46a3-941f-b88e31763e51");
   vi.stubEnv("VITE_MICROSOFT_TENANT_ID", "871bd3e0-2dc0-4a40-9b07-9d03068c2364");
+  vi.stubEnv("VITE_LOCAL_PASSWORD_REGISTRATION_ENABLED", "true");
   ({ default: SignUp } = await import("./Sign-up.jsx"));
   ({ default: FAQ } = await import("./components/FAQ.jsx"));
 });
@@ -59,10 +60,10 @@ beforeEach(() => {
   doubles.loginPopup.mockResolvedValue({ idToken: "synthetic-microsoft-id-token" });
 });
 
-function renderSignup() {
+function renderSignup(props = {}) {
   render(
     <MemoryRouter>
-      <SignUp />
+      <SignUp {...props} />
     </MemoryRouter>,
   );
 }
@@ -88,6 +89,17 @@ function fillPasswordRegistration({ role, invitationToken } = { role: "STUDENT" 
 }
 
 describe("password registration privacy contract", () => {
+  it("removes the password registration UI when local registration is disabled", () => {
+    renderSignup({ localPasswordRegistrationEnabled: false });
+
+    expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Confirm Password")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign Up" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Synthetic Google" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Role")).toBeInTheDocument();
+    expect(screen.getByText(/use your verified school account/i)).toBeInTheDocument();
+  });
+
   it("keeps the browser anonymous after generic acceptance and directs the user to sign in", async () => {
     renderSignup();
     fillPasswordRegistration();

@@ -280,6 +280,39 @@ def test_production_requires_password_reset_delivery_worker():
         Settings(**data)
 
 
+def test_local_password_registration_requires_explicit_nonproduction_opt_in():
+    assert Settings(**_test_settings_data()).local_password_registration_enabled is False
+    for app_env in ("test", "development"):
+        settings = Settings(
+            **_test_settings_data(
+                app_env=app_env,
+                local_password_registration_enabled=True,
+            )
+        )
+        assert settings.local_password_registration_enabled is True
+
+    production_data = _production_settings_data()
+    production_data["local_password_registration_enabled"] = True
+    with pytest.raises(
+        ValidationError,
+        match="LOCAL_PASSWORD_REGISTRATION_ENABLED",
+    ):
+        Settings(**production_data)
+
+
+@pytest.mark.parametrize("value", ["1", "yes", "on", "TRUE "])
+def test_local_password_registration_rejects_ambiguous_boolean_values(value):
+    with pytest.raises(
+        ValidationError,
+        match="LOCAL_PASSWORD_REGISTRATION_ENABLED",
+    ):
+        Settings(
+            **_test_settings_data(
+                local_password_registration_enabled=value,
+            )
+        )
+
+
 def test_test_and_development_accept_explicit_nonproduction_placeholders():
     for app_env in ("test", "development"):
         settings = Settings(**_test_settings_data(app_env=app_env))
@@ -622,6 +655,7 @@ def _test_settings_data(**overrides):
         "session_cookie_secure": False,
         "teacher_invite_hmac_key": "test-only-invitation-hmac-key-0123456789",
         "admin_access_code": "test-only-admin-access-code",
+        "local_password_registration_enabled": False,
     }
     data.update(overrides)
     return data
@@ -653,6 +687,7 @@ def _production_settings_data():
         "email_password": secrets.token_urlsafe(24),
         "email_from": "no-reply@school.example",
         "password_reset_worker_enabled": True,
+        "local_password_registration_enabled": False,
     }
 
 

@@ -1231,6 +1231,9 @@ async def register(
     db: Session = Depends(get_db),
 ):
     """Accept an account request without disclosing account or invite state."""
+    if not settings.local_password_registration_enabled:
+        return REGISTRATION_ACCEPTED_RESPONSE
+
     hashed_password = await run_in_threadpool(hash_password, user_data.password)
     try:
         normalized_email = normalize_email(str(user_data.email))
@@ -2192,7 +2195,7 @@ async def get_class_posts(
     
     return formatted_posts
 
-@app.get("/api/users")
+@app.get("/api/users", response_model=list[schemas.AdminUserSummary])
 async def get_users(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
@@ -2209,6 +2212,7 @@ async def get_users(
             "role": user.role.value,
             "is_admin": _is_admin_role(user.role),
             "created_at": user.created_at,
+            "disabled": user.disabled_at is not None,
         }
         for user in users
     ]

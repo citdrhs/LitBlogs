@@ -98,6 +98,7 @@ class Settings(BaseSettings):
     teacher_invite_hmac_key: SecretStr | None = None
     admin_access_code: SecretStr | None = None
     admin_code: SecretStr | None = None
+    local_password_registration_enabled: bool = False
 
     reset_database_on_startup: bool = False
     vapid_public_key: str = ""
@@ -124,6 +125,19 @@ class Settings(BaseSettings):
             allowed = ", ".join(sorted(VALID_APP_ENVIRONMENTS))
             raise ValueError(f"APP_ENV must be one of: {allowed}")
         return normalized
+
+    @field_validator("local_password_registration_enabled", mode="before")
+    @classmethod
+    def validate_local_password_registration_flag(cls, value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value == "true":
+            return True
+        if value == "false":
+            return False
+        raise ValueError(
+            "LOCAL_PASSWORD_REGISTRATION_ENABLED must be literal true or false"
+        )
 
     @field_validator("cors_allowed_origins", mode="before")
     @classmethod
@@ -278,6 +292,10 @@ class Settings(BaseSettings):
             raise ValueError("CORS_ALLOWED_ORIGINS must contain explicit HTTPS origins in production")
         if not self.password_reset_worker_enabled:
             raise ValueError("PASSWORD_RESET_WORKER_ENABLED must be true in production")
+        if self.local_password_registration_enabled:
+            raise ValueError(
+                "LOCAL_PASSWORD_REGISTRATION_ENABLED must be false in production"
+            )
         return self
 
 

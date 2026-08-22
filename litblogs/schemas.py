@@ -125,6 +125,14 @@ class UserResponse(UserBase):
     token: str | None = None
     class_info: ClassInfo | None = None
 
+
+class AdminUserSummary(UserBase):
+    id: int
+    role: str
+    is_admin: bool
+    created_at: datetime
+    disabled: bool
+
 class ClassBase(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: str | None = Field(default=None, max_length=5_000)

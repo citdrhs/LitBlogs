@@ -11,8 +11,11 @@ import { loginRequest, oauthProviderConfig } from "./config/msalConfig";
 import { FaMicrosoft } from 'react-icons/fa';
 import { resolveAppAsset } from './utils/urlUtils';
 import { fetchBrowserSession } from './utils/auth';
+import { localPasswordRegistrationEnabled as configuredLocalPasswordRegistrationEnabled } from './config/registrationConfig';
 
-const SignUp = () => {
+const SignUp = ({
+  localPasswordRegistrationEnabled = configuredLocalPasswordRegistrationEnabled,
+}) => {
   const { instance } = useMsal();
   // State variables for form inputs
   const [firstName, setFirstName] = useState("");
@@ -156,6 +159,11 @@ const SignUp = () => {
   // Form submission handler
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    if (!localPasswordRegistrationEnabled) {
+      setErrorMessage("Password registration is not available.");
+      return;
+    }
     
     try {
       // Check if role is selected
@@ -405,7 +413,15 @@ const SignUp = () => {
           Sign Up
         </motion.h2>
 
+        {!localPasswordRegistrationEnabled && (
+          <p className="mb-6 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-100">
+            Use your verified school account to sign up.
+          </p>
+        )}
+
         <form onSubmit={handleSubmit}>
+          {localPasswordRegistrationEnabled && (
+            <>
           {/* First Name Input */}
           <motion.div
             className="mb-4"
@@ -528,6 +544,8 @@ const SignUp = () => {
               required
             />
           </motion.div>
+            </>
+          )}
 
           <motion.div className="mb-4">
             <label htmlFor="role" className="block text-sm font-medium mb-2">Role</label>
@@ -579,19 +597,20 @@ const SignUp = () => {
             </motion.p>
           )}
 
-          {/* Regular sign up button */}
-          <motion.button
-            type="submit"
-            className={`w-full p-4 text-white rounded-lg text-lg focus:outline-none ${darkMode ? 'bg-teal-700 hover:bg-teal-600' : 'bg-blue-600 hover:bg-blue-700'} transition-colors duration-300`}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-          >
-            Sign Up
-          </motion.button>
+          {localPasswordRegistrationEnabled && (
+            <motion.button
+              type="submit"
+              className={`w-full p-4 text-white rounded-lg text-lg focus:outline-none ${darkMode ? 'bg-teal-700 hover:bg-teal-600' : 'bg-blue-600 hover:bg-blue-700'} transition-colors duration-300`}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+            >
+              Sign Up
+            </motion.button>
+          )}
         </form>
 
         {/* Divider */}
-        {(oauthProviderConfig.google.enabled || oauthProviderConfig.microsoft.enabled) && <div className="mt-6 mb-6 flex items-center">
+        {localPasswordRegistrationEnabled && (oauthProviderConfig.google.enabled || oauthProviderConfig.microsoft.enabled) && <div className="mt-6 mb-6 flex items-center">
           <div className="flex-1 border-t border-gray-300 dark:border-gray-600"></div>
           <span className="mx-4 text-sm text-gray-500 dark:text-gray-400">or continue with</span>
           <div className="flex-1 border-t border-gray-300 dark:border-gray-600"></div>
