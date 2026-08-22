@@ -52,6 +52,7 @@ def test_process_environment_wins_over_environment_specific_file(tmp_path):
     isolated_backend = tmp_path / "isolated-backend"
     isolated_backend.mkdir()
     shutil.copy2(BACKEND_DIR / "base.py", isolated_backend / "base.py")
+    shutil.copy2(BACKEND_DIR / "config.py", isolated_backend / "config.py")
     shutil.copy2(BACKEND_DIR / "database.py", isolated_backend / "database.py")
 
     safe_database_path = tmp_path / "safe-test.db"
@@ -61,6 +62,7 @@ def test_process_environment_wins_over_environment_specific_file(tmp_path):
             [
                 "APP_ENV=development",
                 "DATABASE_URL=sqlite:///base.db",
+                "JWT_ISSUER=base-issuer",
                 "RESET_DATABASE_ON_STARTUP=true",
                 "PRECEDENCE_MARKER=base",
             ]
@@ -71,6 +73,7 @@ def test_process_environment_wins_over_environment_specific_file(tmp_path):
         "\n".join(
             [
                 "DATABASE_URL=postgresql://fake-user:fake-password@db.invalid/poison",
+                "JWT_ISSUER=environment-specific-issuer",
                 "RESET_DATABASE_ON_STARTUP=true",
                 "PRECEDENCE_MARKER=environment-specific",
             ]
@@ -87,6 +90,7 @@ def test_process_environment_wins_over_environment_specific_file(tmp_path):
         }
     )
     process_environment.pop("PRECEDENCE_MARKER", None)
+    process_environment.pop("JWT_ISSUER", None)
     probe = """
 import json
 import os
@@ -97,9 +101,9 @@ print(json.dumps({
     "database_url": database.DATABASE_URL,
     "dialect": database.engine.dialect.name,
     "database_path": database.engine.url.database,
-    "app_env": os.environ["APP_ENV"],
-    "precedence_marker": os.environ["PRECEDENCE_MARKER"],
-    "reset_database_on_startup": os.environ["RESET_DATABASE_ON_STARTUP"],
+    "app_env": database.settings.app_env,
+    "jwt_issuer": database.settings.jwt_issuer,
+    "reset_database_on_startup": database.settings.reset_database_on_startup,
 }))
 """
 
@@ -119,8 +123,8 @@ print(json.dumps({
         "dialect": "sqlite",
         "database_path": safe_database_path.as_posix(),
         "app_env": "test",
-        "precedence_marker": "environment-specific",
-        "reset_database_on_startup": "false",
+        "jwt_issuer": "environment-specific-issuer",
+        "reset_database_on_startup": False,
     }
     assert not safe_database_path.exists()
 
@@ -149,7 +153,7 @@ print(json.dumps({
     "database_url": conftest.database.DATABASE_URL,
     "dialect": conftest.database.engine.dialect.name,
     "database_name": conftest.database.engine.url.database,
-    "reset_database_on_startup": os.environ["RESET_DATABASE_ON_STARTUP"],
+    "reset_database_on_startup": conftest.database.settings.reset_database_on_startup,
 }))
 """
 
@@ -168,7 +172,7 @@ print(json.dumps({
         "database_url": SAFE_POSTGRES_URL,
         "dialect": "postgresql",
         "database_name": "litblog_ci",
-        "reset_database_on_startup": "false",
+        "reset_database_on_startup": False,
     }
 
 

@@ -31,15 +31,23 @@ from google.auth.transport import requests
 from google.oauth2 import id_token
 from jwt.exceptions import InvalidTokenError
 from msal import ConfidentialClientApplication
-from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import text
+from sqlalchemy import text, update
 from sqlalchemy.orm import Session
 
 import models
 import schemas
+from auth_security import (
+    decode_access_token,
+    hash_password,
+    issue_access_token,
+    provisioning_code_matches,
+    verify_and_update_password,
+)
+from config import get_settings
 from database import SessionLocal, get_db, initialize_database, reset_database
-from security_utils import secure_code_matches
+
+settings = get_settings()
 
 try:
     from pywebpush import WebPushException, webpush
@@ -48,13 +56,7 @@ except Exception:
     WebPushException = Exception
 
 def _should_reset_database_on_startup() -> bool:
-    return os.getenv("RESET_DATABASE_ON_STARTUP", "").strip().lower() in {"1", "true", "yes", "on"}
-
-def _parse_csv_env(value: str | None) -> list[str]:
-    if not value:
-        return []
-
-    return [item.strip().rstrip("/") for item in value.split(",") if item.strip()]
+    return settings.reset_database_on_startup
 
 def _origin_from_url(url: str | None) -> str | None:
     if not url:
@@ -66,15 +68,19 @@ def _origin_from_url(url: str | None) -> str | None:
 
     return f"{parsed.scheme}://{parsed.netloc}"
 
-FRONTEND_URL = os.getenv("FRONTEND_URL", "https://drhscit.org/dren").rstrip("/")
-MICROSOFT_REDIRECT_URI = os.getenv("MICROSOFT_REDIRECT_URI", FRONTEND_URL).rstrip("/")
-CORS_ALLOWED_ORIGINS = _parse_csv_env(os.getenv("CORS_ALLOWED_ORIGINS"))
+
+def _secret_value(value) -> str | None:
+    return value.get_secret_value() if value is not None else None
+
+FRONTEND_URL = (settings.frontend_url or "https://drhscit.org/dren").rstrip("/")
+MICROSOFT_REDIRECT_URI = (settings.microsoft_redirect_uri or FRONTEND_URL).rstrip("/")
+CORS_ALLOWED_ORIGINS = list(settings.cors_allowed_origins)
 FRONTEND_ORIGIN = _origin_from_url(FRONTEND_URL)
-VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY", "").strip()
-VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "").strip()
-VAPID_SUBJECT = os.getenv("VAPID_SUBJECT", "mailto:admin@litblogs.local").strip()
+VAPID_PUBLIC_KEY = settings.vapid_public_key
+VAPID_PRIVATE_KEY = settings.vapid_private_key.get_secret_value() if settings.vapid_private_key else ""
+VAPID_SUBJECT = settings.vapid_subject
 WEB_PUSH_ENABLED = bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY and webpush)
-PUSH_REMINDER_INTERVAL_SECONDS = int(os.getenv("PUSH_REMINDER_INTERVAL_SECONDS", "300"))
+PUSH_REMINDER_INTERVAL_SECONDS = settings.push_reminder_interval_seconds
 
 _push_scheduler_stop_event = threading.Event()
 _push_scheduler_thread: threading.Thread | None = None
@@ -106,12 +112,6 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-)
-
-pwd_context = CryptContext(
-    schemes=["bcrypt"],
-    deprecated="auto",
-    bcrypt__rounds=12
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -215,10 +215,6 @@ class PushSubscriptionRequest(BaseModel):
 class PushSubscriptionEnvelopeRequest(BaseModel):
     subscription: PushSubscriptionRequest
 
-# Add these constants
-SECRET_KEY = os.getenv("SECRET_KEY")
-ALGORITHM = os.getenv("ALGORITHM")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES"))
 DEFAULT_USER_SETTINGS = {
     "darkMode": False,
     "reducedMotion": False,
@@ -232,12 +228,6 @@ DEFAULT_USER_SETTINGS = {
 }
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
-def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
 
 def _normalize_editor_font_size(value: str | None) -> str:
     normalized = str(value or "").lower()
@@ -503,20 +493,26 @@ async def register(user_data: schemas.UserCreate, db: Session = Depends(get_db))
             )
         
         # Verify the access code
-        if role == models.UserRole.TEACHER and user_data.access_code != os.getenv("TEACHER_ACCESS_CODE"):
+        if role == models.UserRole.TEACHER and not provisioning_code_matches(
+            user_data.access_code,
+            _secret_value(settings.teacher_access_code),
+        ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid teacher access code"
             )
         
-        if role == models.UserRole.ADMIN and user_data.access_code != os.getenv("ADMIN_ACCESS_CODE"):
+        if role == models.UserRole.ADMIN and not provisioning_code_matches(
+            user_data.access_code,
+            _secret_value(settings.admin_access_code),
+        ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid admin access code"
             )
     
     # Hash the password
-    hashed_password = get_password_hash(user_data.password)
+    hashed_password = hash_password(user_data.password)
     
     # Create new user
     new_user = models.User(
@@ -547,11 +543,33 @@ async def register(user_data: schemas.UserCreate, db: Session = Depends(get_db))
     }
 
 def create_access_token(data: dict):
-    to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    return issue_access_token(data.get("sub"), settings=settings)
+
+
+def _persist_password_upgrade_if_current(
+    db: Session,
+    *,
+    user_id: int,
+    verified_hash: str,
+    upgraded_hash: str,
+) -> bool:
+    try:
+        result = db.execute(
+            update(models.User)
+            .where(
+                models.User.id == user_id,
+                models.User.password == verified_hash,
+            )
+            .values(password=upgraded_hash)
+        )
+        if result.rowcount != 1:
+            db.rollback()
+            return False
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        raise
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
@@ -560,11 +578,9 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: int = payload.get("sub")
-        if user_id is None:
-            raise credentials_exception
-    except InvalidTokenError as exc:
+        payload = decode_access_token(token, settings=settings)
+        user_id = int(payload["sub"])
+    except (InvalidTokenError, TypeError, ValueError) as exc:
         raise credentials_exception from exc
     
     user = db.query(models.User).filter(models.User.id == user_id).first()
@@ -584,7 +600,12 @@ async def login(login_data: LoginRequest, db: Session = Depends(get_db)):
     
     # Check if this is a social login account by trying to verify password
     # If password verification fails, it might be a social account
-    if not verify_password(login_data.password, user.password):
+    verified_password_hash = user.password
+    password_valid, upgraded_password_hash = verify_and_update_password(
+        login_data.password,
+        verified_password_hash,
+    )
+    if not password_valid:
         # Check if this user signed up with either Google or Microsoft
         # Since we don't have the ID fields, we need to rely on other signals
         # One approach is to tell users to use social login if password is invalid
@@ -592,6 +613,17 @@ async def login(login_data: LoginRequest, db: Session = Depends(get_db)):
             status_code=status.HTTP_401_UNAUTHORIZED, 
             detail="Invalid email or password. If you signed up with Google or Microsoft, please use those login methods."
         )
+    if upgraded_password_hash is not None:
+        if not _persist_password_upgrade_if_current(
+            db,
+            user_id=user.id,
+            verified_hash=verified_password_hash,
+            upgraded_hash=upgraded_password_hash,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password",
+            )
     
     # Create access token with user ID
     access_token = create_access_token(data={"sub": str(user.id)})
@@ -653,13 +685,19 @@ async def google_signup(token_data: dict, db: Session = Depends(get_db)):
                 )
             
             # Verify the access code
-            if selected_role == "TEACHER" and access_code != os.getenv("TEACHER_ACCESS_CODE"):
+            if selected_role == "TEACHER" and not provisioning_code_matches(
+                access_code,
+                _secret_value(settings.teacher_access_code),
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Invalid teacher access code"
                 )
             
-            if selected_role == "ADMIN" and access_code != os.getenv("ADMIN_ACCESS_CODE"):
+            if selected_role == "ADMIN" and not provisioning_code_matches(
+                access_code,
+                _secret_value(settings.admin_access_code),
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Invalid admin access code"
@@ -670,7 +708,7 @@ async def google_signup(token_data: dict, db: Session = Depends(get_db)):
             idinfo = id_token.verify_oauth2_token(
                 credential,
                 requests.Request(),
-                os.getenv("GOOGLE_CLIENT_ID"),
+                settings.google_client_id,
                 clock_skew_in_seconds=30  # Increased to 30 seconds
             )
         except ValueError as e:
@@ -728,7 +766,7 @@ async def google_signup(token_data: dict, db: Session = Depends(get_db)):
             username=username,
             first_name=idinfo.get('given_name', ''),
             last_name=idinfo.get('family_name', ''),
-            password=get_password_hash(secrets.token_urlsafe(32)),
+            password=hash_password(secrets.token_urlsafe(32)),
             role=user_role,  # Use the selected role
             is_admin=_is_admin_role(user_role)
         )
@@ -781,7 +819,7 @@ async def google_login(token_data: dict, db: Session = Depends(get_db)):
             idinfo = id_token.verify_oauth2_token(
                 token, 
                 requests.Request(), 
-                os.getenv("GOOGLE_CLIENT_ID"),
+                settings.google_client_id,
                 clock_skew_in_seconds=30  # Increased to 30 seconds
             )
         except ValueError as e:
@@ -919,9 +957,9 @@ async def microsoft_login(microsoft_data: dict, db: Session = Depends(get_db)):
         ) from e
 
 # Add these constants at the top with your other constants
-MS_CLIENT_ID = os.getenv("MICROSOFT_CLIENT_ID")
-MS_CLIENT_SECRET = os.getenv("MICROSOFT_CLIENT_SECRET")
-MS_AUTHORITY = "https://login.microsoftonline.com/common"
+MS_CLIENT_ID = settings.microsoft_client_id
+MS_CLIENT_SECRET = _secret_value(settings.microsoft_client_secret)
+MS_AUTHORITY = f"https://login.microsoftonline.com/{settings.microsoft_tenant_id or 'common'}"
 
 @app.post("/api/auth/microsoft-token")
 async def get_microsoft_token(request_data: dict, db: Session = Depends(get_db)):
@@ -967,13 +1005,19 @@ async def get_microsoft_token(request_data: dict, db: Session = Depends(get_db))
                 detail="Invalid role specified"
             )
         
-        if role == "TEACHER" and (not access_code or access_code != os.getenv("TEACHER_ACCESS_CODE")):
+        if role == "TEACHER" and not provisioning_code_matches(
+            access_code,
+            _secret_value(settings.teacher_access_code),
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Invalid teacher access code"
             )
             
-        if role == "ADMIN" and (not access_code or access_code != os.getenv("ADMIN_ACCESS_CODE")):
+        if role == "ADMIN" and not provisioning_code_matches(
+            access_code,
+            _secret_value(settings.admin_access_code),
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Invalid admin access code"
@@ -989,7 +1033,7 @@ async def get_microsoft_token(request_data: dict, db: Session = Depends(get_db))
             # Create new user
             username = user_data['mail'].split('@')[0] + str(random.randint(1000, 9999))
             random_password = secrets.token_hex(16)
-            hashed_password = get_password_hash(random_password)
+            hashed_password = hash_password(random_password)
             
             user = models.User(
                 username=username,
@@ -1054,13 +1098,19 @@ async def microsoft_signup(microsoft_data: dict, db: Session = Depends(get_db)):
             )
         
         # Verify access codes
-        if role == 'TEACHER' and access_code != os.getenv("TEACHER_ACCESS_CODE"):
+        if role == 'TEACHER' and not provisioning_code_matches(
+            access_code,
+            _secret_value(settings.teacher_access_code),
+        ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid teacher access code"
             )
         
-        if role == 'ADMIN' and access_code != os.getenv("ADMIN_ACCESS_CODE"):
+        if role == 'ADMIN' and not provisioning_code_matches(
+            access_code,
+            _secret_value(settings.admin_access_code),
+        ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid admin access code"
@@ -1101,7 +1151,7 @@ async def microsoft_signup(microsoft_data: dict, db: Session = Depends(get_db)):
         
         # Generate a random password 
         random_password = secrets.token_hex(16)
-        hashed_password = get_password_hash(random_password)
+        hashed_password = hash_password(random_password)
         
         # Create user with the provided role
         new_user = models.User(
@@ -1215,8 +1265,8 @@ def verify_class_code(code_data: dict, db: Session = Depends(get_db)):
 
 @app.post("/api/verify-admin-code")
 def verify_admin_code(code_data: dict):
-    admin_code = os.getenv("ADMIN_CODE")
-    if not secure_code_matches(code_data.get("code"), admin_code):
+    admin_code = settings.admin_code or settings.admin_access_code
+    if not provisioning_code_matches(code_data.get("code"), _secret_value(admin_code)):
         raise HTTPException(status_code=400, detail="Invalid admin code")
     return {"valid": True}
 
@@ -4255,11 +4305,11 @@ class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
 
-EMAIL_HOST = os.getenv("EMAIL_HOST")
-EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
-EMAIL_USERNAME = os.getenv("EMAIL_USERNAME")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
-EMAIL_FROM = os.getenv("EMAIL_FROM")
+EMAIL_HOST = settings.email_host
+EMAIL_PORT = settings.email_port
+EMAIL_USERNAME = settings.email_username
+EMAIL_PASSWORD = _secret_value(settings.email_password)
+EMAIL_FROM = settings.email_from
 
 
 def send_password_reset_email(email: str, token: str):
@@ -4377,7 +4427,7 @@ async def reset_password(request: ResetPasswordRequest, db: Session = Depends(ge
         raise HTTPException(status_code=404, detail="User not found")
     
     # Hash the new password
-    hashed_password = pwd_context.hash(request.new_password)
+    hashed_password = hash_password(request.new_password)
     
     # Update the user's password
     user.password = hashed_password
