@@ -11,6 +11,7 @@ import { loginRequest } from "./config/msalConfig";
 import { FaMicrosoft } from 'react-icons/fa';
 import { resolveAppAsset } from './utils/urlUtils';
 import { applyGlobalUserSettings, saveLocalUserSettings } from './utils/userSettings';
+import { fetchBrowserSession, persistSessionMetadata } from './utils/auth';
 
 const SignIn = () => {
   const [email, setEmail] = useState("");
@@ -59,48 +60,23 @@ const SignIn = () => {
     }
   }, [darkMode]);
 
-  const buildStoredUserInfo = (authPayload = {}, profilePayload = {}) => ({
-    role: authPayload.role ?? profilePayload.role,
-    userId: authPayload.user_id ?? authPayload.id ?? profilePayload.id,
-    username: authPayload.username ?? profilePayload.username,
-    firstName: authPayload.first_name ?? profilePayload.first_name,
-    first_name: authPayload.first_name ?? profilePayload.first_name,
-    lastName: authPayload.last_name ?? profilePayload.last_name,
-    last_name: authPayload.last_name ?? profilePayload.last_name,
-    profile_image: profilePayload.profile_image ?? authPayload.profile_image ?? null,
-    cover_image: profilePayload.cover_image ?? authPayload.cover_image ?? null,
-    avatar_id: profilePayload.avatar_id ?? authPayload.avatar_id ?? null,
-    avatar_color: profilePayload.avatar_color ?? authPayload.avatar_color ?? null,
-  });
-
-  const persistSessionAndNavigate = async (authPayload = {}) => {
-    const token = authPayload?.access_token;
-    if (!token) {
-      throw new Error("Missing access token");
-    }
-
-    localStorage.setItem('token', token);
-
+  const persistSessionAndNavigate = async () => {
+    const session = await fetchBrowserSession();
     let profilePayload = {};
     try {
-      const profileResponse = await axios.get('/user/profile', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const profileResponse = await axios.get('/user/profile');
       profilePayload = profileResponse?.data || {};
-    } catch (profileError) {
-      console.warn('Unable to fetch profile during sign-in bootstrap:', profileError);
+    } catch {
+      console.warn('Unable to fetch profile during sign-in bootstrap');
     }
 
-    const userInfo = buildStoredUserInfo(authPayload, profilePayload);
-    localStorage.setItem('user_info', JSON.stringify(userInfo));
+    persistSessionMetadata({ ...session, ...profilePayload });
 
     // Pull account settings on sign-in so UI preferences apply immediately.
     try {
-      const settingsResponse = await axios.get('/user/settings', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const settingsResponse = await axios.get('/user/settings');
 
-      const normalizedSettings = saveLocalUserSettings(settingsResponse?.data || {}, authPayload.role);
+      const normalizedSettings = saveLocalUserSettings(settingsResponse?.data || {}, session.role);
       applyGlobalUserSettings(normalizedSettings);
 
       localStorage.setItem('darkMode', JSON.stringify(Boolean(normalizedSettings.darkMode)));
@@ -109,24 +85,15 @@ const SignIn = () => {
       } else {
         document.documentElement.classList.remove('dark');
       }
-    } catch (settingsError) {
-      console.warn('Unable to fetch settings during sign-in bootstrap:', settingsError);
+    } catch {
+      console.warn('Unable to fetch settings during sign-in bootstrap');
     }
 
-    if (authPayload.role === 'STUDENT' && authPayload.class_info) {
-      const classInfo = {
-        id: authPayload.class_info.id,
-        name: authPayload.class_info.name,
-        code: authPayload.class_info.access_code
-      };
-      localStorage.setItem('class_info', JSON.stringify(classInfo));
-    }
-
-    if (authPayload.role === 'STUDENT') {
+    if (session.role === 'STUDENT') {
       navigate('/student-hub');
-    } else if (authPayload.role === 'TEACHER') {
+    } else if (session.role === 'TEACHER') {
       navigate('/teacher-dashboard');
-    } else if (authPayload.role === 'ADMIN') {
+    } else if (session.role === 'ADMIN') {
       navigate('/admin-dashboard');
     }
   };
@@ -149,9 +116,9 @@ const SignIn = () => {
         return;
       }
 
-      await persistSessionAndNavigate(response.data);
+      await persistSessionAndNavigate();
     } catch (error) {
-      console.error('Login error:', error);
+      console.error('Login failed');
       
       // Check if the error is related to Google authentication
       if (error.response?.status === 401 && 
@@ -170,13 +137,13 @@ const SignIn = () => {
       setIsLoading(true);
       setErrorMessage("");
       
-      const backendResponse = await axios.post('/auth/google-login', {
+      await axios.post('/auth/google-login', {
         token: response.credential
       });
       
-      await persistSessionAndNavigate(backendResponse.data);
+      await persistSessionAndNavigate();
     } catch (error) {
-      console.error("Google Login Error:", error);
+      console.error("Google login failed");
       
       // Check if the user needs to sign up first
       if (error.response?.status === 404) {
@@ -191,8 +158,8 @@ const SignIn = () => {
   };
 
     // Missing implementation of handleGoogleFailure
-  const handleGoogleFailure = (error) => {
-    console.error('Google login error:', error);
+  const handleGoogleFailure = () => {
+    console.error('Google login failed');
     setErrorMessage('Google sign-in failed. Please try again.');
   };
 
@@ -202,7 +169,7 @@ const SignIn = () => {
       const response = await instance.loginPopup(loginRequest);
       
       // Send token to backend
-      const backendResponse = await axios.post('/auth/microsoft-login', {
+      await axios.post('/auth/microsoft-login', {
         msUserData: {
           email: response.account.username,
           firstName: response.account.name?.split(' ')[0] || '',
@@ -211,10 +178,10 @@ const SignIn = () => {
         }
       });
       
-      await persistSessionAndNavigate(backendResponse.data);
+      await persistSessionAndNavigate();
       
     } catch (error) {
-      console.error('Microsoft login error:', error);
+      console.error('Microsoft login failed');
       if (error.response?.status === 404) {
         setErrorMessage("Account not found. Please sign up first.");
       } else {

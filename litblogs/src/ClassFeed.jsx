@@ -22,6 +22,7 @@ import { IoMdHeart, IoMdHeartEmpty } from 'react-icons/io';
 import CommentThread from './components/CommentThread';
 import { formatRelativeTime, setupTimeUpdater } from './utils/timeUtils';
 import { mediaPath } from './utils/urlUtils';
+import { logoutBrowserSession } from './utils/auth';
 import ReactHtmlParser from 'react-html-parser';
 import { openPdfViewerModal } from './components/PdfViewerModal';
 import {
@@ -704,11 +705,8 @@ const TINYMCE_CONFIG = {
       const formData = new FormData();
       formData.append('file', blobInfo.blob(), blobInfo.filename());
       
-      const token = localStorage.getItem('token');
-      
       axios.post('/upload', formData, {
         headers: {
-          'Authorization': `Bearer ${token}`,
           'Content-Type': 'multipart/form-data'
         },
         onUploadProgress: (e) => {
@@ -816,13 +814,11 @@ const TINYMCE_CONFIG = {
                 const formData = new FormData();
                 formData.append('file', file);
                 
-                const token = localStorage.getItem('token');
                 const response = await axios.post(
                   '/upload',
                   formData,
                   {
                     headers: {
-                      'Authorization': `Bearer ${token}`,
                       'Content-Type': 'multipart/form-data'
                     }
                   }
@@ -877,13 +873,11 @@ const TINYMCE_CONFIG = {
               const formData = new FormData();
               formData.append('file', file);
               
-              const token = localStorage.getItem('token');
               const response = await axios.post(
                 '/upload/file',
                 formData,
                 {
                   headers: {
-                    'Authorization': `Bearer ${token}`,
                     'Content-Type': 'multipart/form-data'
                   }
                 }
@@ -1081,10 +1075,8 @@ const TINYMCE_CONFIG = {
               formData.append('file', file);
               
               // Upload the video
-              const token = localStorage.getItem('token');
               const response = await axios.post('/upload/video', formData, {
                 headers: {
-                  'Authorization': `Bearer ${token}`,
                   'Content-Type': 'multipart/form-data'
                 }
               });
@@ -1461,12 +1453,7 @@ async function deleteFileFromServer(url) {
     // The URL format is /uploads/user_id/filename
     const filePath = getUploadRelativePath(url);
     
-    const token = localStorage.getItem('token');
-    await axios.delete(`/upload/${filePath}`, {
-      headers: { 
-        'Authorization': `Bearer ${token}`
-      }
-    });
+    await axios.delete(`/upload/${filePath}`);
     
     console.log('File deleted successfully from server');
   } catch (error) {
@@ -1485,14 +1472,8 @@ if (!window.deleteVideoFromServer) {
     // Extract the file path from the URL
     const filePath = getUploadRelativePath(videoUrl);
     
-    // Get the token
-    const token = localStorage.getItem('token');
-    if (!token) return;
-    
     // Delete the file from the server
-    axios.delete(`/upload/${filePath}`, {
-      headers: { 'Authorization': `Bearer ${token}` }
-    })
+    axios.delete(`/upload/${filePath}`)
     .then(response => {
       console.log('Video deleted successfully:', response.data);
       toast.success('Video deleted successfully');
@@ -1516,14 +1497,8 @@ function defineGlobalFunctions() {
     // Extract the file path from the URL
     const filePath = getUploadRelativePath(videoUrl);
     
-    // Get the token
-    const token = localStorage.getItem('token');
-    if (!token) return;
-    
     // Delete the file from the server
-    axios.delete(`/upload/${filePath}`, {
-      headers: { 'Authorization': `Bearer ${token}` }
-    })
+    axios.delete(`/upload/${filePath}`)
     .then(response => {
       console.log('Video deleted successfully:', response.data);
       toast.success('Video deleted successfully');
@@ -1639,23 +1614,15 @@ const ClassFeed = () => {
   // Move all useEffect hooks together
   useEffect(() => {
     // Load user info
-    const storedUserInfo = localStorage.getItem('user_info');
+    const storedUserInfo = sessionStorage.getItem('user_info');
     if (storedUserInfo) {
       setUserInfo(JSON.parse(storedUserInfo));
     }
 
     const fetchData = async () => {
       try {
-        const token = localStorage.getItem('token');
-        if (!token) {
-          navigate('/sign-in');
-          return;
-        }
-
         try {
-          const settingsResponse = await axios.get('/user/settings', {
-            headers: { Authorization: `Bearer ${token}` }
-          });
+          const settingsResponse = await axios.get('/user/settings');
           const normalizedSettings = normalizeUserSettings(settingsResponse.data, userInfo?.role);
           saveLocalUserSettings(normalizedSettings, userInfo?.role);
           applyGlobalUserSettings(normalizedSettings);
@@ -1667,15 +1634,11 @@ const ClassFeed = () => {
         }
 
         // Use the correct endpoint
-        const classResponse = await axios.get(`/classes/${classId}/details`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        const classResponse = await axios.get(`/classes/${classId}/details`);
         setClassDetails(classResponse.data);
 
         // Get class posts using the posts endpoint
-        const postsResponse = await axios.get(`/classes/${classId}/posts`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        const postsResponse = await axios.get(`/classes/${classId}/posts`);
         setPosts(postsResponse.data);
         const savedInfo = {};
         (postsResponse.data || []).forEach((post) => {
@@ -1684,9 +1647,7 @@ const ClassFeed = () => {
         setSavedPosts(savedInfo);
 
         setAssignmentsLoading(true);
-        const assignmentsResponse = await axios.get(`/classes/${classId}/assignments`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        const assignmentsResponse = await axios.get(`/classes/${classId}/assignments`);
         setAssignments(assignmentsResponse.data || []);
         setAssignmentsLoading(false);
 
@@ -1712,16 +1673,10 @@ const ClassFeed = () => {
 
     const autosaveTimer = setTimeout(() => {
       const syncDraft = async () => {
-        const token = localStorage.getItem('token');
-        if (!token) {
-          return;
-        }
-
         try {
           const response = await axios.put(
             `/assignments/${activeAssignment.id}/draft`,
-            { content: assignmentSubmission },
-            { headers: { Authorization: `Bearer ${token}` } }
+            { content: assignmentSubmission }
           );
 
           if (response.data?.has_draft) {
@@ -1876,16 +1831,13 @@ const ClassFeed = () => {
   useEffect(() => {
     // Get likes for all posts on initial load
     const fetchLikes = async () => {
-      const token = localStorage.getItem('token');
-      if (!token || !posts.length || !classId) return;
+      if (!posts.length || !classId) return;
       
       const likesInfo = {};
       
       for (const post of posts) {
         try {
-          const response = await axios.get(`/classes/${classId}/posts/${post.id}/likes`, {
-            headers: { Authorization: `Bearer ${token}` }
-          });
+          const response = await axios.get(`/classes/${classId}/posts/${post.id}/likes`);
           
           likesInfo[post.id] = {
             count: response.data.like_count,
@@ -1910,13 +1862,8 @@ const ClassFeed = () => {
       setPostsLoading(true);
       
       try {
-        const token = localStorage.getItem('token');
-        if (!token) return;
-        
         // Fetch the posts
-        const response = await axios.get(`/classes/${classId}/posts`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        const response = await axios.get(`/classes/${classId}/posts`);
         
         setPosts(response.data);
         const savedInfo = {};
@@ -1935,8 +1882,7 @@ const ClassFeed = () => {
         for (const post of response.data) {
           try {
             const commentResponse = await axios.get(
-              `/classes/${classId}/posts/${post.id}/comments?limit=1`,
-              { headers: { Authorization: `Bearer ${token}` } }
+              `/classes/${classId}/posts/${post.id}/comments?limit=1`
             );
             counts[post.id] = commentResponse.data.total;
             console.log(`Post ${post.id} has ${commentResponse.data.total} comments`);
@@ -1970,10 +1916,8 @@ const ClassFeed = () => {
     return () => clearInterval(timeUpdateInterval);
   }, []);
 
-  const refreshAssignments = async (token) => {
-    const assignmentsResponse = await axios.get(`/classes/${classId}/assignments`, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
+  const refreshAssignments = async () => {
+    const assignmentsResponse = await axios.get(`/classes/${classId}/assignments`);
     setAssignments(assignmentsResponse.data || []);
   };
 
@@ -2052,21 +1996,13 @@ const ClassFeed = () => {
     setShowAssignmentModal(true);
     setAssignmentDraftReady(false);
 
-    const token = localStorage.getItem('token');
-    if (!token) {
-      setAssignmentDraftReady(true);
-      return;
-    }
-
     if (!rememberDraftsEnabled) {
       setAssignmentDraftReady(true);
       return;
     }
 
     try {
-      const response = await axios.get(`/assignments/${assignment.id}/draft`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const response = await axios.get(`/assignments/${assignment.id}/draft`);
 
       const serverHasDraft = response.data?.has_draft;
       const serverSavedAt = response.data?.saved_at || null;
@@ -2102,11 +2038,9 @@ const ClassFeed = () => {
     if (!activeAssignment) return;
     try {
       setAssignmentSubmitting(true);
-      const token = localStorage.getItem('token');
       await axios.post(
         `/assignments/${activeAssignment.id}/submit`,
-        { content: assignmentSubmission },
-        { headers: { Authorization: `Bearer ${token}` } }
+        { content: assignmentSubmission }
       );
 
       clearAssignmentDraft({
@@ -2115,7 +2049,7 @@ const ClassFeed = () => {
         userId: assignmentDraftUserId,
       });
       updateAssignmentDraftState(activeAssignment.id, null);
-      await refreshAssignments(token);
+      await refreshAssignments();
 
       closeAssignmentModal();
       setAssignmentSubmission('');
@@ -2331,12 +2265,14 @@ const ClassFeed = () => {
     toast.success('Draft deleted');
   };
 
-  const handleSignOut = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user_info');
-    localStorage.removeItem('class_info');
-    setUserInfo(null);
-    navigate('/');
+  const handleSignOut = async () => {
+    try {
+      await logoutBrowserSession();
+      setUserInfo(null);
+      navigate('/');
+    } catch {
+      window.alert('Unable to sign out. Please try again.');
+    }
   };
 
   const handleEditPost = async (postId) => {
@@ -2348,12 +2284,9 @@ const ClassFeed = () => {
 
     try {
       setLoading(true);
-      const token = localStorage.getItem('token');
       
       // Use the correct endpoint with classId
-      const response = await axios.get(`/classes/${classId}/posts/${postId}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const response = await axios.get(`/classes/${classId}/posts/${postId}`);
       
       const post = response.data;
       
@@ -2395,10 +2328,7 @@ const ClassFeed = () => {
     
       try {
       setLoading(true);
-        const token = localStorage.getItem('token');
-        await axios.delete(`/classes/${classId}/posts/${postId}`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        await axios.delete(`/classes/${classId}/posts/${postId}`);
         
       // Remove the post from the state
       setPosts((prevPosts) => prevPosts.filter((post) => post.id !== postId));
@@ -2421,7 +2351,6 @@ const ClassFeed = () => {
     
     try {
       setLoading(true);
-      const token = localStorage.getItem('token');
       
       const postData = {
         title: postTitle,
@@ -2435,10 +2364,7 @@ const ClassFeed = () => {
         // Update existing post with the correct endpoint
         response = await axios.put(
           `/classes/${classId}/posts/${editingPostId}`, 
-          postData, 
-          {
-            headers: { Authorization: `Bearer ${token}` }
-          }
+          postData
         );
         
         // Update the post in the state
@@ -2458,10 +2384,7 @@ const ClassFeed = () => {
         // Create new post
         response = await axios.post(
           `/classes/${classId}/posts`, 
-          postData, 
-          {
-            headers: { Authorization: `Bearer ${token}` }
-          }
+          postData
         );
         
         // Add the new post to the state
@@ -2515,16 +2438,7 @@ const ClassFeed = () => {
     }
 
     try {
-      const token = localStorage.getItem('token');
-      if (!token) {
-        resetPostComposer();
-        toast.success('Draft discarded');
-        return;
-      }
-
-      const response = await axios.get(`/classes/${classId}/posts/${editingPostId}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const response = await axios.get(`/classes/${classId}/posts/${editingPostId}`);
 
       const post = response.data;
       setPostTitle(post.title || '');
@@ -2546,8 +2460,6 @@ const ClassFeed = () => {
     setLikesLoading(prev => ({ ...prev, [postId]: true }));
     
     try {
-      const token = localStorage.getItem('token');
-      
       // Optimistic update
       const isCurrentlyLiked = likedPosts[postId]?.userLiked || false;
       const currentCount = likedPosts[postId]?.count || 0;
@@ -2575,9 +2487,7 @@ const ClassFeed = () => {
       }, 1000);
       
       // Actually call the API
-      const response = await axios.post(`/classes/${classId}/posts/${postId}/like`, {}, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const response = await axios.post(`/classes/${classId}/posts/${postId}/like`, {});
       
       // Update with actual data from server
       setLikedPosts(prev => ({
@@ -2593,12 +2503,7 @@ const ClassFeed = () => {
       toast.error('Failed to like post');
       
       // Revert optimistic update on error
-      const response = await axios.get(`/classes/${classId}/posts/${postId}/likes`, {
-        headers: {
-          // eslint-disable-next-line no-undef -- Legacy recovery behavior is deferred to the stacked role-journey test/fix.
-          Authorization: `Bearer ${token}`
-        }
-      });
+      const response = await axios.get(`/classes/${classId}/posts/${postId}/likes`);
       
       setLikedPosts(prev => ({
         ...prev,
@@ -2621,11 +2526,9 @@ const ClassFeed = () => {
     setSavedPosts((prev) => ({ ...prev, [postId]: !previous }));
 
     try {
-      const token = localStorage.getItem('token');
       const response = await axios.post(
         `/classes/${classId}/posts/${postId}/save`,
-        {},
-        { headers: { Authorization: `Bearer ${token}` } }
+        {}
       );
 
       setSavedPosts((prev) => ({ ...prev, [postId]: Boolean(response.data?.is_saved) }));
@@ -2644,11 +2547,7 @@ const ClassFeed = () => {
     setCommentLoading(prev => ({ ...prev, [postId]: true }));
     
     try {
-      const token = localStorage.getItem('token');
-      const response = await axios.get(
-        `/classes/${classId}/posts/${postId}/comments?limit=3`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
+      const response = await axios.get(`/classes/${classId}/posts/${postId}/comments?limit=3`);
       
       setPostComments(prev => ({
         ...prev,
@@ -2690,11 +2589,9 @@ const ClassFeed = () => {
     }
     
     try {
-      const token = localStorage.getItem('token');
       const response = await axios.post(
         `/classes/${classId}/posts/${postId}/comments`,
-        { content: commentText },
-        { headers: { Authorization: `Bearer ${token}` } }
+        { content: commentText }
       );
       
       // Update comments list with new comment
@@ -3190,7 +3087,6 @@ const ClassFeed = () => {
                               comment={comment}
                               classId={classId}
                               postId={post.id}
-                              token={localStorage.getItem('token')}
                               onReply={(_newComment) => {
                                 // Handle new reply
                                 setCommentCounts(prev => ({

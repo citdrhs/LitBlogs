@@ -10,6 +10,7 @@ import {
   normalizeUserSettings,
   saveLocalUserSettings,
 } from "./utils/userSettings"
+import { clearStoredAuth, logoutBrowserSession } from "./utils/auth"
 
 const SETTINGS_KEY = "litblogs_settings"
 
@@ -134,13 +135,7 @@ const Settings = ({ onDarkModeChange }) => {
   )
 
   useEffect(() => {
-    const token = localStorage.getItem("token")
-    if (!token) {
-      navigate("/sign-in")
-      return
-    }
-
-    const storedUserInfo = localStorage.getItem("user_info")
+    const storedUserInfo = sessionStorage.getItem("user_info")
     if (storedUserInfo) {
       try {
         setUserInfo(JSON.parse(storedUserInfo))
@@ -193,16 +188,9 @@ const Settings = ({ onDarkModeChange }) => {
   }
 
   const persistSettings = async (nextSettings) => {
-    const token = localStorage.getItem("token")
-    if (!token) {
-      return
-    }
-
     try {
       setIsSavingSettings(true)
-      const response = await axios.put("/user/settings", nextSettings, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+      const response = await axios.put("/user/settings", nextSettings)
       const normalized = normalizeUserSettings(response.data, userInfo?.role)
       setSettings((prev) => ({ ...prev, ...normalized }))
     } catch (error) {
@@ -215,15 +203,8 @@ const Settings = ({ onDarkModeChange }) => {
 
   useEffect(() => {
     const fetchSettings = async () => {
-      const token = localStorage.getItem("token")
-      if (!token) {
-        return
-      }
-
       try {
-        const response = await axios.get("/user/settings", {
-          headers: { Authorization: `Bearer ${token}` },
-        })
+        const response = await axios.get("/user/settings")
         const normalized = normalizeUserSettings(response.data, userInfo?.role)
         setSettings(normalized)
       } catch (error) {
@@ -245,15 +226,12 @@ const Settings = ({ onDarkModeChange }) => {
 
   useEffect(() => {
     const fetchPushStatus = async () => {
-      const token = localStorage.getItem("token")
-      if (!token || !pushSupported) {
+      if (!pushSupported) {
         return
       }
 
       try {
-        const response = await axios.get("/push/subscription", {
-          headers: { Authorization: `Bearer ${token}` },
-        })
+        const response = await axios.get("/push/subscription")
         setPushSubscribed(Boolean(response?.data?.subscribed))
       } catch {
         setPushSubscribed(false)
@@ -264,8 +242,7 @@ const Settings = ({ onDarkModeChange }) => {
   }, [pushSupported])
 
   const disableBrowserPush = async (silent = false) => {
-    const token = localStorage.getItem("token")
-    if (!token || !pushSupported) {
+    if (!pushSupported) {
       return
     }
 
@@ -279,7 +256,6 @@ const Settings = ({ onDarkModeChange }) => {
 
       if (subscription) {
         await axios.delete("/push/unsubscribe", {
-          headers: { Authorization: `Bearer ${token}` },
           data: {
             subscription: subscription.toJSON(),
           },
@@ -302,11 +278,6 @@ const Settings = ({ onDarkModeChange }) => {
   }
 
   const enableBrowserPush = async () => {
-    const token = localStorage.getItem("token")
-    if (!token) {
-      navigate("/sign-in")
-      return
-    }
     if (!pushSupported) {
       setErrorMessage("This browser does not support push notifications.")
       return
@@ -319,9 +290,7 @@ const Settings = ({ onDarkModeChange }) => {
 
     setPushBusy(true)
     try {
-      const keyResponse = await axios.get("/push/public-key", {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+      const keyResponse = await axios.get("/push/public-key")
 
       if (!keyResponse?.data?.enabled || !keyResponse?.data?.publicKey) {
         setErrorMessage("Push notifications are not configured on the server.")
@@ -353,9 +322,6 @@ const Settings = ({ onDarkModeChange }) => {
         "/push/subscribe",
         {
           subscription: subscription.toJSON(),
-        },
-        {
-          headers: { Authorization: `Bearer ${token}` },
         }
       )
 
@@ -390,7 +356,7 @@ const Settings = ({ onDarkModeChange }) => {
   }, [settings.emailNotifications, settings.assignmentReminders, pushSupported, pushSubscribed])
 
   const handleClearClassCache = () => {
-    localStorage.removeItem("class_info")
+    sessionStorage.removeItem("class_info")
     setErrorMessage("")
     setStatusMessage("Cleared cached class data for this device.")
   }
@@ -407,12 +373,14 @@ const Settings = ({ onDarkModeChange }) => {
     setStatusMessage("Exported your settings as JSON.")
   }
 
-  const handleSignOut = () => {
-    localStorage.removeItem("token")
-    localStorage.removeItem("user_info")
-    localStorage.removeItem("class_info")
-    setUserInfo(null)
-    navigate("/")
+  const handleSignOut = async () => {
+    try {
+      await logoutBrowserSession()
+      setUserInfo(null)
+      navigate("/")
+    } catch {
+      window.alert("Unable to sign out. Please try again.")
+    }
   }
 
   const handleDeleteAccount = async () => {
@@ -424,25 +392,14 @@ const Settings = ({ onDarkModeChange }) => {
       return
     }
 
-    const token = localStorage.getItem("token")
-    if (!token) {
-      navigate("/sign-in")
-      return
-    }
-
     setIsDeleting(true)
 
     try {
       await axios.delete("/user/account", {
         params: { confirm: "DELETE" },
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
       })
 
-      localStorage.removeItem("token")
-      localStorage.removeItem("user_info")
-      localStorage.removeItem("class_info")
+      clearStoredAuth()
       localStorage.removeItem(SETTINGS_KEY)
 
       setStatusMessage("Account deleted successfully. Redirecting...")

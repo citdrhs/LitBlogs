@@ -4,6 +4,7 @@ import axios from 'axios';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
 import Loader from './components/Loader';
+import { logoutBrowserSession } from './utils/auth';
 
 const AssignmentSubmissions = () => {
   const { classId, assignmentId } = useParams();
@@ -23,24 +24,14 @@ const AssignmentSubmissions = () => {
       setLoading(true);
       setError(null);
 
-      const token = localStorage.getItem('token');
-      if (!token) {
-        navigate('/sign-in');
-        return;
-      }
-
-      const storedUserInfo = localStorage.getItem('user_info');
+      const storedUserInfo = sessionStorage.getItem('user_info');
       if (storedUserInfo) {
         setUserInfo(JSON.parse(storedUserInfo));
       }
 
       const [assignmentsResponse, submissionsResponse] = await Promise.all([
-        axios.get(`/classes/${classId}/assignments`, {
-          headers: { Authorization: `Bearer ${token}` }
-        }),
-        axios.get(`/classes/${classId}/assignments/${assignmentId}/submissions`, {
-          headers: { Authorization: `Bearer ${token}` }
-        })
+        axios.get(`/classes/${classId}/assignments`),
+        axios.get(`/classes/${classId}/assignments/${assignmentId}/submissions`)
       ]);
 
       const matchedAssignment = (assignmentsResponse.data || []).find(
@@ -68,30 +59,25 @@ const AssignmentSubmissions = () => {
     }
   }, [darkMode]);
 
-  const handleSignOut = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user_info');
-    localStorage.removeItem('class_info');
-    navigate('/');
+  const handleSignOut = async () => {
+    try {
+      await logoutBrowserSession();
+      navigate('/');
+    } catch {
+      window.alert('Unable to sign out. Please try again.');
+    }
   };
 
   const submitReply = async (submissionId) => {
     const content = (replyDrafts[submissionId] || '').trim();
     if (!content) return;
 
-    const token = localStorage.getItem('token');
-    if (!token) {
-      navigate('/sign-in');
-      return;
-    }
-
     try {
       setReplyLoading((prev) => ({ ...prev, [submissionId]: true }));
 
       await axios.post(
         `/classes/${classId}/assignments/${assignmentId}/submissions/${submissionId}/replies`,
-        { content },
-        { headers: { Authorization: `Bearer ${token}` } }
+        { content }
       );
 
       setReplyDrafts((prev) => ({ ...prev, [submissionId]: '' }));

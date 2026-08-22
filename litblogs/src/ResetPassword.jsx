@@ -151,7 +151,7 @@ const ResetPassword = () => {
       }, 3000);
       
     } catch (error) {
-      console.error('Password reset error:', error);
+      console.error('Password reset failed');
       setIsSuccess(false);
       
       if (error.response?.status === 400) {

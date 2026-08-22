@@ -9,23 +9,26 @@ import App from './App'
 import './index.css'
 import axios from 'axios'
 import { API_BASE_PATH, APP_BASE_PATH, ROUTER_BASENAME } from './utils/urlUtils'
-import { clearStoredAuth, purgeExpiredSession } from './utils/auth'
+import {
+  clearStoredAuth,
+  configureAuthHttpClient,
+  purgeLegacyPersistentAuth,
+} from './utils/auth'
 
 // Initialize MSAL instance
 const msalInstance = new PublicClientApplication(msalConfig);
 
 // Set base URL for all axios requests
 axios.defaults.baseURL = API_BASE_PATH;
-
-purgeExpiredSession();
+configureAuthHttpClient(axios, { apiBasePath: API_BASE_PATH });
+purgeLegacyPersistentAuth();
 
 axios.interceptors.response.use(
   (response) => response,
   (error) => {
     const isUnauthorized = error?.response?.status === 401;
-    const hadAuthHeader = Boolean(error?.config?.headers?.Authorization);
 
-    if (isUnauthorized && hadAuthHeader) {
+    if (isUnauthorized) {
       clearStoredAuth();
 
       if (typeof window !== "undefined") {

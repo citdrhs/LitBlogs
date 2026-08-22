@@ -5,6 +5,7 @@ import Navbar from './components/Navbar';
 import Footer from './components/Footer';
 import './LitBlogs.css'; // Import your styles
 import FAQ from './components/FAQ';
+import { logoutBrowserSession } from './utils/auth';
 const Help = () => {
   const [darkMode, setDarkMode] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -160,18 +161,20 @@ const Help = () => {
   const navigate = useNavigate();
   const [userInfo, setUserInfo] = useState(null);
   useEffect(() => {
-    const storedUserInfo = localStorage.getItem('user_info');
+    const storedUserInfo = sessionStorage.getItem('user_info');
     if (storedUserInfo) {
       setUserInfo(JSON.parse(storedUserInfo));
     }
   }, []);
 
-  const handleSignOut = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user_info');
-    localStorage.removeItem('class_info');
-    setUserInfo(null);
-    navigate('/');
+  const handleSignOut = async () => {
+    try {
+      await logoutBrowserSession();
+      setUserInfo(null);
+      navigate('/');
+    } catch {
+      window.alert('Unable to sign out. Please try again.');
+    }
   };
 
   return (
