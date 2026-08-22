@@ -7,14 +7,17 @@ import Navbar from './components/Navbar';
 import { toast } from 'react-hot-toast';
 import Footer from './components/Footer';
 import { logoutBrowserSession } from './utils/auth';
+import {
+  createSanitizedRichTextContainer,
+  serializeSanitizedRichText,
+} from './utils/richTextSecurity';
 
 const stripInlineTextColor = (html = '') => {
   if (!html || typeof document === 'undefined') {
     return html || '';
   }
 
-  const tempDiv = document.createElement('div');
-  tempDiv.innerHTML = html;
+  const tempDiv = createSanitizedRichTextContainer(html);
 
   tempDiv.querySelectorAll('[style]').forEach((element) => {
     const styleAttr = element.getAttribute('style') || '';
@@ -31,7 +34,7 @@ const stripInlineTextColor = (html = '') => {
     }
   });
 
-  return tempDiv.innerHTML;
+  return serializeSanitizedRichText(tempDiv);
 };
 
 const StudentHub = () => {

@@ -21,6 +21,11 @@ import { formatRelativeTime, setupTimeUpdater } from './utils/timeUtils';
 import { mediaPath } from './utils/urlUtils';
 import { shouldAutoPlayVideos } from './utils/userSettings';
 import Footer from './components/Footer';
+import {
+  createSanitizedRichTextContainer,
+  normalizeRichTextUrl,
+  serializeSanitizedRichText,
+} from './utils/richTextSecurity';
 
 const applyVideoPlaybackPreference = (video) => {
   const autoPlayEnabled = shouldAutoPlayVideos();
@@ -79,51 +84,9 @@ const isPreviewable = (fileType) => {
   return ['image', 'video', 'pdf', 'text'].includes(fileType);
 };
 
-// Add this helper function to decode HTML entities
-const decodeHTMLEntities = (html) => {
-  const textarea = document.createElement('textarea');
-  textarea.innerHTML = html;
-  return textarea.value;
-};
-
 const processHTMLWithDOM = (html) => {
   if (!html) return '';
-  
-  // Check if the HTML contains video tags as text
-  if (html.includes('<video') && html.includes('</video>')) {
-    // Create a temporary div to parse the HTML
-    const tempContainer = document.createElement('div');
-    tempContainer.innerHTML = html;
-    
-    // Find all text nodes that might contain video tags
-    const findTextNodesWithVideos = (node) => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        if (node.textContent.includes('<video') && node.textContent.includes('</video>')) {
-          // Replace the text node with actual HTML
-          const tempDiv = document.createElement('div');
-          tempDiv.innerHTML = node.textContent;
-          
-          // Replace the text node with the parsed HTML
-          node.parentNode.replaceChild(tempDiv, node);
-        }
-      } else if (node.nodeType === Node.ELEMENT_NODE) {
-        // Recursively process child nodes
-        Array.from(node.childNodes).forEach(findTextNodesWithVideos);
-      }
-    };
-    
-    // Process all nodes
-    findTextNodesWithVideos(tempContainer);
-    
-    // Continue with the rest of the processing
-    // ...
-    
-    return tempContainer.innerHTML;
-  }
-  
-  // Create a temporary div to parse the HTML
-  const tempContainer = document.createElement('div');
-  tempContainer.innerHTML = html;
+  const tempContainer = createSanitizedRichTextContainer(html);
   
   // Process videos directly
   const videos = tempContainer.querySelectorAll('video');
@@ -250,25 +213,18 @@ const processHTMLWithDOM = (html) => {
     // Add a base class for all images
     img.classList.add('post-image');
     
-    // Add error handling for images
-    img.onerror = "this.onerror=null; this.src='/placeholder-image.png'; this.alt='Image failed to load';";
   });
   
   // Process file attachments
   const fileAttachments = tempContainer.querySelectorAll('.file-attachment');
   fileAttachments.forEach(attachment => {
-    // Check if the file-actions div contains encoded HTML
     const actionsDiv = attachment.querySelector('.file-actions');
-    if (actionsDiv && actionsDiv.innerHTML.includes('&lt;button')) {
-      // The HTML is encoded, decode it
-      actionsDiv.innerHTML = decodeHTMLEntities(actionsDiv.innerHTML);
-    }
     
     // Now extract the file URL from the button if it exists
     const removeBtn = attachment.querySelector('.remove-btn');
-    let fileUrl = null;
+    let fileUrl = attachment.getAttribute('data-file-url');
     
-    if (removeBtn) {
+    if (!fileUrl && removeBtn) {
       fileUrl = removeBtn.getAttribute('data-file-url');
       console.log("Found URL in remove button:", fileUrl);
     }
@@ -279,7 +235,7 @@ const processHTMLWithDOM = (html) => {
     
     // Clear the actions div and add the view buttons
     if (actionsDiv) {
-      actionsDiv.innerHTML = '';
+      actionsDiv.replaceChildren();
       
       // Add preview button for supported file types
       // if (fileUrl && isPreviewable(getFileTypeFromUrl(fileUrl))) {
@@ -316,7 +272,7 @@ const processHTMLWithDOM = (html) => {
           
       //     // Create close button
       //     const closeBtn = document.createElement('button');
-      //     closeBtn.innerHTML = '&times;';
+      //     closeBtn.textContent = '×';
       //     closeBtn.style.position = 'absolute';
       //     closeBtn.style.top = '20px';
       //     closeBtn.style.right = '20px';
@@ -384,7 +340,10 @@ const processHTMLWithDOM = (html) => {
       
       // Add preview and open actions
       if (fileUrl) {
-        const fullUrl = mediaPath(fileUrl);
+        const fullUrl = normalizeRichTextUrl(fileUrl, 'attachment');
+        if (!fullUrl) {
+          return;
+        }
         const fileType = getFileTypeFromUrl(fileUrl);
 
         if (fileType === 'pdf') {
@@ -511,7 +470,9 @@ const processHTMLWithDOM = (html) => {
     }
   });
   
-  return tempContainer.innerHTML;
+  // User-supplied controls were removed when the container was created. Keep
+  // only the inert preview controls constructed above during final serialization.
+  return serializeSanitizedRichText(tempContainer, { mode: 'editor' });
 };
 
 const PostView = () => {
@@ -645,23 +606,6 @@ const PostView = () => {
         Prism.highlightAll();
       };
       highlight();
-    }
-  }, [post]);
-
-  useEffect(() => {
-    if (post && post.content) {
-      console.log("Post Content:", post.content);
-      
-      // Check for font-family styles
-      const tempDiv = document.createElement('div');
-      tempDiv.innerHTML = post.content;
-      
-      const elements = tempDiv.querySelectorAll('[style*="font-family"]');
-      console.log("Elements with font-family:", elements.length);
-      
-      elements.forEach(el => {
-        console.log("Font family style:", el.getAttribute('style'));
-      });
     }
   }, [post]);
 
@@ -1072,7 +1016,7 @@ const PostView = () => {
         
         // Create close button
         const closeBtn = document.createElement('button');
-        closeBtn.innerHTML = '&times;';
+        closeBtn.textContent = '×';
         closeBtn.style.position = 'absolute';
         closeBtn.style.top = '20px';
         closeBtn.style.right = '20px';
@@ -1193,17 +1137,7 @@ const PostView = () => {
     if (htmlContent.includes('&lt;video') || htmlContent.includes('<video')) {
       console.log("Found video tags in content");
       
-      // Create a temporary container to parse the content
-      const tempDiv = document.createElement('div');
-      
-      // First decode any HTML entities
-      let decodedHtml = htmlContent
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&quot;/g, '"')
-        .replace(/&amp;/g, '&');
-      
-      tempDiv.innerHTML = decodedHtml;
+      const tempDiv = createSanitizedRichTextContainer(htmlContent);
       
       // Remove any delete buttons again (in case they were in the decoded HTML)
       const moreDeleteButtons = tempDiv.querySelectorAll('.video-delete-btn, .editor-only-control');
@@ -1228,13 +1162,8 @@ const PostView = () => {
           if (!source) return;
           
           // Get the source URL
-          let srcUrl = source.getAttribute('src');
+          const srcUrl = normalizeRichTextUrl(source.getAttribute('src'), 'video');
           if (!srcUrl) return;
-          
-          // Fix the source URL if needed
-          if (srcUrl.startsWith('/uploads/')) {
-            srcUrl = mediaPath(srcUrl);
-          }
           
           // Get the video type
           const videoType = source.getAttribute('type') || 'video/mp4';
@@ -1290,7 +1219,7 @@ const PostView = () => {
         });
         
         // Update the content with the processed HTML
-        contentDiv.innerHTML = tempDiv.innerHTML;
+        contentDiv.replaceChildren(...tempDiv.childNodes);
         
         return true; // Videos were rendered
       }
@@ -1327,15 +1256,8 @@ const PostView = () => {
     if (htmlContent.includes('&lt;video') && htmlContent.includes('&lt;/video&gt;')) {
       console.log("Found encoded video tags, fixing...");
       
-      // Replace the encoded HTML with decoded HTML
-      const decodedHtml = htmlContent
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&quot;/g, '"')
-        .replace(/&amp;/g, '&');
-      
-      // Update the content
-      contentDiv.innerHTML = decodedHtml;
+      const decodedContainer = createSanitizedRichTextContainer(htmlContent);
+      contentDiv.replaceChildren(...decodedContainer.childNodes);
       
       // Now find and fix all videos
       const videos = contentDiv.querySelectorAll('video');
@@ -1359,12 +1281,9 @@ const PostView = () => {
         // Fix video sources
         const source = video.querySelector('source');
         if (source) {
-          const src = source.getAttribute('src');
+          const src = normalizeRichTextUrl(source.getAttribute('src'), 'video');
           if (src) {
-            // Make sure the URL is absolute
-            if (src.startsWith('/uploads/')) {
-              source.setAttribute('src', mediaPath(src));
-            }
+            source.setAttribute('src', src);
             console.log(`Video ${index} source:`, source.getAttribute('src'));
           }
         }
