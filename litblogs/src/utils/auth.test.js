@@ -287,4 +287,11 @@ describe("frontend token persistence regression", () => {
 
     expect(source).not.toMatch(/console\.error\([^\n]*,\s*error\s*\)/);
   });
+
+  it("keeps the reset form password minimum aligned with the backend", () => {
+    const source = fs.readFileSync(path.join(SOURCE_ROOT, "ResetPassword.jsx"), "utf8");
+
+    expect(source).toContain("password.length < 15");
+    expect(source).toContain("Password must be at least 15 characters long");
+  });
 });

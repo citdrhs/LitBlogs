@@ -174,6 +174,10 @@ def test_settings_validation_errors_do_not_echo_secret_values():
         "csrf_cookie_name",
         "teacher_access_code",
         "admin_access_code",
+        "email_host",
+        "email_username",
+        "email_password",
+        "email_from",
     ],
 )
 def test_production_requires_provider_and_session_settings(field):
@@ -253,6 +257,14 @@ def test_production_rejects_insecure_session_and_origin_configuration():
         data[field] = value
         with pytest.raises(ValidationError, match=f"(?i){field}"):
             Settings(**data)
+
+
+def test_production_requires_password_reset_delivery_worker():
+    data = _production_settings_data()
+    data["password_reset_worker_enabled"] = False
+
+    with pytest.raises(ValidationError, match="PASSWORD_RESET_WORKER_ENABLED"):
+        Settings(**data)
 
 
 def test_test_and_development_accept_explicit_nonproduction_placeholders():
@@ -623,6 +635,11 @@ def _production_settings_data():
         "teacher_access_code": secrets.token_urlsafe(24),
         "admin_access_code": secrets.token_urlsafe(24),
         "admin_code": secrets.token_urlsafe(24),
+        "email_host": "smtp.school.example",
+        "email_username": "litblog-reset",
+        "email_password": secrets.token_urlsafe(24),
+        "email_from": "no-reply@school.example",
+        "password_reset_worker_enabled": True,
     }
 
 

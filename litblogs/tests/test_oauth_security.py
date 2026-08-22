@@ -214,6 +214,11 @@ def _production_settings_data(**overrides) -> dict:
         "teacher_access_code": secrets.token_urlsafe(24),
         "admin_access_code": secrets.token_urlsafe(24),
         "admin_code": secrets.token_urlsafe(24),
+        "email_host": "smtp.school.example",
+        "email_username": "litblog-reset",
+        "email_password": secrets.token_urlsafe(24),
+        "email_from": "no-reply@school.example",
+        "password_reset_worker_enabled": True,
     }
     data.update(overrides)
     return data

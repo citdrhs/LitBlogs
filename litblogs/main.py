@@ -1,6 +1,7 @@
 # main.py
 # To run locally run:
 # uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
+import hashlib
 import json
 import os
 import random
@@ -8,19 +9,22 @@ import re
 import secrets
 import shutil
 import smtplib
+import ssl
 import string
 import threading
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from ipaddress import ip_address
 from pathlib import Path
-from typing import List
+from typing import List, Literal
+from urllib.parse import urlsplit
 
 import bleach
 import uvicorn
 from bleach.css_sanitizer import CSSSanitizer
-from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,13 +33,67 @@ from fastapi.security import OAuth2PasswordBearer
 from fastapi.staticfiles import StaticFiles
 from google.oauth2 import id_token
 from jwt.exceptions import InvalidTokenError
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
-from sqlalchemy import text, update
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from sqlalchemy import and_, or_, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 import models
 import schemas
+from access_control import (
+    can_access_class as _can_access_class,
+)
+from access_control import (
+    can_moderate_post as _can_moderate_post,
+)
+from access_control import (
+    can_view_post_analysis as _can_view_post_analysis,
+)
+from access_control import (
+    get_teacher_record as _get_teacher_record,
+)
+from access_control import (
+    require_active_class as _ensure_class_is_active,
+)
+from access_control import (
+    require_active_class_access as _ensure_active_class_access,
+)
+from access_control import (
+    require_active_class_owner as _ensure_active_class_owner,
+)
+from access_control import (
+    require_admin as _require_admin,
+)
+from access_control import (
+    require_assignment_for_class as _ensure_assignment_for_class,
+)
+from access_control import (
+    require_class_access as _ensure_class_access,
+)
+from access_control import (
+    require_class_owner as _ensure_class_owner,
+)
+from access_control import (
+    require_comment_access as _ensure_comment_access,
+)
+from access_control import (
+    require_enrolled_student as _ensure_enrolled_student,
+)
+from access_control import (
+    require_post_access as _ensure_post_access,
+)
+from access_control import (
+    require_profile_access as _ensure_profile_access,
+)
+from access_control import (
+    require_submission_access as _ensure_submission_access,
+)
+from access_control import (
+    teacher_owns_class as _teacher_owns_class,
+)
+from access_control import (
+    user_class_ids as _get_user_class_ids,
+)
 from auth_security import (
     csrf_token_matches,
     decode_access_token,
@@ -49,6 +107,11 @@ from database import SessionLocal, get_db, initialize_database, reset_database
 from oauth_security import verify_google_id_token, verify_microsoft_id_token
 
 settings = get_settings()
+
+
+def _utc_now_naive() -> datetime:
+    """Return UTC as a naive datetime for the app's existing database columns."""
+    return datetime.now(UTC).replace(tzinfo=None)
 
 try:
     from pywebpush import WebPushException, webpush
@@ -69,9 +132,16 @@ VAPID_PRIVATE_KEY = settings.vapid_private_key.get_secret_value() if settings.va
 VAPID_SUBJECT = settings.vapid_subject
 WEB_PUSH_ENABLED = bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY and webpush)
 PUSH_REMINDER_INTERVAL_SECONDS = settings.push_reminder_interval_seconds
+PUSH_ALLOWED_ENDPOINT_HOSTS = settings.push_allowed_endpoint_hosts
+PUSH_DELIVERY_TIMEOUT_SECONDS = settings.push_delivery_timeout_seconds
+PASSWORD_RESET_WORKER_ENABLED = settings.password_reset_worker_enabled
+PASSWORD_RESET_WORKER_INTERVAL_SECONDS = settings.password_reset_worker_interval_seconds
+PASSWORD_RESET_CLAIM_TIMEOUT_SECONDS = settings.password_reset_claim_timeout_seconds
 
 _push_scheduler_stop_event = threading.Event()
 _push_scheduler_thread: threading.Thread | None = None
+_password_reset_worker_stop_event = threading.Event()
+_password_reset_worker_thread: threading.Thread | None = None
 
 if "*" in CORS_ALLOWED_ORIGINS:
     raise RuntimeError("CORS_ALLOWED_ORIGINS must not contain a wildcard when credentials are enabled")
@@ -85,8 +155,12 @@ async def lifespan(app: FastAPI):
         initialize_database()
 
     _start_push_scheduler()
-    yield
-    _stop_push_scheduler()
+    _start_password_reset_worker()
+    try:
+        yield
+    finally:
+        _stop_password_reset_worker()
+        _stop_push_scheduler()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -132,7 +206,7 @@ def _build_unique_filename(filename: str | None, prefix: str | None = None) -> s
     safe_name = _sanitize_filename(filename)
     stem = Path(safe_name).stem or "upload"
     suffix = Path(safe_name).suffix
-    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    timestamp = _utc_now_naive().strftime("%Y%m%d%H%M%S")
     random_str = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
     name_parts = [part for part in [prefix, timestamp, random_str, stem] if part]
     return f"{'_'.join(name_parts)}{suffix}"
@@ -187,17 +261,33 @@ def _is_admin_role(role) -> bool:
         return str(role.value).upper() == "ADMIN"
     return str(role).upper() == "ADMIN"
 
-def _sync_admin_flag(db: Session, user: models.User) -> models.User:
-    should_be_admin = _is_admin_role(user.role)
-    if user.is_admin != should_be_admin:
-        user.is_admin = should_be_admin
-        db.commit()
-        db.refresh(user)
-    return user
+
+def _push_endpoint_host_allowed(hostname: str) -> bool:
+    normalized_host = hostname.lower().rstrip(".")
+    try:
+        ip_address(normalized_host)
+    except ValueError:
+        pass
+    else:
+        return False
+
+    for rule in PUSH_ALLOWED_ENDPOINT_HOSTS:
+        normalized_rule = rule.lower().rstrip(".")
+        if normalized_rule.startswith("."):
+            base_domain = normalized_rule[1:]
+            if normalized_host == base_domain or normalized_host.endswith(normalized_rule):
+                return True
+        elif normalized_host == normalized_rule:
+            return True
+    return False
 
 class LoginRequest(BaseModel):
-    email: str
-    password: str
+    model_config = ConfigDict(extra="forbid")
+
+    # Login performs an exact lookup against an already-validated stored address.
+    # A bounded string preserves synthetic/reserved-domain test and recovery accounts.
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=1_024)
 
 
 class SessionMetadataResponse(BaseModel):
@@ -221,6 +311,8 @@ class OAuthSignupRequest(OAuthLoginRequest):
 
 
 class UserSettingsUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     darkMode: bool | None = None
     reducedMotion: bool | None = None
     emailNotifications: bool | None = None
@@ -229,17 +321,37 @@ class UserSettingsUpdateRequest(BaseModel):
     compactFeed: bool | None = None
     rememberDrafts: bool | None = None
     showProfileToClassmates: bool | None = None
-    editorFontSize: str | None = None
+    editorFontSize: Literal["small", "medium", "large"] | None = None
 
 class PushSubscriptionKeysRequest(BaseModel):
-    p256dh: str
-    auth: str
+    model_config = ConfigDict(extra="forbid")
+
+    p256dh: str = Field(min_length=1, max_length=255)
+    auth: str = Field(min_length=1, max_length=255)
 
 class PushSubscriptionRequest(BaseModel):
-    endpoint: str
+    model_config = ConfigDict(extra="forbid")
+
+    endpoint: str = Field(min_length=12, max_length=1_024)
     keys: PushSubscriptionKeysRequest
 
+    @field_validator("endpoint")
+    @classmethod
+    def validate_https_endpoint(cls, value: str) -> str:
+        normalized = value.strip()
+        parsed = urlsplit(normalized)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.port not in {None, 443}
+            or not _push_endpoint_host_allowed(parsed.hostname)
+        ):
+            raise ValueError("push endpoint is not an approved HTTPS push service")
+        return normalized
+
 class PushSubscriptionEnvelopeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     subscription: PushSubscriptionRequest
 
 DEFAULT_USER_SETTINGS = {
@@ -369,6 +481,7 @@ def _send_web_push(subscription: models.PushSubscription, payload: dict) -> bool
             data=json.dumps(payload),
             vapid_private_key=VAPID_PRIVATE_KEY,
             vapid_claims={"sub": VAPID_SUBJECT},
+            timeout=PUSH_DELIVERY_TIMEOUT_SECONDS,
         )
         return True
     except WebPushException as exc:
@@ -385,7 +498,7 @@ def _dispatch_assignment_push_reminders_once() -> None:
 
     db = SessionLocal()
     try:
-        now_utc = datetime.utcnow()
+        now_utc = _utc_now_naive()
         students = (
             db.query(models.User)
             .join(models.UserSettings, models.UserSettings.user_id == models.User.id)
@@ -468,8 +581,8 @@ def _dispatch_assignment_push_reminders_once() -> None:
                     )
 
             db.commit()
-    except Exception as exc:
-        print(f"Push reminder dispatcher error: {exc}")
+    except Exception:
+        print("Push reminder dispatcher failed")
     finally:
         db.close()
 
@@ -512,7 +625,7 @@ def _session_metadata(user: models.User) -> dict:
         "first_name": user.first_name,
         "last_name": user.last_name,
         "role": user.role.value,
-        "is_admin": bool(user.is_admin),
+        "is_admin": _is_admin_role(user.role),
     }
 
 
@@ -1043,6 +1156,7 @@ async def get_user_info(
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    _ensure_profile_access(db, current_user, user)
     
     return {
         "role": user.role.value,
@@ -1051,58 +1165,10 @@ async def get_user_info(
         "first_name": user.first_name
     }
 
-# ---------- Blog Endpoints ----------
-
-@app.get("/api/blogs", response_model=List[schemas.BlogResponse])
-def get_blogs(db: Session = Depends(get_db)):
-    blogs = db.query(models.Blog).all()
-    return blogs
-
-@app.post("/api/blogs", response_model=schemas.BlogResponse)
-def create_blog(blog: schemas.BlogCreate, owner_id: int, db: Session = Depends(get_db)):
-    # In a real application, owner_id would come from the authenticated user (e.g., JWT token)
-    new_blog = models.Blog(title=blog.title, content=blog.content, owner_id=owner_id)
-    db.add(new_blog)
-    db.commit()
-    db.refresh(new_blog)
-    return new_blog
-
-@app.delete("/api/blogs/{blog_id}")
-def delete_blog(
-    blog_id: int,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
-    blog = db.query(models.Blog).filter(models.Blog.id == blog_id).first()
-    if not blog:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Blog not found")
-    if blog.owner_id != current_user.id and not current_user.is_admin:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to delete this blog")
-    db.delete(blog)
-    db.commit()
-    return {"message": "Blog deleted"}
-
 # ---------- Home Endpoint ----------
 @app.get("/api/")
 def home():
     return {"message": "Welcome to LitBlogs Backend"}
-
-@app.get("/api/test-db")
-def test_db(db: Session = Depends(get_db)):
-    try:
-        # Execute a simple query
-        db.execute(text("SELECT 1"))
-        return {"message": "Successfully connected to the database!"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database connection failed: {str(e)}") from e
-
-@app.post("/api/verify-class-code")
-def verify_class_code(code_data: dict, db: Session = Depends(get_db)):
-    code = code_data.get("code")
-    class_ = db.query(models.Class).filter(models.Class.access_code == code).first()
-    if not class_:
-        raise HTTPException(status_code=400, detail="Invalid class code")
-    return {"valid": True, "class_id": class_.id}
 
 @app.get("/api/classes/{class_id}/details")
 async def get_class_details(
@@ -1123,17 +1189,19 @@ async def get_class_details(
         models.Blog.class_id == class_id
     ).count()
     
-    return {
+    result = {
         "id": db_class.id,
         "name": db_class.name,
         "description": db_class.description,
-        "access_code": db_class.access_code,
         "created_at": db_class.created_at,
         "teacher_id": db_class.teacher_id,
         "enrollment_count": enrollment_count,
         "post_count": post_count,
         "status": db_class.status
     }
+    if _is_admin_role(current_user.role) or _teacher_owns_class(db, current_user, db_class):
+        result["access_code"] = db_class.access_code
+    return result
 
 
 # Add these new models to handle rich content
@@ -1199,25 +1267,40 @@ def _build_post_content(post: schemas.BlogCreate) -> str:
 
     if post.code_snippets:
         for snippet in post.code_snippets:
-            content += f"\n[CODE:{snippet['language']}]{snippet['code']}\n"
+            content += f"\n[CODE:{snippet.language}]{snippet.code}\n"
 
     if post.media:
         for media in post.media:
-            if media['type'] == 'gif':
-                content += f"\n[GIF:{media['url']}]\n"
-            elif media['type'] == 'image':
-                content += f"\n[IMAGE:{media['url']}]\n"
+            if media.type == 'gif':
+                content += f"\n[GIF:{media.url}]\n"
+            elif media.type == 'image':
+                content += f"\n[IMAGE:{media.url}]\n"
 
     if post.polls:
         for poll in post.polls:
-            options = ','.join(poll['options'])
+            options = ','.join(poll.options)
             content += f"\n[POLL:{options}]\n"
 
     if post.files:
         for file in post.files:
-            content += f"\n[FILE:{file['name']}|{file['url']}]\n"
+            content += f"\n[FILE:{file.name}|{file.url}]\n"
 
     return content
+
+
+def _post_analysis_payload(
+    db: Session,
+    current_user: models.User,
+    db_class: models.Class,
+    post: models.Blog,
+) -> dict:
+    if not _can_view_post_analysis(db, current_user, db_class, post):
+        return {}
+    return {
+        "ai_percentage": post.ai_percentage,
+        "ai_highlighted_html": post.ai_highlighted_html,
+        "ai_sentence_analysis": post.ai_sentence_analysis,
+    }
 
 @app.post("/api/classes/{class_id}/posts", response_model=schemas.BlogResponse)
 async def create_class_post(
@@ -1226,14 +1309,7 @@ async def create_class_post(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    # Verify user has access to this class
-    if current_user.role == models.UserRole.STUDENT:
-        enrollment = db.query(models.ClassEnrollment).filter(
-            models.ClassEnrollment.student_id == current_user.id,
-            models.ClassEnrollment.class_id == class_id
-        ).first()
-        if not enrollment:
-            raise HTTPException(status_code=403, detail="Not enrolled in this class")
+    db_class = _ensure_active_class_access(db, current_user, class_id)
     
     content = _build_post_content(post)
     
@@ -1249,7 +1325,7 @@ async def create_class_post(
     db.commit()
     db.refresh(new_post)
     
-    return {
+    result = {
         "id": new_post.id,
         "title": new_post.title,
         "content": new_post.content,
@@ -1260,10 +1336,9 @@ async def create_class_post(
         "author_profile_image": current_user.profile_image,
         "likes": len(new_post.likes) if hasattr(new_post, 'likes') else 0,
         "comments": len(new_post.comments) if hasattr(new_post, 'comments') else 0,
-        "ai_percentage": new_post.ai_percentage,
-        "ai_highlighted_html": new_post.ai_highlighted_html,
-        "ai_sentence_analysis": new_post.ai_sentence_analysis
     }
+    result.update(_post_analysis_payload(db, current_user, db_class, new_post))
+    return result
 
 @app.get("/api/classes/{class_id}/posts")
 async def get_class_posts(
@@ -1271,7 +1346,7 @@ async def get_class_posts(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    _ensure_class_access(db, current_user, class_id)
+    db_class = _ensure_class_access(db, current_user, class_id)
     
     # Get posts with author information
     posts = db.query(models.Blog).filter(
@@ -1293,7 +1368,7 @@ async def get_class_posts(
     formatted_posts = []
     for post in posts:
         author = db.query(models.User).filter(models.User.id == post.owner_id).first()
-        formatted_posts.append({
+        formatted_post = {
             "id": post.id,
             "title": post.title,
             "content": post.content,  # Whitespace will be preserved
@@ -1304,10 +1379,9 @@ async def get_class_posts(
             "likes": len(post.likes) if hasattr(post, 'likes') else 0,
             "comments": len(post.comments) if hasattr(post, 'comments') else 0,
             "is_saved": post.id in saved_ids,
-            "ai_percentage": post.ai_percentage,
-            "ai_highlighted_html": post.ai_highlighted_html,
-            "ai_sentence_analysis": post.ai_sentence_analysis
-        })
+        }
+        formatted_post.update(_post_analysis_payload(db, current_user, db_class, post))
+        formatted_posts.append(formatted_post)
     
     return formatted_posts
 
@@ -1316,20 +1390,30 @@ async def get_users(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
+    _require_admin(current_user)
     users = db.query(models.User).all()
-    return users
+    return [
+        {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "role": user.role.value,
+            "is_admin": _is_admin_role(user.role),
+            "created_at": user.created_at,
+        }
+        for user in users
+    ]
 
 @app.get("/api/classes")
 async def get_classes(
-    status: str = "active",  # Default to active classes
+    status: Literal["active", "archived"] = "active",
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     # Allow both admin and teacher access
-    if not (current_user.is_admin or current_user.role == models.UserRole.TEACHER):
+    if not (_is_admin_role(current_user.role) or current_user.role == models.UserRole.TEACHER):
         raise HTTPException(status_code=403, detail="Not authorized")
     
     # For teachers, only return their classes
@@ -1368,11 +1452,6 @@ async def get_classes(
         result.append(class_data)
     
     return result
-
-@app.get("/api/debug/classes")
-async def debug_classes(db: Session = Depends(get_db)):
-    classes = db.query(models.Class).all()
-    return [{"id": c.id, "name": c.name, "access_code": c.access_code} for c in classes]
 
 # Create upload directories if they don't exist
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -1527,15 +1606,14 @@ async def get_teacher_dashboard(
         }
         
     except Exception as e:
-        print(f"Teacher dashboard error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to load dashboard: {str(e)}"
+            detail="Failed to load dashboard"
         ) from e
 
 @app.post("/api/classes")
 async def create_class(
-    class_data: dict,
+    class_data: schemas.ClassCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -1568,8 +1646,8 @@ async def create_class(
         
         # Create new class with teacher_id from the Teacher table
         new_class = models.Class(
-            name=class_data.get("name"),
-            description=class_data.get("description", ""),
+            name=class_data.name,
+            description=class_data.description or "",
             access_code=access_code,
             teacher_id=teacher.id  # Use teacher.id, not current_user.id
         )
@@ -1589,10 +1667,9 @@ async def create_class(
     
     except Exception as e:
         db.rollback()
-        print(f"Class creation error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create class: {str(e)}"
+            detail="Failed to create class"
         ) from e
 
 @app.post("/api/classes/{class_id}/assignments")
@@ -1602,14 +1679,7 @@ async def create_assignment(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    if current_user.role not in [models.UserRole.TEACHER, models.UserRole.ADMIN]:
-        raise HTTPException(status_code=403, detail="Not authorized")
-
-    db_class = _get_class_or_404(db, class_id)
-    if current_user.role == models.UserRole.TEACHER:
-        teacher = _get_teacher_record(db, current_user)
-        if not teacher or db_class.teacher_id != teacher.id:
-            raise HTTPException(status_code=403, detail="Not authorized")
+    _ensure_active_class_owner(db, current_user, class_id)
 
     visibility = assignment.visibility or "class"
     if visibility not in ["class", "private"]:
@@ -1648,14 +1718,7 @@ async def update_assignment(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    if current_user.role not in [models.UserRole.TEACHER, models.UserRole.ADMIN]:
-        raise HTTPException(status_code=403, detail="Not authorized")
-
-    db_class = _get_class_or_404(db, class_id)
-    if current_user.role == models.UserRole.TEACHER:
-        teacher = _get_teacher_record(db, current_user)
-        if not teacher or db_class.teacher_id != teacher.id:
-            raise HTTPException(status_code=403, detail="Not authorized")
+    _ensure_active_class_owner(db, current_user, class_id)
 
     db_assignment = db.query(models.Assignment).filter(
         models.Assignment.id == assignment_id,
@@ -1785,7 +1848,7 @@ async def save_assignment_draft(
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
-    _ensure_class_access(db, current_user, assignment.class_id)
+    _ensure_active_class_access(db, current_user, assignment.class_id)
 
     draft = db.query(models.AssignmentDraft).filter(
         models.AssignmentDraft.assignment_id == assignment_id,
@@ -1813,7 +1876,7 @@ async def save_assignment_draft(
     else:
         draft.content = content
 
-    draft.updated_at = datetime.utcnow()
+    draft.updated_at = _utc_now_naive()
     db.commit()
     db.refresh(draft)
 
@@ -1837,14 +1900,14 @@ async def submit_assignment(
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
-    _ensure_class_access(db, current_user, assignment.class_id)
+    _ensure_active_class_access(db, current_user, assignment.class_id)
 
     draft = db.query(models.AssignmentDraft).filter(
         models.AssignmentDraft.assignment_id == assignment_id,
         models.AssignmentDraft.student_id == current_user.id
     ).first()
 
-    submitted_at = datetime.utcnow()
+    submitted_at = _utc_now_naive()
     due_date = assignment.due_date
 
     if due_date is not None:
@@ -1915,26 +1978,20 @@ async def list_assignment_submissions(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    db_class = _get_class_or_404(db, class_id)
-    assignment = db.query(models.Assignment).filter(models.Assignment.id == assignment_id).first()
-    if not assignment or assignment.class_id != class_id:
-        raise HTTPException(status_code=404, detail="Assignment not found")
-
-    if current_user.role == models.UserRole.ADMIN:
-        pass
-    elif current_user.role == models.UserRole.TEACHER:
-        teacher = _get_teacher_record(db, current_user)
-        if not teacher or db_class.teacher_id != teacher.id:
-            raise HTTPException(status_code=403, detail="Not authorized")
-    elif current_user.role == models.UserRole.STUDENT:
-        _ensure_class_access(db, current_user, class_id)
-        if assignment.visibility != "class":
-            raise HTTPException(status_code=403, detail="Not authorized")
-    else:
-        raise HTTPException(status_code=403, detail="Not authorized")
-    submissions = db.query(models.AssignmentSubmission).filter(
-        models.AssignmentSubmission.assignment_id == assignment_id
-    ).all()
+    _db_class, assignment = _ensure_assignment_for_class(
+        db,
+        current_user,
+        class_id,
+        assignment_id,
+    )
+    submissions_query = db.query(models.AssignmentSubmission).filter(
+        models.AssignmentSubmission.assignment_id == assignment.id
+    )
+    if current_user.role == models.UserRole.STUDENT:
+        submissions_query = submissions_query.filter(
+            models.AssignmentSubmission.student_id == current_user.id
+        )
+    submissions = submissions_query.all()
 
     results = []
     for submission in submissions:
@@ -1956,8 +2013,12 @@ async def list_assignment_submissions(
                 "id": student.id,
                 "first_name": student.first_name,
                 "last_name": student.last_name,
-                "email": student.email,
-                "username": student.username
+                "username": student.username,
+                **(
+                    {"email": student.email}
+                    if current_user.role != models.UserRole.STUDENT
+                    else {}
+                ),
             } if student else None,
             "replies": [
                 {
@@ -1987,31 +2048,13 @@ async def list_assignment_submission_replies(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    db_class = _get_class_or_404(db, class_id)
-    assignment = db.query(models.Assignment).filter(models.Assignment.id == assignment_id).first()
-    if not assignment or assignment.class_id != class_id:
-        raise HTTPException(status_code=404, detail="Assignment not found")
-
-    submission = db.query(models.AssignmentSubmission).filter(
-        models.AssignmentSubmission.id == submission_id,
-        models.AssignmentSubmission.assignment_id == assignment_id
-    ).first()
-    if not submission:
-        raise HTTPException(status_code=404, detail="Submission not found")
-
-    if current_user.role == models.UserRole.ADMIN:
-        pass
-    elif current_user.role == models.UserRole.TEACHER:
-        teacher = _get_teacher_record(db, current_user)
-        if not teacher or db_class.teacher_id != teacher.id:
-            raise HTTPException(status_code=403, detail="Not authorized")
-    elif current_user.role == models.UserRole.STUDENT:
-        _ensure_class_access(db, current_user, class_id)
-        if assignment.visibility != "class":
-            raise HTTPException(status_code=403, detail="Not authorized")
-    else:
-        raise HTTPException(status_code=403, detail="Not authorized")
-
+    _db_class, _assignment, submission = _ensure_submission_access(
+        db,
+        current_user,
+        class_id,
+        assignment_id,
+        submission_id,
+    )
     replies = db.query(models.AssignmentSubmissionReply).filter(
         models.AssignmentSubmissionReply.submission_id == submission_id
     ).order_by(models.AssignmentSubmissionReply.created_at.asc()).all()
@@ -2038,43 +2081,23 @@ async def create_assignment_submission_reply(
     class_id: int,
     assignment_id: int,
     submission_id: int,
-    payload: dict,
+    payload: schemas.SubmissionReplyCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    db_class = _get_class_or_404(db, class_id)
-    assignment = db.query(models.Assignment).filter(models.Assignment.id == assignment_id).first()
-    if not assignment or assignment.class_id != class_id:
-        raise HTTPException(status_code=404, detail="Assignment not found")
-
-    submission = db.query(models.AssignmentSubmission).filter(
-        models.AssignmentSubmission.id == submission_id,
-        models.AssignmentSubmission.assignment_id == assignment_id
-    ).first()
-    if not submission:
-        raise HTTPException(status_code=404, detail="Submission not found")
-
-    if current_user.role == models.UserRole.ADMIN:
-        pass
-    elif current_user.role == models.UserRole.TEACHER:
-        teacher = _get_teacher_record(db, current_user)
-        if not teacher or db_class.teacher_id != teacher.id:
-            raise HTTPException(status_code=403, detail="Not authorized")
-    elif current_user.role == models.UserRole.STUDENT:
-        _ensure_class_access(db, current_user, class_id)
-        if assignment.visibility != "class":
-            raise HTTPException(status_code=403, detail="Not authorized")
-    else:
-        raise HTTPException(status_code=403, detail="Not authorized")
-
-    content = (payload.get("content") or "").strip()
-    if not content:
-        raise HTTPException(status_code=400, detail="Reply content is required")
+    db_class, _assignment, submission = _ensure_submission_access(
+        db,
+        current_user,
+        class_id,
+        assignment_id,
+        submission_id,
+    )
+    _ensure_class_is_active(db_class)
 
     reply = models.AssignmentSubmissionReply(
         submission_id=submission_id,
         user_id=current_user.id,
-        content=content
+        content=payload.content,
     )
     db.add(reply)
     db.commit()
@@ -2107,12 +2130,12 @@ async def get_class_analytics(
 
     total_students = _get_class_student_count(db, class_id)
     total_posts = db.query(models.Blog).filter(models.Blog.class_id == class_id).count()
-    last_week = datetime.utcnow() - timedelta(days=7)
+    last_week = _utc_now_naive() - timedelta(days=7)
     posts_last_week = db.query(models.Blog).filter(
         models.Blog.class_id == class_id,
         models.Blog.created_at >= last_week
     ).count()
-    start_of_day = datetime.combine(datetime.utcnow().date(), datetime.min.time())
+    start_of_day = datetime.combine(_utc_now_naive().date(), datetime.min.time())
     active_today = db.query(models.Blog.owner_id).filter(
         models.Blog.class_id == class_id,
         models.Blog.created_at >= start_of_day
@@ -2214,7 +2237,7 @@ async def get_teacher_analytics(
         total_students = _get_class_student_count(db, class_.id)
         total_posts = db.query(models.Blog).filter(models.Blog.class_id == class_.id).count()
         assignments = db.query(models.Assignment).filter(models.Assignment.class_id == class_.id).all()
-        start_of_day = datetime.combine(datetime.utcnow().date(), datetime.min.time())
+        start_of_day = datetime.combine(_utc_now_naive().date(), datetime.min.time())
         active_today = db.query(models.Blog.owner_id).filter(
             models.Blog.class_id == class_.id,
             models.Blog.created_at >= start_of_day
@@ -2241,7 +2264,7 @@ async def get_teacher_analytics(
                 100,
                 round((db.query(models.Blog).filter(
                     models.Blog.class_id == class_.id,
-                    models.Blog.created_at >= datetime.utcnow() - timedelta(days=7)
+                    models.Blog.created_at >= _utc_now_naive() - timedelta(days=7)
                 ).count() / total_students) * 100)
             )
         else:
@@ -2285,22 +2308,7 @@ async def get_class_post(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    # Check access rights
-    if current_user.role == models.UserRole.STUDENT:
-        enrollment = db.query(models.ClassEnrollment).filter(
-            models.ClassEnrollment.student_id == current_user.id,
-            models.ClassEnrollment.class_id == class_id
-        ).first()
-        if not enrollment:
-            raise HTTPException(status_code=403, detail="Not enrolled in this class")
-    
-    post = db.query(models.Blog).filter(
-        models.Blog.id == post_id,
-        models.Blog.class_id == class_id
-    ).first()
-    
-    if not post:
-        raise HTTPException(status_code=404, detail="Post not found")
+    db_class, post = _ensure_post_access(db, current_user, class_id, post_id)
     
     # Get the author's information
     author = db.query(models.User).filter(models.User.id == post.owner_id).first()
@@ -2311,17 +2319,23 @@ async def get_class_post(
     ).first() is not None
 
     # Return post with author info and content
-    return {
-        **post.__dict__,
+    result = {
+        "id": post.id,
+        "title": post.title,
+        "content": post.content,
+        "created_at": post.created_at,
+        "owner_id": post.owner_id,
+        "class_id": post.class_id,
         "author": {
             "id": author.id,
             "first_name": author.first_name,
             "last_name": author.last_name,
             "profile_image": author.profile_image,
         },
-        "content": post.content,  # Content already includes the markers
         "is_saved": is_saved,
     }
+    result.update(_post_analysis_payload(db, current_user, db_class, post))
+    return result
 
 @app.put("/api/classes/{class_id}/posts/{post_id}")
 async def update_class_post(
@@ -2331,29 +2345,21 @@ async def update_class_post(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    # Get the post
-    db_post = db.query(models.Blog).filter(
-        models.Blog.id == post_id,
-        models.Blog.class_id == class_id
-    ).first()
-    
-    if not db_post:
-        raise HTTPException(status_code=404, detail="Post not found")
-    
-    # Check if user owns the post
-    if db_post.owner_id != current_user.id:
+    db_class, db_post = _ensure_post_access(db, current_user, class_id, post_id)
+    _ensure_class_is_active(db_class)
+    if not _can_moderate_post(db, current_user, db_class, db_post):
         raise HTTPException(status_code=403, detail="Not authorized to edit this post")
     
     # Update the post - make sure title and content are both updated
     db_post.title = post.title
     db_post.content = _build_post_content(post)
-    db_post.updated_at = datetime.utcnow()
+    db_post.updated_at = _utc_now_naive()
     
     db.commit()
     db.refresh(db_post)
     
     # Return updated post
-    return {
+    result = {
         "id": db_post.id,
         "title": db_post.title,  # Make sure title is returned
         "content": db_post.content,
@@ -2364,10 +2370,9 @@ async def update_class_post(
         "author_profile_image": current_user.profile_image,
         "likes": len(db_post.likes) if hasattr(db_post, 'likes') else 0,
         "comments": len(db_post.comments) if hasattr(db_post, 'comments') else 0,
-        "ai_percentage": db_post.ai_percentage,
-        "ai_highlighted_html": db_post.ai_highlighted_html,
-        "ai_sentence_analysis": db_post.ai_sentence_analysis
     }
+    result.update(_post_analysis_payload(db, current_user, db_class, db_post))
+    return result
 
 @app.delete("/api/classes/{class_id}/posts/{post_id}")
 async def delete_class_post(
@@ -2376,17 +2381,9 @@ async def delete_class_post(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    # Get the post
-    post = db.query(models.Blog).filter(
-        models.Blog.id == post_id,
-        models.Blog.class_id == class_id
-    ).first()
-    
-    if not post:
-        raise HTTPException(status_code=404, detail="Post not found")
-    
-    # Check if user owns the post
-    if post.owner_id != current_user.id:
+    db_class, post = _ensure_post_access(db, current_user, class_id, post_id)
+    _ensure_class_is_active(db_class)
+    if not _can_moderate_post(db, current_user, db_class, post):
         raise HTTPException(status_code=403, detail="Not authorized to delete this post")
     
     # Delete the post
@@ -2399,7 +2396,8 @@ async def delete_class_post(
 
 def generate_unique_code(db: Session, length: int = 6) -> str:
     while True:
-        code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
+        alphabet = string.ascii_uppercase + string.digits
+        code = "".join(secrets.choice(alphabet) for _ in range(length))
         existing = db.query(models.Class).filter(
             models.Class.access_code == code
         ).first()
@@ -2408,7 +2406,7 @@ def generate_unique_code(db: Session, length: int = 6) -> str:
 
 @app.get("/api/student/classes")
 async def get_student_classes(
-    status: str = "active",  # Default to active classes
+    status: Literal["active", "archived"] = "active",
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -2440,7 +2438,7 @@ async def get_student_classes(
 
 @app.post("/api/student/join-class")
 async def join_class(
-    class_data: dict,
+    class_data: schemas.JoinClassRequest,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -2448,7 +2446,8 @@ async def join_class(
         raise HTTPException(status_code=403, detail="Not a student")
     
     class_ = db.query(models.Class).filter(
-        models.Class.access_code == class_data["access_code"]
+        models.Class.access_code == class_data.access_code,
+        models.Class.status == "active",
     ).first()
     
     if not class_:
@@ -2490,34 +2489,25 @@ async def get_student_posts(
     posts_with_class = []
     for post in posts:
         class_ = db.query(models.Class).filter(models.Class.id == post.class_id).first()
-        posts_with_class.append({
-            **post.__dict__,
-            "class_name": class_.name if class_ else "Unknown Class"
-        })
+        if class_ is None or not _can_access_class(db, current_user, class_):
+            continue
+        post_data = {
+            "id": post.id,
+            "title": post.title,
+            "content": post.content,
+            "created_at": post.created_at,
+            "owner_id": post.owner_id,
+            "class_id": post.class_id,
+            "class_name": class_.name,
+        }
+        post_data.update(_post_analysis_payload(db, current_user, class_, post))
+        posts_with_class.append(post_data)
     
     return posts_with_class
 
-@app.get("/api/debug/post/{post_id}")
-async def debug_post_content(
-    post_id: int,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
-    post = db.query(models.Blog).filter(models.Blog.id == post_id).first()
-    if not post:
-        raise HTTPException(status_code=404, detail="Post not found")
-    
-    return {
-        "raw_content": post.content,
-        "length": len(post.content)
-    }
-
 @app.post("/api/user/update-profile")
 async def update_profile(
-    profile_data: dict,
+    profile_data: schemas.ProfileUpdate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -2528,25 +2518,8 @@ async def update_profile(
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         
-        # Update fields that are present in the request
-        if "bio" in profile_data:
-            user.bio = profile_data["bio"]
-        
-        # Update name fields if provided
-        if "first_name" in profile_data:
-            user.first_name = profile_data["first_name"]
-        if "last_name" in profile_data:
-            user.last_name = profile_data["last_name"]
-
-        # Update avatar settings if provided
-        if "avatar_id" in profile_data:
-            user.avatar_id = profile_data["avatar_id"]
-        if "avatar_color" in profile_data:
-            user.avatar_color = profile_data["avatar_color"]
-        if "profile_image" in profile_data:
-            user.profile_image = profile_data["profile_image"]
-        if "cover_image" in profile_data:
-            user.cover_image = profile_data["cover_image"]
+        for field_name, value in profile_data.model_dump(exclude_unset=True).items():
+            setattr(user, field_name, value)
             
         db.commit()
         db.refresh(user)
@@ -2570,7 +2543,7 @@ async def update_profile(
         }
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to update profile: {str(e)}") from e
+        raise HTTPException(status_code=500, detail="Failed to update profile") from e
 
 @app.post("/api/user/upload-profile-image")
 async def upload_profile_image(
@@ -2628,36 +2601,6 @@ async def upload_cover_image(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to upload image: {str(e)}") from e
 
-def _get_user_class_ids(db: Session, user: models.User) -> List[int]:
-    if user.role == models.UserRole.STUDENT:
-        return [
-            enrollment.class_id
-            for enrollment in db.query(models.ClassEnrollment)
-            .filter(models.ClassEnrollment.student_id == user.id)
-            .all()
-        ]
-
-    if user.role == models.UserRole.TEACHER:
-        teacher = _get_teacher_record(db, user)
-        if not teacher:
-            return []
-        return [
-            class_.id
-            for class_ in db.query(models.Class)
-            .filter(models.Class.teacher_id == teacher.id)
-            .all()
-        ]
-
-    return []
-
-def _get_teacher_record(db: Session, user: models.User) -> models.Teacher | None:
-    if user.role != models.UserRole.TEACHER:
-        return None
-    teacher = db.query(models.Teacher).filter(models.Teacher.user_id == user.id).first()
-    if not teacher and user.email:
-        teacher = db.query(models.Teacher).filter(models.Teacher.email == user.email).first()
-    return teacher
-
 def _collect_ids(query) -> List[int]:
     return [record_id for (record_id,) in query.all()]
 
@@ -2680,6 +2623,10 @@ def _delete_blogs_with_dependencies(db: Session, blog_ids: List[int]) -> None:
 
     db.query(models.PostLike).filter(
         models.PostLike.post_id.in_(blog_ids)
+    ).delete(synchronize_session=False)
+
+    db.query(models.SavedPost).filter(
+        models.SavedPost.post_id.in_(blog_ids)
     ).delete(synchronize_session=False)
 
     db.query(models.Blog).filter(
@@ -2707,6 +2654,10 @@ def _delete_assignments_with_dependencies(db: Session, assignment_ids: List[int]
 
     db.query(models.AssignmentSubmission).filter(
         models.AssignmentSubmission.assignment_id.in_(assignment_ids)
+    ).delete(synchronize_session=False)
+
+    db.query(models.AssignmentReminderNotification).filter(
+        models.AssignmentReminderNotification.assignment_id.in_(assignment_ids)
     ).delete(synchronize_session=False)
 
     db.query(models.Assignment).filter(
@@ -2808,34 +2759,6 @@ def _delete_user_dependencies(db: Session, user: models.User) -> None:
         models.PasswordReset.user_id == user.id
     ).delete(synchronize_session=False)
 
-def _get_class_or_404(db: Session, class_id: int) -> models.Class:
-    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
-    if not db_class:
-        raise HTTPException(status_code=404, detail="Class not found")
-    return db_class
-
-def _ensure_class_access(db: Session, current_user: models.User, class_id: int) -> models.Class:
-    db_class = _get_class_or_404(db, class_id)
-
-    if current_user.role == models.UserRole.ADMIN:
-        return db_class
-
-    if current_user.role == models.UserRole.TEACHER:
-        teacher = _get_teacher_record(db, current_user)
-        if teacher and db_class.teacher_id == teacher.id:
-            return db_class
-        raise HTTPException(status_code=403, detail="Not authorized to access this class")
-
-    # Student
-    enrollment = db.query(models.ClassEnrollment).filter(
-        models.ClassEnrollment.student_id == current_user.id,
-        models.ClassEnrollment.class_id == class_id
-    ).first()
-    if not enrollment:
-        raise HTTPException(status_code=403, detail="Not enrolled in this class")
-
-    return db_class
-
 def _get_class_student_count(db: Session, class_id: int) -> int:
     return db.query(models.ClassEnrollment).filter(
         models.ClassEnrollment.class_id == class_id
@@ -2865,7 +2788,7 @@ def _get_assignment_stats(db: Session, assignment: models.Assignment, total_stud
     }
 
 def _get_post_counts_last_days(db: Session, class_id: int, days: int = 7) -> list[dict]:
-    today = datetime.utcnow().date()
+    today = _utc_now_naive().date()
     results = []
     for offset in range(days - 1, -1, -1):
         day = today - timedelta(days=offset)
@@ -2905,7 +2828,7 @@ async def get_user_profile(
             "created_at": current_user.created_at
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch profile: {str(e)}") from e
+        raise HTTPException(status_code=500, detail="Failed to fetch profile") from e
 
 @app.get("/api/user/settings")
 async def get_user_settings(
@@ -2974,7 +2897,11 @@ async def subscribe_push_notifications(
     )
 
     if existing:
-        existing.user_id = current_user.id
+        if existing.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Push subscription is already registered",
+            )
         existing.p256dh = p256dh
         existing.auth = auth
     else:
@@ -3034,7 +2961,7 @@ async def delete_user_account(
         raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to delete account: {str(e)}") from e
+        raise HTTPException(status_code=500, detail="Failed to delete account") from e
 
 @app.get("/api/user/profile/{user_id}")
 async def get_public_user_profile(
@@ -3046,15 +2973,10 @@ async def get_public_user_profile(
     target_user = db.query(models.User).filter(models.User.id == user_id).first()
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
-
-    if current_user.id != target_user.id and not current_user.is_admin:
-        viewer_classes = set(_get_user_class_ids(db, current_user))
-        target_classes = set(_get_user_class_ids(db, target_user))
-        if viewer_classes.isdisjoint(target_classes):
-            raise HTTPException(status_code=403, detail="Not authorized to view this profile")
+    visible_class_ids = _ensure_profile_access(db, current_user, target_user)
 
     role_value = target_user.role.value if hasattr(target_user.role, "value") else str(target_user.role)
-    is_owner_or_admin = current_user.id == target_user.id or current_user.is_admin
+    is_owner_or_admin = current_user.id == target_user.id or _is_admin_role(current_user.role)
     target_settings = _get_or_create_user_settings(db, target_user)
 
     # Keep public teacher/admin profiles minimal for non-admin viewers.
@@ -3074,7 +2996,7 @@ async def get_public_user_profile(
         "cover_image": target_user.cover_image if allow_extended_profile else None,
         "avatar_id": target_user.avatar_id,
         "avatar_color": target_user.avatar_color,
-        "class_ids": _get_user_class_ids(db, target_user),
+        "class_ids": visible_class_ids,
         "created_at": target_user.created_at
     }
 
@@ -3089,10 +3011,19 @@ async def get_current_user_posts(
     posts_with_class = []
     for post in posts:
         class_ = db.query(models.Class).filter(models.Class.id == post.class_id).first()
-        posts_with_class.append({
-            **post.__dict__,
-            "class_name": class_.name if class_ else "Unknown Class"
-        })
+        if class_ is None:
+            continue
+        post_data = {
+            "id": post.id,
+            "title": post.title,
+            "content": post.content,
+            "created_at": post.created_at,
+            "owner_id": post.owner_id,
+            "class_id": post.class_id,
+            "class_name": class_.name,
+        }
+        post_data.update(_post_analysis_payload(db, current_user, class_, post))
+        posts_with_class.append(post_data)
 
     return posts_with_class
 
@@ -3107,12 +3038,8 @@ async def get_user_posts(
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if current_user.id != target_user.id and not current_user.is_admin:
-        viewer_classes = set(_get_user_class_ids(db, current_user))
-        target_classes = set(_get_user_class_ids(db, target_user))
-        shared_classes = viewer_classes.intersection(target_classes)
-        if not shared_classes:
-            return []
+    if current_user.id != target_user.id and not _is_admin_role(current_user.role):
+        shared_classes = _ensure_profile_access(db, current_user, target_user)
         posts = db.query(models.Blog).filter(
             models.Blog.owner_id == target_user.id,
             models.Blog.class_id.in_(shared_classes)
@@ -3123,10 +3050,19 @@ async def get_user_posts(
     posts_with_class = []
     for post in posts:
         class_ = db.query(models.Class).filter(models.Class.id == post.class_id).first()
-        posts_with_class.append({
-            **post.__dict__,
-            "class_name": class_.name if class_ else "Unknown Class"
-        })
+        if class_ is None:
+            continue
+        post_data = {
+            "id": post.id,
+            "title": post.title,
+            "content": post.content,
+            "created_at": post.created_at,
+            "owner_id": post.owner_id,
+            "class_id": post.class_id,
+            "class_name": class_.name,
+        }
+        post_data.update(_post_analysis_payload(db, current_user, class_, post))
+        posts_with_class.append(post_data)
 
     return posts_with_class
 
@@ -3186,6 +3122,8 @@ async def get_saved_posts(
             continue
 
         class_ = db.query(models.Class).filter(models.Class.id == post.class_id).first()
+        if class_ is None or not _can_access_class(db, current_user, class_):
+            continue
         saved_posts.append({
             "id": post.id,
             "title": post.title,
@@ -3210,13 +3148,9 @@ async def like_post(
     current_user: models.User = Depends(get_current_user)
 ):
     """Like or unlike a post"""
-    # Find the post
-    post = db.query(models.Blog).filter(
-        models.Blog.id == post_id,
-        models.Blog.class_id == class_id
-    ).first()
-    if not post:
-        raise HTTPException(status_code=404, detail="Post not found")
+    db_class, post = _ensure_post_access(db, current_user, class_id, post_id)
+    if db_class.status != "active":
+        raise HTTPException(status_code=409, detail="This class is not active")
     
     # Check if the user already liked this post
     existing_like = db.query(models.PostLike).filter(
@@ -3258,13 +3192,7 @@ async def get_post_likes(
     current_user: models.User = Depends(get_current_user)
 ):
     """Get likes for a post"""
-    # Find the post
-    post = db.query(models.Blog).filter(
-        models.Blog.id == post_id,
-        models.Blog.class_id == class_id
-    ).first()
-    if not post:
-        raise HTTPException(status_code=404, detail="Post not found")
+    _db_class, post = _ensure_post_access(db, current_user, class_id, post_id)
     
     # Check if the current user liked this post
     user_liked = db.query(models.PostLike).filter(
@@ -3299,20 +3227,13 @@ async def get_post_likes(
 async def get_comments(
     class_id: int,
     post_id: int,
-    skip: int = 0,
-    limit: int = 20,
+    skip: int = Query(default=0, ge=0, le=10_000),
+    limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     """Get comments for a post, with pagination support"""
-    # Find the post
-    post = db.query(models.Blog).filter(
-        models.Blog.id == post_id,
-        models.Blog.class_id == class_id
-    ).first()
-    
-    if not post:
-        raise HTTPException(status_code=404, detail="Post not found")
+    _db_class, post = _ensure_post_access(db, current_user, class_id, post_id)
     
     # Get root comments first (comments without a parent)
     root_comments = db.query(models.Comment).filter(
@@ -3383,16 +3304,13 @@ async def get_comments(
 @app.get("/api/comments/{comment_id}/replies")
 async def get_comment_replies(
     comment_id: int,
-    skip: int = 0,
-    limit: int = 10,
+    skip: int = Query(default=0, ge=0, le=10_000),
+    limit: int = Query(default=10, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     """Get replies for a specific comment"""
-    # Check if comment exists
-    comment = db.query(models.Comment).filter(models.Comment.id == comment_id).first()
-    if not comment:
-        raise HTTPException(status_code=404, detail="Comment not found")
+    _db_class, _post, comment = _ensure_comment_access(db, current_user, comment_id)
     
     # Get replies with pagination
     replies = db.query(models.Comment).filter(
@@ -3452,22 +3370,17 @@ async def get_comment_replies(
 async def create_comment(
     class_id: int,
     post_id: int,
-    comment_data: dict,
+    comment_data: schemas.CommentCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     """Create a new comment on a post or reply to another comment"""
-    # Find the post
-    post = db.query(models.Blog).filter(
-        models.Blog.id == post_id,
-        models.Blog.class_id == class_id
-    ).first()
-    
-    if not post:
-        raise HTTPException(status_code=404, detail="Post not found")
+    db_class, post = _ensure_post_access(db, current_user, class_id, post_id)
+    if db_class.status != "active":
+        raise HTTPException(status_code=409, detail="This class is not active")
     
     # Check if this is a reply to another comment
-    parent_id = comment_data.get("parent_id")
+    parent_id = comment_data.parent_id
     if parent_id:
         # Verify parent comment exists
         parent_comment = db.query(models.Comment).filter(
@@ -3480,7 +3393,7 @@ async def create_comment(
     
     # Create the comment
     new_comment = models.Comment(
-        content=comment_data.get("content"),
+        content=comment_data.content,
         user_id=current_user.id,
         blog_id=post_id,
         parent_id=parent_id
@@ -3518,10 +3431,9 @@ async def like_comment(
     current_user: models.User = Depends(get_current_user)
 ):
     """Like or unlike a comment"""
-    # Find the comment
-    comment = db.query(models.Comment).filter(models.Comment.id == comment_id).first()
-    if not comment:
-        raise HTTPException(status_code=404, detail="Comment not found")
+    db_class, _post, comment = _ensure_comment_access(db, current_user, comment_id)
+    if db_class.status != "active":
+        raise HTTPException(status_code=409, detail="This class is not active")
     
     # Check if the user already liked this comment
     existing_like = db.query(models.CommentLike).filter(
@@ -3562,23 +3474,12 @@ async def get_class_students(
     current_user: models.User = Depends(get_current_user)
 ):
     """Get all students enrolled in a class"""
-    # Check if user has access to this class
-    if current_user.role == models.UserRole.TEACHER:
-        # Teachers can access classes they created
-        class_details = db.query(models.Class).filter(models.Class.id == class_id).first()
-        teacher = _get_teacher_record(db, current_user)
-        if not class_details or not teacher or class_details.teacher_id != teacher.id:
-            raise HTTPException(status_code=403, detail="Not authorized to access this class")
-    elif current_user.role == models.UserRole.STUDENT:
-        # Students can access classes they're enrolled in
-        enrollment = db.query(models.ClassEnrollment).filter(
-            models.ClassEnrollment.student_id == current_user.id,
-            models.ClassEnrollment.class_id == class_id
-        ).first()
-        if not enrollment:
-            raise HTTPException(status_code=403, detail="Not enrolled in this class")
-    else:
-        raise HTTPException(status_code=403, detail="Not authorized")
+    db_class = _ensure_class_access(db, current_user, class_id)
+    can_view_private_roster = _is_admin_role(current_user.role) or _teacher_owns_class(
+        db,
+        current_user,
+        db_class,
+    )
     
     # Get all enrollments for this class
     enrollments = db.query(models.ClassEnrollment).filter(
@@ -3596,15 +3497,22 @@ async def get_class_students(
                 models.Blog.class_id == class_id
             ).count()
             
-            students.append({
+            student_data = {
                 "id": student.id,
                 "username": student.username,
-                "email": student.email,
                 "first_name": student.first_name,
                 "last_name": student.last_name,
-                "created_at": student.created_at,
+                "profile_image": student.profile_image,
                 "posts_count": post_count,
-            })
+            }
+            if can_view_private_roster:
+                student_data.update(
+                    {
+                        "email": student.email,
+                        "created_at": student.created_at,
+                    }
+                )
+            students.append(student_data)
     
     return students
 
@@ -3612,8 +3520,12 @@ async def get_class_students(
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 @app.get("/api/uploads/{file_path:path}")
-async def get_uploaded_file(file_path: str):
+async def get_uploaded_file(
+    file_path: str,
+    current_user: models.User = Depends(get_current_user),
+):
     """Serve uploaded files with compatibility for both legacy and bucketed paths."""
+    del current_user
     normalized_path = file_path.replace("\\", "/").lstrip("/")
 
     # 1) Exact path hit (works for /api/uploads/images/<user>/<file> and legacy /api/uploads/<user>/<file>)
@@ -3759,24 +3671,7 @@ async def archive_class(
     current_user: models.User = Depends(get_current_user)
 ):
     """Archive a class (for teachers)"""
-    if current_user.role != models.UserRole.TEACHER:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only teachers can archive classes"
-        )
-    
-    # Get the class
-    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
-    if not db_class:
-        raise HTTPException(status_code=404, detail="Class not found")
-    
-    # Check if the user is the teacher of this class
-    teacher = _get_teacher_record(db, current_user)
-    if not teacher or db_class.teacher_id != teacher.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only archive your own classes"
-        )
+    db_class = _ensure_class_owner(db, current_user, class_id)
     
     # Update the class status
     db_class.status = "archived"
@@ -3791,24 +3686,7 @@ async def restore_class(
     current_user: models.User = Depends(get_current_user)
 ):
     """Restore an archived class (for teachers)"""
-    if current_user.role != models.UserRole.TEACHER:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only teachers can restore classes"
-        )
-    
-    # Get the class
-    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
-    if not db_class:
-        raise HTTPException(status_code=404, detail="Class not found")
-    
-    # Check if the user is the teacher of this class
-    teacher = _get_teacher_record(db, current_user)
-    if not teacher or db_class.teacher_id != teacher.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only restore your own classes"
-        )
+    db_class = _ensure_class_owner(db, current_user, class_id)
     
     # Update the class status
     db_class.status = "active"
@@ -3823,28 +3701,13 @@ async def delete_class(
     current_user: models.User = Depends(get_current_user)
 ):
     """Delete a class (for teachers)"""
-    if current_user.role != models.UserRole.TEACHER:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only teachers can delete classes"
-        )
-    
-    # Get the class
-    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
-    if not db_class:
-        raise HTTPException(status_code=404, detail="Class not found")
-    
-    # Check if the user is the teacher of this class
-    teacher = _get_teacher_record(db, current_user)
-    if not teacher or db_class.teacher_id != teacher.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only delete your own classes"
-        )
-    
-    # Delete the class
-    db.delete(db_class)
-    db.commit()
+    _ensure_class_owner(db, current_user, class_id)
+    try:
+        _delete_classes_with_dependencies(db, [class_id])
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     
     return {"message": "Class deleted successfully"}
 
@@ -3856,39 +3719,8 @@ async def get_student_details(
     current_user: models.User = Depends(get_current_user)
 ):
     """Get detailed information about a student in a class"""
-    # Check if the current user is the teacher of this class
-    if current_user.role != models.UserRole.TEACHER:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only teachers can view detailed student information"
-        )
-    
-    # Get the class
-    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
-    if not db_class:
-        raise HTTPException(status_code=404, detail="Class not found")
-    
-    # Check if the user is the teacher of this class
-    teacher = _get_teacher_record(db, current_user)
-    if not teacher or db_class.teacher_id != teacher.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only view students in your own classes"
-        )
-    
-    # Get the student
-    student = db.query(models.User).filter(models.User.id == student_id).first()
-    if not student:
-        raise HTTPException(status_code=404, detail="Student not found")
-    
-    # Check if the student is enrolled in this class
-    enrollment = db.query(models.ClassEnrollment).filter(
-        models.ClassEnrollment.student_id == student_id,
-        models.ClassEnrollment.class_id == class_id
-    ).first()
-    
-    if not enrollment:
-        raise HTTPException(status_code=404, detail="Student not enrolled in this class")
+    db_class = _ensure_class_owner(db, current_user, class_id)
+    student, enrollment = _ensure_enrolled_student(db, class_id, student_id)
     
     # Core activity counts scoped to this class.
     posts_count = db.query(models.Blog).filter(
@@ -3936,7 +3768,7 @@ async def get_student_details(
 
     activity_timeline = []
 
-    enrollment_ts = enrollment.enrolled_at or student.created_at or datetime.utcnow()
+    enrollment_ts = enrollment.enrolled_at or student.created_at or _utc_now_naive()
     activity_timeline.append({
         "type": "enrollment",
         "title": "Joined Class",
@@ -4011,25 +3843,8 @@ async def get_student_class_posts(
     current_user: models.User = Depends(get_current_user)
 ):
     """Get posts created by a student in a class"""
-    # Check if the current user is the teacher of this class
-    if current_user.role != models.UserRole.TEACHER:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only teachers can view detailed student information"
-        )
-    
-    # Get the class
-    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
-    if not db_class:
-        raise HTTPException(status_code=404, detail="Class not found")
-    
-    # Check if the user is the teacher of this class
-    teacher = _get_teacher_record(db, current_user)
-    if not teacher or db_class.teacher_id != teacher.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only view students in your own classes"
-        )
+    _ensure_class_owner(db, current_user, class_id)
+    _ensure_enrolled_student(db, class_id, student_id)
     
     # Get the student's posts in this class
     posts = db.query(models.Blog).filter(
@@ -4068,68 +3883,41 @@ async def get_student_class_posts(
 async def update_student_notes(
     class_id: int,
     student_id: int,
-    notes_data: dict,
+    notes_data: schemas.StudentNotesUpdate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     """Update teacher notes for a student"""
-    # Check if the current user is the teacher of this class
-    if current_user.role != models.UserRole.TEACHER:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only teachers can update student notes"
-        )
+    _ensure_class_owner(db, current_user, class_id)
+    _student, enrollment = _ensure_enrolled_student(db, class_id, student_id)
     
-    # Get the class
-    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
-    if not db_class:
-        raise HTTPException(status_code=404, detail="Class not found")
-    
-    # Check if the user is the teacher of this class
-    if db_class.teacher_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only update notes for students in your own classes"
-        )
-    
-    # Get the enrollment
-    enrollment = db.query(models.ClassEnrollment).filter(
-        models.ClassEnrollment.student_id == student_id,
-        models.ClassEnrollment.class_id == class_id
-    ).first()
-    
-    if not enrollment:
-        raise HTTPException(status_code=404, detail="Student not enrolled in this class")
-    
-    # Update the notes
-    # First check if the notes field exists in the model
-    if hasattr(enrollment, 'notes'):
-        enrollment.notes = notes_data.get('notes', '')
-        db.commit()
-    else:
-        # If the field doesn't exist, we'll need to add it to the model first
-        # For now, we'll just return success without actually saving
-        pass
+    enrollment.notes = notes_data.notes
+    db.commit()
     
     return {"message": "Notes updated successfully"}
 
 class ForgotPasswordRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     email: EmailStr
 
 class ResetPasswordRequest(BaseModel):
-    token: str
-    new_password: str
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=15, max_length=1_024)
 
 EMAIL_HOST = settings.email_host
 EMAIL_PORT = settings.email_port
+EMAIL_SMTP_TIMEOUT_SECONDS = settings.email_smtp_timeout_seconds
 EMAIL_USERNAME = settings.email_username
 EMAIL_PASSWORD = _secret_value(settings.email_password)
 EMAIL_FROM = settings.email_from
 
 
-def send_password_reset_email(email: str, token: str):
+def send_password_reset_email(email: str, token: str) -> bool:
     """Send password reset email with reset link"""
-    reset_url = f"{FRONTEND_URL}/reset-password?token={token}"
+    reset_url = f"{FRONTEND_URL}/reset-password#token={token}"
     if not all([EMAIL_HOST, EMAIL_USERNAME, EMAIL_PASSWORD, EMAIL_FROM]):
         return False
     
@@ -4163,7 +3951,7 @@ def send_password_reset_email(email: str, token: str):
                             <span style="word-break:break-all; color:#4F46E5;">{reset_url}</span>
                         </div>
                     </div>
-                    <p style="text-align:center; color:#9ca3af; font-size:12px; margin-top:16px;">© {datetime.utcnow().year} LitBlog</p>
+                    <p style="text-align:center; color:#9ca3af; font-size:12px; margin-top:16px;">&copy; {_utc_now_naive().year} LitBlog</p>
                 </div>
             </body>
         </html>
@@ -4175,50 +3963,243 @@ def send_password_reset_email(email: str, token: str):
     
     # Send email
     try:
-        server = smtplib.SMTP(EMAIL_HOST, EMAIL_PORT)
-        server.starttls()
-        server.login(EMAIL_USERNAME, EMAIL_PASSWORD)
-        server.sendmail(EMAIL_FROM, email, message.as_string())
-        server.quit()
+        with smtplib.SMTP(
+            EMAIL_HOST,
+            EMAIL_PORT,
+            timeout=EMAIL_SMTP_TIMEOUT_SECONDS,
+        ) as server:
+            server.starttls(context=ssl.create_default_context())
+            server.login(EMAIL_USERNAME, EMAIL_PASSWORD)
+            server.sendmail(EMAIL_FROM, email, message.as_string())
         return True
-    except Exception as e:
-        print(f"Error sending email: {e}")
+    except Exception:
         return False
 
-@app.post("/api/auth/forgot-password")
-async def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
+
+PASSWORD_RESET_PENDING = "PENDING"
+PASSWORD_RESET_PROCESSING = "PROCESSING"
+PASSWORD_RESET_DELIVERED = "DELIVERED"
+PASSWORD_RESET_FAILED = "FAILED"
+PASSWORD_RESET_COOLDOWN = timedelta(minutes=5)
+PASSWORD_RESET_LIFETIME = timedelta(hours=1)
+
+
+def _password_reset_token_digest(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _usable_password_reset_filters(raw_token: str):
+    token_digest = _password_reset_token_digest(raw_token)
+    return (
+        or_(
+            models.PasswordReset.token == token_digest,
+            # Preserve outstanding links created before the digest migration.
+            models.PasswordReset.token == raw_token,
+        ),
+        models.PasswordReset.expires_at > _utc_now_naive(),
+        models.PasswordReset.used.is_(False),
+        models.PasswordReset.delivery_status == PASSWORD_RESET_DELIVERED,
+    )
+
+
+def _queue_password_reset(db: Session, user: models.User) -> None:
+    now = _utc_now_naive()
+    cooldown_start = now - PASSWORD_RESET_COOLDOWN
+    queued_values = {
+        models.PasswordReset.token: None,
+        models.PasswordReset.created_at: now,
+        models.PasswordReset.expires_at: None,
+        models.PasswordReset.used: False,
+        models.PasswordReset.delivery_status: PASSWORD_RESET_PENDING,
+        models.PasswordReset.delivery_attempted_at: None,
+    }
+
+    try:
+        updated = (
+            db.query(models.PasswordReset)
+            .filter(
+                models.PasswordReset.user_id == user.id,
+                models.PasswordReset.created_at <= cooldown_start,
+            )
+            .update(queued_values, synchronize_session=False)
+        )
+        if updated:
+            db.commit()
+            return
+
+        db.add(
+            models.PasswordReset(
+                user_id=user.id,
+                token=None,
+                created_at=now,
+                expires_at=None,
+                used=False,
+                delivery_status=PASSWORD_RESET_PENDING,
+            )
+        )
+        db.commit()
+    except IntegrityError:
+        # A concurrent request already inserted the single per-user queue row.
+        db.rollback()
+    except Exception:
+        db.rollback()
+
+
+def _claim_password_reset_delivery() -> tuple[int, str] | None:
+    db = SessionLocal()
+    try:
+        now = _utc_now_naive()
+        stale_before = now - timedelta(seconds=PASSWORD_RESET_CLAIM_TIMEOUT_SECONDS)
+        claimable = or_(
+            models.PasswordReset.delivery_status == PASSWORD_RESET_PENDING,
+            and_(
+                models.PasswordReset.delivery_status == PASSWORD_RESET_PROCESSING,
+                or_(
+                    models.PasswordReset.delivery_attempted_at.is_(None),
+                    models.PasswordReset.delivery_attempted_at <= stale_before,
+                ),
+            ),
+        )
+        candidate_ids = [
+            reset_id
+            for (reset_id,) in (
+                db.query(models.PasswordReset.id)
+                .filter(claimable)
+                .order_by(models.PasswordReset.created_at, models.PasswordReset.id)
+                .limit(25)
+                .all()
+            )
+        ]
+
+        for reset_id in candidate_ids:
+            claimed = (
+                db.query(models.PasswordReset)
+                .filter(models.PasswordReset.id == reset_id, claimable)
+                .update(
+                    {
+                        models.PasswordReset.delivery_status: PASSWORD_RESET_PROCESSING,
+                        models.PasswordReset.delivery_attempted_at: now,
+                    },
+                    synchronize_session=False,
+                )
+            )
+            if not claimed:
+                db.rollback()
+                continue
+
+            db.commit()
+            reset_request = (
+                db.query(models.PasswordReset)
+                .filter(models.PasswordReset.id == reset_id)
+                .first()
+            )
+            if reset_request is None:
+                return None
+            user = db.query(models.User).filter(models.User.id == reset_request.user_id).first()
+            if user is None:
+                reset_request.delivery_status = PASSWORD_RESET_FAILED
+                reset_request.token = None
+                reset_request.expires_at = None
+                db.commit()
+                continue
+            return reset_request.id, user.email
+        return None
+    except Exception:
+        db.rollback()
+        return None
+    finally:
+        db.close()
+
+
+def _complete_password_reset_delivery(reset_id: int, raw_token: str, delivered: bool) -> None:
+    db = SessionLocal()
+    try:
+        reset_request = (
+            db.query(models.PasswordReset)
+            .filter(
+                models.PasswordReset.id == reset_id,
+                models.PasswordReset.delivery_status == PASSWORD_RESET_PROCESSING,
+            )
+            .first()
+        )
+        if reset_request is None:
+            return
+
+        if delivered:
+            reset_request.token = _password_reset_token_digest(raw_token)
+            reset_request.expires_at = _utc_now_naive() + PASSWORD_RESET_LIFETIME
+            reset_request.delivery_status = PASSWORD_RESET_DELIVERED
+        else:
+            reset_request.token = None
+            reset_request.expires_at = None
+            reset_request.delivery_status = PASSWORD_RESET_FAILED
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _dispatch_password_reset_emails_once(batch_size: int = 100) -> None:
+    for _ in range(batch_size):
+        claimed = _claim_password_reset_delivery()
+        if claimed is None:
+            return
+        reset_id, email = claimed
+        raw_token = secrets.token_urlsafe(32)
+        delivered = send_password_reset_email(email, raw_token)
+        _complete_password_reset_delivery(reset_id, raw_token, delivered)
+
+
+def _password_reset_worker_loop() -> None:
+    while not _password_reset_worker_stop_event.is_set():
+        _dispatch_password_reset_emails_once()
+        _password_reset_worker_stop_event.wait(PASSWORD_RESET_WORKER_INTERVAL_SECONDS)
+
+
+def _start_password_reset_worker() -> None:
+    global _password_reset_worker_thread
+    if not PASSWORD_RESET_WORKER_ENABLED:
+        return
+    if _password_reset_worker_thread and _password_reset_worker_thread.is_alive():
+        return
+
+    _password_reset_worker_stop_event.clear()
+    _password_reset_worker_thread = threading.Thread(
+        target=_password_reset_worker_loop,
+        name="password-reset-delivery-worker",
+        daemon=True,
+    )
+    _password_reset_worker_thread.start()
+
+
+def _stop_password_reset_worker() -> None:
+    global _password_reset_worker_thread
+    _password_reset_worker_stop_event.set()
+    if _password_reset_worker_thread and _password_reset_worker_thread.is_alive():
+        _password_reset_worker_thread.join(timeout=2)
+    _password_reset_worker_thread = None
+
+@app.post("/api/auth/forgot-password", status_code=status.HTTP_202_ACCEPTED)
+def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
     """Request a password reset token"""
+    generic_response = {
+        "message": "If an account exists, password reset instructions will be sent."
+    }
     
     # Find user by email
     user = db.query(models.User).filter(models.User.email == request.email).first()
     
     if not user:
-        raise HTTPException(status_code=404, detail="No account found with this email address")
-    
-    # Create a secure token
-    token = secrets.token_urlsafe(32)
-    expires_at = datetime.utcnow() + timedelta(hours=1)
-    
-    # Store token in database
-    password_reset = models.PasswordReset(
-        user_id=user.id,
-        token=token,
-        expires_at=expires_at
-    )
-    
-    db.add(password_reset)
-    db.commit()
-    
-    # Send email
-    if not send_password_reset_email(user.email, token):
-        db.delete(password_reset)
         db.commit()
-        raise HTTPException(status_code=500, detail="Failed to send password reset email")
+        return generic_response
+
+    _queue_password_reset(db, user)
     
-    return {"message": "Password reset instructions sent to your email"}
+    return generic_response
 
 @app.post("/api/auth/reset-password")
-async def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db)):
+def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db)):
     """Reset a password using a valid token"""
 
     token = request.token
@@ -4226,30 +4207,40 @@ async def reset_password(request: ResetPasswordRequest, db: Session = Depends(ge
         raise HTTPException(status_code=400, detail="Token is required")
     
     # Find token in database
-    password_reset = db.query(models.PasswordReset).filter(
-        models.PasswordReset.token == request.token,
-        models.PasswordReset.expires_at > datetime.utcnow(),
-        models.PasswordReset.used.is_(False)
-    ).first()
+    password_reset_id = (
+        db.query(models.PasswordReset.id)
+        .filter(*_usable_password_reset_filters(request.token))
+        .scalar()
+    )
     
-    if not password_reset:
+    if password_reset_id is None:
         raise HTTPException(status_code=400, detail="Invalid or expired token")
-    
-    # Get the user
-    user = db.query(models.User).filter(models.User.id == password_reset.user_id).first()
-    
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
+
+    # End the read transaction before the deliberately expensive password hash.
+    # The following conditional UPDATE is the single atomic token-consumption point.
+    db.rollback()
     # Hash the new password
     hashed_password = hash_password(request.new_password)
-    
-    # Update the user's password
+
+    consumed_user_id = db.execute(
+        update(models.PasswordReset)
+        .where(
+            models.PasswordReset.id == password_reset_id,
+            *_usable_password_reset_filters(request.token),
+        )
+        .values(used=True)
+        .returning(models.PasswordReset.user_id)
+    ).scalar_one_or_none()
+    if consumed_user_id is None:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+
+    user = db.query(models.User).filter(models.User.id == consumed_user_id).first()
+    if user is None:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+
     user.password = hashed_password
-    
-    # Mark the token as used
-    password_reset.used = True
-    
     db.commit()
     
     return {"message": "Password reset successfully"}

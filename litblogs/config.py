@@ -13,6 +13,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 BASE_DIR = Path(__file__).resolve().parent
 VALID_APP_ENVIRONMENTS = frozenset({"development", "test", "production"})
 SECRET_KEY_MIN_BYTES = 32
+DEFAULT_PUSH_ENDPOINT_HOSTS = (
+    "fcm.googleapis.com",
+    "updates.push.services.mozilla.com",
+    "web.push.apple.com",
+    ".notify.windows.com",
+)
 _PLACEHOLDER_FRAGMENTS = (
     "changeme",
     "change-me",
@@ -97,11 +103,17 @@ class Settings(BaseSettings):
     vapid_private_key: SecretStr | None = None
     vapid_subject: str = "mailto:admin@litblogs.local"
     push_reminder_interval_seconds: int = Field(default=300, ge=60, le=86_400)
+    push_allowed_endpoint_hosts: tuple[str, ...] = DEFAULT_PUSH_ENDPOINT_HOSTS
+    push_delivery_timeout_seconds: float = Field(default=5.0, ge=0.5, le=10.0)
     email_host: str | None = None
     email_port: int = Field(default=587, ge=1, le=65_535)
+    email_smtp_timeout_seconds: float = Field(default=5.0, ge=0.5, le=10.0)
     email_username: str | None = None
     email_password: SecretStr | None = None
     email_from: str | None = None
+    password_reset_worker_enabled: bool = True
+    password_reset_worker_interval_seconds: int = Field(default=5, ge=1, le=60)
+    password_reset_claim_timeout_seconds: int = Field(default=120, ge=60, le=600)
 
     @field_validator("app_env", mode="before")
     @classmethod
@@ -117,7 +129,12 @@ class Settings(BaseSettings):
     def normalize_origins(cls, value: Any) -> tuple[str, ...]:
         return _csv_tuple(value, strip_slash=True)
 
-    @field_validator("allowed_email_domains", "microsoft_allowed_tenant_ids", mode="before")
+    @field_validator(
+        "allowed_email_domains",
+        "microsoft_allowed_tenant_ids",
+        "push_allowed_endpoint_hosts",
+        mode="before",
+    )
     @classmethod
     def normalize_lowercase_csv(cls, value: Any) -> tuple[str, ...]:
         return _csv_tuple(value, lowercase=True)
@@ -174,6 +191,10 @@ class Settings(BaseSettings):
             "CSRF_COOKIE_NAME": self.csrf_cookie_name,
             "TEACHER_ACCESS_CODE": self.teacher_access_code,
             "ADMIN_ACCESS_CODE": self.admin_access_code,
+            "EMAIL_HOST": self.email_host,
+            "EMAIL_USERNAME": self.email_username,
+            "EMAIL_PASSWORD": self.email_password,
+            "EMAIL_FROM": self.email_from,
         }
         missing = [name for name, value in required.items() if not value]
         if missing:
@@ -230,6 +251,8 @@ class Settings(BaseSettings):
             raise ValueError("FRONTEND_URL must use HTTPS in production")
         if any(origin == "*" or not _is_https_origin(origin) for origin in self.cors_allowed_origins):
             raise ValueError("CORS_ALLOWED_ORIGINS must contain explicit HTTPS origins in production")
+        if not self.password_reset_worker_enabled:
+            raise ValueError("PASSWORD_RESET_WORKER_ENABLED must be true in production")
         return self
 
 

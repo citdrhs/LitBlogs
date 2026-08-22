@@ -56,6 +56,7 @@ TEST_ENVIRONMENT = {
     "EMAIL_USERNAME": "test-email-user",
     "EMAIL_PASSWORD": "test-email-password",
     "EMAIL_FROM": "tests@example.com",
+    "PASSWORD_RESET_WORKER_ENABLED": "false",
 }
 
 

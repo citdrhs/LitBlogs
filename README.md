@@ -186,6 +186,8 @@ VAPID_PUBLIC_KEY=<your_public_key>
 VAPID_PRIVATE_KEY=<your_private_key>
 VAPID_SUBJECT=mailto:your-email@example.com
 PUSH_REMINDER_INTERVAL_SECONDS=300
+PUSH_ALLOWED_ENDPOINT_HOSTS=fcm.googleapis.com,updates.push.services.mozilla.com,web.push.apple.com,.notify.windows.com
+PUSH_DELIVERY_TIMEOUT_SECONDS=5
 ```
 
 Generate keys with:
@@ -198,6 +200,28 @@ Important notes:
 - Push notifications require HTTPS in production.
 - In development, localhost works for service workers and notification testing.
 - The server checks reminders on startup, then every `PUSH_REMINDER_INTERVAL_SECONDS`.
+- Push endpoints must match `PUSH_ALLOWED_ENDPOINT_HOSTS`; keep this list limited to
+  browser push providers approved by school IT. Enforce the same destinations at the
+  server egress firewall to prevent DNS rebinding, and keep
+  `PUSH_DELIVERY_TIMEOUT_SECONDS` at 10 seconds or less.
+
+Password resets require a STARTTLS-capable SMTP relay in production. Configure
+`EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USERNAME`, `EMAIL_PASSWORD`, `EMAIL_FROM`, and:
+
+```dotenv
+EMAIL_SMTP_TIMEOUT_SECONDS=5
+PASSWORD_RESET_WORKER_ENABLED=true
+PASSWORD_RESET_WORKER_INTERVAL_SECONDS=5
+PASSWORD_RESET_CLAIM_TIMEOUT_SECONDS=120
+```
+
+The public reset request only commits a concurrency-safe outbox row and returns the
+same `202` response for known and unknown addresses; it never waits for SMTP. A
+background worker claims each per-user row before delivery, and the token becomes
+usable only after a successful send. Reset links place the token in a URL fragment so
+reverse proxies do not receive it; the frontend removes the fragment from browser
+history immediately. Run one worker-enabled application instance during deployment
+smoke testing and monitor reset rows stuck in `PROCESSING` or ending in `FAILED`.
 
 
 ## Maintenance Guide

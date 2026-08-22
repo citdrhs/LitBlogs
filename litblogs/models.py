@@ -1,5 +1,5 @@
 # models.py
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 
 from sqlalchemy import (
@@ -18,6 +18,10 @@ from sqlalchemy import Enum as SQLAlchemyEnum
 from sqlalchemy.orm import relationship
 
 from base import Base
+
+
+def _utc_now_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class UserRole(str, Enum):
@@ -221,6 +225,10 @@ class AssignmentSubmission(Base):
     student = relationship("User", back_populates="assignment_submissions")
     replies = relationship("AssignmentSubmissionReply", back_populates="submission", cascade="all, delete-orphan")
 
+    __table_args__ = (
+        UniqueConstraint('assignment_id', 'student_id', name='unique_assignment_submission'),
+    )
+
 class AssignmentSubmissionReply(Base):
     __tablename__ = "assignment_submission_replies"
     id = Column(Integer, primary_key=True, index=True)
@@ -239,8 +247,13 @@ class ClassEnrollment(Base):
     student_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     class_id = Column(Integer, ForeignKey("classes.id"), nullable=False)
     enrolled_at = Column(DateTime(timezone=True), server_default=func.now())
+    notes = Column(Text, nullable=True)
     student = relationship("User", back_populates="enrolled_classes")
     class_ = relationship("Class", back_populates="students")
+
+    __table_args__ = (
+        UniqueConstraint('student_id', 'class_id', name='unique_class_enrollment'),
+    )
 
 class Blog(Base):
     __tablename__ = "blogs"
@@ -268,7 +281,7 @@ class SavedPost(Base):
     id = Column(Integer, primary_key=True, index=True)
     post_id = Column(Integer, ForeignKey("blogs.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utc_now_naive)
 
     post = relationship("Blog", back_populates="saved_by")
     user = relationship("User", back_populates="saved_posts")
@@ -283,7 +296,7 @@ class PostLike(Base):
     id = Column(Integer, primary_key=True, index=True)
     post_id = Column(Integer, ForeignKey("blogs.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utc_now_naive)
     
     # Relationships
     post = relationship("Blog", back_populates="likes")
@@ -299,8 +312,8 @@ class Comment(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     content = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utc_now_naive)
+    updated_at = Column(DateTime, default=_utc_now_naive, onupdate=_utc_now_naive)
     
     # Relations
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
@@ -323,7 +336,7 @@ class CommentLike(Base):
     id = Column(Integer, primary_key=True, index=True)
     comment_id = Column(Integer, ForeignKey("comments.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utc_now_naive)
     
     # Relationships
     comment = relationship("Comment", back_populates="likes")
@@ -337,8 +350,28 @@ class CommentLike(Base):
 class PasswordReset(Base):
     __tablename__ = "password_resets"
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    token = Column(String(64), unique=True, nullable=False, index=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    expires_at = Column(DateTime(timezone=True), nullable=False)
-    used = Column(Boolean, default=False)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    token = Column(String(64), unique=True, nullable=True, index=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=_utc_now_naive,
+        server_default=func.now(),
+        nullable=False,
+    )
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    used = Column(Boolean, default=False, nullable=False)
+    delivery_status = Column(String(16), default="PENDING", nullable=False, index=True)
+    delivery_attempted_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "delivery_status IN ('PENDING', 'PROCESSING', 'DELIVERED', 'FAILED')",
+            name="ck_password_reset_delivery_status",
+        ),
+    )
