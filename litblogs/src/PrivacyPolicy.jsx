@@ -87,7 +87,7 @@ const PrivacyPolicy = () => {
             <section>
               <h2 className={`text-2xl font-bold mb-4 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>Information We Collect</h2>
               <h3 className="text-xl font-semibold mb-2">Personal Information</h3>
-              <p className="mb-3">When you register an account, we may ask for information including your name, email address, and role (student, teacher, or administrator). For teachers and administrators, additional verification may be required through access codes.</p>
+              <p className="mb-3">When you register an account, we may ask for information including your name, email address, and role (student, teacher, or administrator). Teacher registration requires a one-time, expiring invitation bound to a school-reviewed email address; the service stores only invitation digests.</p>
               
               <h3 className="text-xl font-semibold mb-2 mt-4">Usage Information</h3>
               <p>We collect information about how you interact with our website, including:</p>

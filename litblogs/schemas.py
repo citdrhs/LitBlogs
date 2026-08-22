@@ -4,9 +4,19 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
+from auth_security import MAX_PASSWORD_BYTES
+
 MAX_RICH_TEXT_LENGTH = 100_000
 MAX_SHORT_TEXT_LENGTH = 10_000
 MAX_DESCRIPTION_LENGTH = 50_000
+
+
+def validate_password_request_bytes(value: str) -> str:
+    if len(value.encode("utf-8")) > MAX_PASSWORD_BYTES:
+        raise ValueError(
+            f"password must not exceed {MAX_PASSWORD_BYTES} UTF-8 bytes"
+        )
+    return value
 
 
 class StrictRequest(BaseModel):
@@ -74,18 +84,23 @@ class UserRole(str, Enum):
 
 class UserBase(BaseModel):
     username: str = Field(min_length=3, max_length=50)
-    email: EmailStr
+    email: EmailStr = Field(max_length=100)
     first_name: str | None = Field(default=None, max_length=50)
     last_name: str | None = Field(default=None, max_length=50)
 
 class UserCreate(StrictRequest):
     username: str = Field(min_length=3, max_length=50)
-    email: EmailStr
+    email: EmailStr = Field(max_length=100)
     password: str = Field(min_length=15, max_length=1_024)
     first_name: str | None = Field(default=None, max_length=50)
     last_name: str | None = Field(default=None, max_length=50)
     role: str = Field(max_length=16)
-    access_code: str | None = Field(default=None, max_length=256)
+    teacher_invitation_token: str | None = Field(default=None, max_length=512)
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_size(cls, value: str) -> str:
+        return validate_password_request_bytes(value)
 
     @field_validator("role")
     @classmethod
@@ -131,6 +146,20 @@ class CommentCreate(StrictRequest):
         if not value.strip():
             raise ValueError("content must not be blank")
         return value
+
+
+class ChangePasswordRequest(StrictRequest):
+    current_password: str = Field(min_length=1, max_length=1_024)
+    new_password: str = Field(min_length=15, max_length=1_024)
+
+    @field_validator("current_password", "new_password")
+    @classmethod
+    def validate_password_sizes(cls, value: str) -> str:
+        return validate_password_request_bytes(value)
+
+
+class UserStatusUpdate(StrictRequest):
+    disabled: bool
 
 
 class SubmissionReplyCreate(StrictRequest):
@@ -223,8 +252,13 @@ class TeacherBase(BaseModel):
 
 class TeacherCreate(StrictRequest):
     name: str = Field(min_length=1, max_length=100)
-    email: EmailStr
+    email: EmailStr = Field(max_length=100)
     password: str = Field(min_length=15, max_length=1_024)
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_size(cls, value: str) -> str:
+        return validate_password_request_bytes(value)
 
 class Teacher(TeacherBase):
     model_config = ConfigDict(from_attributes=True)

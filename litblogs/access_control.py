@@ -40,10 +40,7 @@ def require_admin(user: models.User) -> None:
 def get_teacher_record(db: Session, user: models.User) -> models.Teacher | None:
     if _role_value(user) != models.UserRole.TEACHER.value:
         return None
-    teacher = db.query(models.Teacher).filter(models.Teacher.user_id == user.id).first()
-    if teacher is None and user.email:
-        teacher = db.query(models.Teacher).filter(models.Teacher.email == user.email).first()
-    return teacher
+    return db.query(models.Teacher).filter(models.Teacher.user_id == user.id).first()
 
 
 def get_class_or_404(db: Session, class_id: int) -> models.Class:

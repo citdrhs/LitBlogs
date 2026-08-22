@@ -25,6 +25,7 @@ import oauth_security
 from auth_security import decode_access_token, hash_password
 from config import Settings
 from database import SessionLocal
+from identity_controls import create_teacher_invitation
 
 MICROSOFT_TENANT_ID = "871bd3e0-2dc0-4a40-9b07-9d03068c2364"
 SYNTHETIC_MICROSOFT_AUDIENCE = "2f1c67a1-91e2-46a3-941f-b88e31763e51"
@@ -103,6 +104,21 @@ def _bind_identity(
             )
         )
         db.commit()
+
+
+def _create_teacher_invitation(email: str, settings: Settings) -> str:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    with SessionLocal() as db:
+        token = create_teacher_invitation(
+            db,
+            email=email,
+            created_by="oauth-security-test-operator",
+            expires_at=now + timedelta(hours=1),
+            settings=settings,
+            now=now,
+        )
+        db.commit()
+        return token
 
 
 def _google_claims(**overrides) -> dict:
@@ -211,7 +227,7 @@ def _production_settings_data(**overrides) -> dict:
         "session_cookie_name": "__Host-litblog-session",
         "csrf_cookie_name": "__Host-litblog-csrf",
         "session_cookie_secure": True,
-        "teacher_access_code": secrets.token_urlsafe(24),
+        "teacher_invite_hmac_key": secrets.token_urlsafe(48),
         "admin_access_code": secrets.token_urlsafe(24),
         "admin_code": secrets.token_urlsafe(24),
         "email_host": "smtp.school.example",
@@ -286,12 +302,14 @@ def test_public_password_registration_rejects_admin_even_with_valid_code(
             "first_name": "Public",
             "last_name": "Admin",
             "role": "ADMIN",
-            "access_code": oauth_settings.admin_access_code.get_secret_value(),
         },
     )
 
-    assert response.status_code == 400
-    assert response.json() == {"detail": "Invalid role"}
+    assert response.status_code == 202
+    assert response.json() == {
+        "message": "If registration can be completed, sign in with the submitted credentials."
+    }
+    assert response.headers.get_list("set-cookie") == []
     with SessionLocal() as db:
         assert db.query(models.User).count() == 0
 
@@ -605,17 +623,19 @@ def test_google_accepts_canonical_claims_without_optional_nbf(
     _assert_safe_session(response, expected_role="STUDENT")
 
 
-def test_google_signup_allows_teacher_only_with_constant_time_configured_code(
+def test_google_signup_allows_teacher_only_with_email_bound_invitation(
     client, oauth_settings, monkeypatch
 ):
-    _install_google_claims(monkeypatch, _google_claims())
+    claims = _google_claims()
+    _install_google_claims(monkeypatch, claims)
+    invitation_token = _create_teacher_invitation(claims["email"], oauth_settings)
 
     denied = client.post(
         "/api/auth/google-signup",
         json={
             "idToken": "synthetic-google-id-token",
             "role": "TEACHER",
-            "accessCode": "wrong-code",
+            "teacherInvitationToken": "wrong-invitation-token",
         },
     )
     accepted = client.post(
@@ -623,12 +643,139 @@ def test_google_signup_allows_teacher_only_with_constant_time_configured_code(
         json={
             "idToken": "synthetic-google-id-token",
             "role": "TEACHER",
-            "accessCode": oauth_settings.teacher_access_code.get_secret_value(),
+            "teacherInvitationToken": invitation_token,
         },
     )
 
-    assert denied.status_code == 403
+    assert denied.status_code == 401
+    assert denied.json() == {"detail": "External authentication failed"}
     _assert_safe_session(accepted, expected_role="TEACHER")
+    with SessionLocal() as db:
+        invitation = db.query(models.TeacherInvitation).one()
+        assert invitation.consumed_at is not None
+
+
+def test_google_teacher_invitation_cannot_be_used_for_another_verified_email(
+    client,
+    oauth_settings,
+    monkeypatch,
+):
+    invitation_token = _create_teacher_invitation(
+        f"intended-teacher@{ALLOWED_DOMAIN}",
+        oauth_settings,
+    )
+    _install_google_claims(
+        monkeypatch,
+        _google_claims(email=f"different-teacher@{ALLOWED_DOMAIN}"),
+    )
+
+    response = client.post(
+        "/api/auth/google-signup",
+        json={
+            "idToken": "synthetic-google-id-token",
+            "role": "TEACHER",
+            "teacherInvitationToken": invitation_token,
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "External authentication failed"}
+    assert main.settings.session_cookie_name not in response.cookies
+    with SessionLocal() as db:
+        assert db.query(models.User).count() == 0
+        invitation = db.query(models.TeacherInvitation).one()
+        assert invitation.consumed_at is None
+
+
+def test_oauth_signup_rejects_legacy_shared_access_code_field(
+    client,
+    oauth_settings,
+    monkeypatch,
+):
+    _install_google_claims(monkeypatch, _google_claims())
+
+    response = client.post(
+        "/api/auth/google-signup",
+        json={
+            "idToken": "synthetic-google-id-token",
+            "role": "TEACHER",
+            "accessCode": "legacy-shared-code",
+        },
+    )
+
+    assert "accessCode" not in main.OAuthSignupRequest.model_fields
+    assert response.status_code == 401
+    assert response.json() == {"detail": "External authentication failed"}
+    with SessionLocal() as db:
+        assert db.query(models.User).count() == 0
+
+
+def test_google_teacher_creation_rolls_back_invite_identity_and_user_when_session_fails(
+    client,
+    oauth_settings,
+    monkeypatch,
+):
+    email = f"rollback-teacher@{ALLOWED_DOMAIN}"
+    invitation_token = _create_teacher_invitation(email, oauth_settings)
+    _install_google_claims(monkeypatch, _google_claims(email=email))
+    session_attempts = []
+
+    def fail_session_issue(*args, **kwargs):
+        session_attempts.append((args, kwargs))
+        raise RuntimeError("synthetic session persistence failure")
+
+    monkeypatch.setattr(main, "issue_browser_session", fail_session_issue)
+    response = client.post(
+        "/api/auth/google-signup",
+        json={
+            "idToken": "synthetic-google-id-token",
+            "role": "TEACHER",
+            "teacherInvitationToken": invitation_token,
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "External authentication failed"}
+    assert len(session_attempts) == 1
+    with SessionLocal() as db:
+        assert db.query(models.User).count() == 0
+        assert db.query(models.FederatedIdentity).count() == 0
+        invitation = db.query(models.TeacherInvitation).one()
+        assert invitation.consumed_at is None
+
+
+def test_disabled_federated_identity_cannot_create_a_new_session(
+    client,
+    oauth_settings,
+    monkeypatch,
+):
+    email = f"disabled-oauth@{ALLOWED_DOMAIN}"
+    user_id = _create_user(email, role=models.UserRole.TEACHER)
+    _bind_identity(
+        user_id,
+        provider="google",
+        issuer=GOOGLE_ISSUER,
+        subject="disabled-google-subject",
+    )
+    with SessionLocal() as db:
+        user = db.get(models.User, user_id)
+        user.disabled_at = datetime.now(timezone.utc)
+        db.commit()
+    _install_google_claims(
+        monkeypatch,
+        _google_claims(sub="disabled-google-subject", email=email),
+    )
+
+    response = client.post(
+        "/api/auth/google-login",
+        json={"idToken": "synthetic-google-id-token"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "External authentication failed"}
+    assert main.settings.session_cookie_name not in response.cookies
+    with SessionLocal() as db:
+        assert db.query(models.BrowserSession).count() == 0
 
 
 def test_google_invalid_assertions_cannot_be_used_as_a_teacher_code_oracle(
@@ -640,10 +787,11 @@ def test_google_invalid_assertions_cannot_be_used_as_a_teacher_code_oracle(
         raise ValueError("synthetic provider rejection")
 
     monkeypatch.setattr(main.id_token, "verify_oauth2_token", reject)
-    guesses = [
-        "wrong-code",
-        oauth_settings.teacher_access_code.get_secret_value(),
-    ]
+    invitation_token = _create_teacher_invitation(
+        f"learner@{ALLOWED_DOMAIN}",
+        oauth_settings,
+    )
+    guesses = ["wrong-invitation-token", invitation_token]
 
     responses = [
         client.post(
@@ -651,7 +799,7 @@ def test_google_invalid_assertions_cannot_be_used_as_a_teacher_code_oracle(
             json={
                 "idToken": "synthetic-google-id-token",
                 "role": "TEACHER",
-                "accessCode": guess,
+                "teacherInvitationToken": guess,
             },
         )
         for guess in guesses
@@ -674,7 +822,6 @@ def test_google_signup_never_allows_public_admin_creation(
         json={
             "idToken": "synthetic-google-id-token",
             "role": "ADMIN",
-            "accessCode": oauth_settings.admin_access_code.get_secret_value(),
         },
     )
 
@@ -745,6 +892,7 @@ def test_google_different_subject_cannot_take_over_reused_email(
     client, oauth_settings, monkeypatch
 ):
     email = f"reused@{ALLOWED_DOMAIN}"
+    invitation_token = _create_teacher_invitation(email, oauth_settings)
     _install_google_claims(
         monkeypatch,
         _google_claims(sub="original-google-subject", email=email),
@@ -754,7 +902,7 @@ def test_google_different_subject_cannot_take_over_reused_email(
         json={
             "idToken": "synthetic-google-id-token",
             "role": "TEACHER",
-            "accessCode": oauth_settings.teacher_access_code.get_secret_value(),
+            "teacherInvitationToken": invitation_token,
         },
     )
     _assert_safe_session(created, expected_role="TEACHER")
@@ -949,11 +1097,11 @@ def test_invalid_oauth_request_bodies_are_generic_and_never_echo_or_log_input(
     assert sensitive_value not in combined_output
 
 
-def test_oauth_validation_handler_does_not_change_unrelated_request_validation(client):
+def test_non_oauth_credential_validation_is_also_generic(client):
     response = client.post("/api/auth/register", json={})
 
     assert response.status_code == 422
-    assert isinstance(response.json().get("detail"), list)
+    assert response.json() == {"detail": "Invalid authentication request"}
 
 
 def test_microsoft_uses_only_the_configured_tenant_jwks_and_issues_safe_cookie_session(
@@ -1129,7 +1277,6 @@ def test_microsoft_signup_never_allows_public_admin_creation(
         json={
             "idToken": _microsoft_token(private_key),
             "role": "ADMIN",
-            "accessCode": oauth_settings.admin_access_code.get_secret_value(),
         },
     )
 
@@ -1144,6 +1291,7 @@ def test_microsoft_different_subject_cannot_take_over_reused_email(
     private_key, _, jwks = microsoft_keys
     _install_microsoft_jwks(monkeypatch, jwks)
     email = f"reused@{ALLOWED_DOMAIN}"
+    invitation_token = _create_teacher_invitation(email, oauth_settings)
     created = client.post(
         "/api/auth/microsoft-signup",
         json={
@@ -1152,7 +1300,7 @@ def test_microsoft_different_subject_cannot_take_over_reused_email(
                 _microsoft_claims(sub="original-microsoft-subject", email=email),
             ),
             "role": "TEACHER",
-            "accessCode": oauth_settings.teacher_access_code.get_secret_value(),
+            "teacherInvitationToken": invitation_token,
         },
     )
     _assert_safe_session(created, expected_role="TEACHER")

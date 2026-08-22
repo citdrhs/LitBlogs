@@ -9,14 +9,22 @@ import pytest
 
 import main
 import models
-from auth_security import hash_password, issue_access_token
+from auth_security import hash_password
 from database import SessionLocal
+from identity_controls import issue_browser_session
 
 PASSWORD_HASH = hash_password("correct horse battery staple")
 
 
 def _headers(user_id: int) -> dict[str, str]:
-    return {"Authorization": f"Bearer {issue_access_token(str(user_id))}"}
+    with SessionLocal() as db:
+        issued = issue_browser_session(
+            db,
+            user_id=user_id,
+            settings=main.settings,
+        )
+        db.commit()
+    return {"Authorization": f"Bearer {issued.token}"}
 
 
 @pytest.fixture
@@ -66,9 +74,6 @@ def authorization_scenario(client):
             is_admin=True,
         )
         db.add_all([teacher_a_user, teacher_b_user, student_a, student_b, admin])
-        db.flush()
-
-        db.add(models.Teacher(name="Legacy Teacher", email="legacy-teacher@example.com"))
         db.flush()
 
         teacher_a = models.Teacher(

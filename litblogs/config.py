@@ -1,3 +1,4 @@
+import hmac
 import os
 import re
 from functools import lru_cache
@@ -94,7 +95,7 @@ class Settings(BaseSettings):
     csrf_cookie_name: str | None = None
     session_cookie_secure: bool = False
 
-    teacher_access_code: SecretStr | None = None
+    teacher_invite_hmac_key: SecretStr | None = None
     admin_access_code: SecretStr | None = None
     admin_code: SecretStr | None = None
 
@@ -189,7 +190,7 @@ class Settings(BaseSettings):
             "MICROSOFT_ALLOWED_TENANT_IDS": self.microsoft_allowed_tenant_ids,
             "SESSION_COOKIE_NAME": self.session_cookie_name,
             "CSRF_COOKIE_NAME": self.csrf_cookie_name,
-            "TEACHER_ACCESS_CODE": self.teacher_access_code,
+            "TEACHER_INVITE_HMAC_KEY": self.teacher_invite_hmac_key,
             "ADMIN_ACCESS_CODE": self.admin_access_code,
             "EMAIL_HOST": self.email_host,
             "EMAIL_USERNAME": self.email_username,
@@ -208,7 +209,7 @@ class Settings(BaseSettings):
             "MICROSOFT_TENANT_ID": self.microsoft_tenant_id,
             "SESSION_COOKIE_NAME": self.session_cookie_name,
             "CSRF_COOKIE_NAME": self.csrf_cookie_name,
-            "TEACHER_ACCESS_CODE": _reveal_secret(self.teacher_access_code),
+            "TEACHER_INVITE_HMAC_KEY": _reveal_secret(self.teacher_invite_hmac_key),
             "ADMIN_ACCESS_CODE": _reveal_secret(self.admin_access_code),
         }
         if self.admin_code is not None:
@@ -221,7 +222,10 @@ class Settings(BaseSettings):
             "GOOGLE_CLIENT_ID": (self.google_client_id, 8),
             "MICROSOFT_CLIENT_ID": (self.microsoft_client_id, 8),
             "MICROSOFT_TENANT_ID": (self.microsoft_tenant_id, 8),
-            "TEACHER_ACCESS_CODE": (_reveal_secret(self.teacher_access_code), 16),
+            "TEACHER_INVITE_HMAC_KEY": (
+                _reveal_secret(self.teacher_invite_hmac_key),
+                SECRET_KEY_MIN_BYTES,
+            ),
             "ADMIN_ACCESS_CODE": (_reveal_secret(self.admin_access_code), 16),
         }
         if self.admin_code is not None:
@@ -229,6 +233,17 @@ class Settings(BaseSettings):
         for name, (value, minimum_bytes) in minimum_lengths.items():
             if len(str(value).encode("utf-8")) < minimum_bytes:
                 raise ValueError(f"{name} must contain at least {minimum_bytes} bytes in production")
+
+        invitation_key = _reveal_secret(self.teacher_invite_hmac_key)
+        if len(set(invitation_key)) < 12:
+            raise ValueError(
+                "TEACHER_INVITE_HMAC_KEY must be randomly generated in production"
+            )
+        if hmac.compare_digest(
+            invitation_key.encode("utf-8"),
+            secret.encode("utf-8"),
+        ):
+            raise ValueError("TEACHER_INVITE_HMAC_KEY must differ from SECRET_KEY")
 
         if not _GOOGLE_CLIENT_ID_PATTERN.fullmatch(self.google_client_id or ""):
             raise ValueError("GOOGLE_CLIENT_ID must be a valid Google OAuth client ID in production")
@@ -247,6 +262,16 @@ class Settings(BaseSettings):
 
         if not self.session_cookie_secure:
             raise ValueError("SESSION_COOKIE_SECURE must be true in production")
+        if not (self.session_cookie_name or "").startswith("__Host-"):
+            raise ValueError(
+                "SESSION_COOKIE_NAME must use the __Host- prefix in production"
+            )
+        if not (self.csrf_cookie_name or "").startswith("__Host-"):
+            raise ValueError(
+                "CSRF_COOKIE_NAME must use the __Host- prefix in production"
+            )
+        if self.session_cookie_name == self.csrf_cookie_name:
+            raise ValueError("Session and CSRF cookie names must differ in production")
         if not _is_https_url(self.frontend_url):
             raise ValueError("FRONTEND_URL must use HTTPS in production")
         if any(origin == "*" or not _is_https_origin(origin) for origin in self.cors_allowed_origins):

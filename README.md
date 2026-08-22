@@ -175,6 +175,84 @@ server {
 
 
 
+## Identity and session operations
+
+Browser authentication is backed by digest-only server-side session records. Logout
+revokes the current session; password changes, password resets, account disablement,
+and account deletion revoke all sessions. Issuance is serialized per account and keeps
+only the ten newest session rows, invalidating the deterministic oldest token when the
+cap is reached. Disabling an account also invalidates every pending, processing, or
+delivered password-reset row in the same transaction, and a successful password change
+does the same before commit. Reset delivery and consumption serialize against the
+enabled account row. Each reset-delivery lease stores only a random claim digest;
+completion uses compare-and-swap on that digest, so a timed-out worker cannot overwrite
+a newer reclaimed delivery. Account deletion takes that same user-row lock before touching
+session, reset, or content rows, so issuance and deletion cannot leave an orphaned live
+session or deadlock in reverse lock order. Deploying migration `0003` intentionally
+invalidates older stateless JWT cookies, because no session backfill is performed.
+The migration also invalidates every outstanding password-reset row so plaintext bearer
+tokens from legacy releases cannot remain usable at rest; users request a new link.
+
+Teacher accounts use one-time, expiring invitations bound to the normalized school
+email address. There is no public invitation endpoint and no shared teacher access
+code. Configure a dedicated random `TEACHER_INVITE_HMAC_KEY` (at least 32 bytes,
+different from `SECRET_KEY`) in the server secret store. Run the operator commands
+only from the trusted application host through the reviewed operator wrapper. That
+wrapper supplies a minimal purpose-specific JSON config on inherited file descriptor 3:
+only `purpose`, the dedicated least-privilege PostgreSQL URL, invitation HMAC key, and
+allowed school domains. Purpose hard-binds the exact operator role; a configurable
+expected-role field is rejected. It must not expose the application JWT, OAuth, SMTP,
+VAPID, or admin secrets. The URL uses exact target `127.0.0.1:5432/litblogs`, a dedicated strong
+credential, `sslmode=verify-full`, and exact root-owned CA path
+`/etc/litblogs/postgres-root-ca.pem`; runtime verifies every ancestor is root-owned and
+not group/world writable. The CLI also verifies `current_user`, role attributes and
+memberships, and an EXECUTE-only SECURITY DEFINER boundary with no direct table or
+sequence privileges.
+The target email is read from a no-echo prompt
+and must never be placed in argv, an environment variable, shell history, or process
+metadata. The operator identifier is intended audit data:
+
+```bash
+python -m manage_teacher_invitations create --expires-hours 24 --operator "$REVIEWED_OPERATOR"
+python -m manage_teacher_invitations revoke --operator "$REVIEWED_OPERATOR"
+python -m manage_accounts disable --operator "$REVIEWED_OPERATOR"
+python -m manage_accounts enable --operator "$REVIEWED_OPERATOR"
+```
+
+For non-interactive operation, provide exactly one email line on a protected stdin file
+descriptor sourced from the approved secret/PII store. The file path and descriptor
+metadata must not contain the address, and the file must be owner-readable only.
+The protected config descriptor and stdin email channel are separate; neither secret is
+accepted from command arguments or the web application's environment.
+
+The create command prints the raw invitation once. Deliver it only through an approved
+private channel and exclude that stdout from session recordings, CI artifacts, command
+transcripts, and logs. Every operator command transaction records its bounded actor,
+action/outcome, and a domain-separated HMAC target reference; it never records the raw
+email, invitation, or session value. The database stores only invitation/session
+digests. The admin-only account-status API uses the same transactional audit contract,
+and rolls back account/session changes if its audit record cannot be stored. See
+`litblogs/migrations/README-identity-controls.md` for migration, smoke tests, and the
+token-safe application rollback procedure.
+
+Email identity is restricted to ASCII school addresses and is case-insensitive. New
+accounts remove U+0020 padding and store a lowercase address; every remaining space,
+ASCII control character (C0 plus DEL), and non-ASCII byte is rejected. PostgreSQL
+uses locale-independent ASCII `translate(btrim(email), ...)`, equivalent control checks, and a
+`COLLATE "C"` canonical index rather than locale-sensitive `lower()`, plus
+canonical uniqueness. The teacher/account association is the unique, non-null
+`teachers.user_id`; the denormalized teacher email is reconciled to the user row.
+Migration preflight must reconcile any invalid, unmappable, or duplicate legacy
+identities through a reviewed school process before the constraints and indexes are
+created. Password registration accepts only the
+configured school email domains in production and returns the same generic accepted
+response when an address is ineligible.
+
+Generic acceptance prevents direct account enumeration, but password registration in
+this slice does not prove control of the submitted school mailbox. Production must keep
+password registration disabled in favor of verified school SSO, or add a reviewed
+pending-email/roster verification flow before activating password accounts.
+
 ## Environment Configuration
 
 Push reminders (outside the app) require VAPID keys and related settings in your backend env.

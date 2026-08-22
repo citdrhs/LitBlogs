@@ -8,10 +8,12 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    and_,
     func,
 )
 from sqlalchemy import Enum as SQLAlchemyEnum
@@ -40,11 +42,38 @@ class User(Base):
     role = Column(SQLAlchemyEnum(UserRole), nullable=False, default=UserRole.STUDENT)
     is_admin = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    disabled_at = Column(DateTime(timezone=True), nullable=True, index=True)
     bio = Column(String(500), nullable=True)
     profile_image = Column(String(255), nullable=True)
     cover_image = Column(String(255), nullable=True)
     avatar_id = Column(String(50), nullable=True)
     avatar_color = Column(String(50), nullable=True)
+    __table_args__ = (
+        CheckConstraint(
+            "email COLLATE \"C\" = "
+            "translate(btrim(email), "
+            "'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+            "'abcdefghijklmnopqrstuvwxyz') COLLATE \"C\"",
+            name="ck_users_email_canonical",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "octet_length(email) = char_length(email)",
+            name="ck_users_email_ascii",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "email !~ '[[:space:]]'",
+            name="ck_users_email_no_whitespace",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "email !~ '[[:cntrl:]]'",
+            name="ck_users_email_no_controls",
+        ).ddl_if(dialect="postgresql"),
+        Index(
+            "uq_users_email_normalized",
+            email.collate("C"),
+            unique=True,
+        ).ddl_if(dialect="postgresql"),
+    )
     # For students: the classes they're enrolled in
     enrolled_classes = relationship("ClassEnrollment", back_populates="student")
     blogs = relationship("Blog", back_populates="owner")
@@ -66,6 +95,164 @@ class User(Base):
         "AssignmentReminderNotification",
         back_populates="user",
         cascade="all, delete-orphan",
+    )
+    browser_sessions = relationship(
+        "BrowserSession",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+
+class BrowserSession(Base):
+    __tablename__ = "browser_sessions"
+
+    id = Column(Integer, primary_key=True)
+    jti_digest = Column(String(64), nullable=False)
+    user_id = Column(
+        Integer,
+        ForeignKey(
+            "users.id",
+            ondelete="CASCADE",
+            name="fk_browser_session_user",
+        ),
+        nullable=False,
+        index=True,
+    )
+    created_at = Column(
+        DateTime(timezone=True),
+        default=_utc_now_naive,
+        server_default=func.now(),
+        nullable=False,
+    )
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+
+    user = relationship("User", back_populates="browser_sessions")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "jti_digest",
+            name="uq_browser_session_jti_digest",
+        ),
+        CheckConstraint(
+            "length(jti_digest) = 64",
+            name="ck_browser_session_jti_digest",
+        ),
+        CheckConstraint(
+            "jti_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_browser_session_jti_digest_lower_hex",
+        ).ddl_if(dialect="postgresql"),
+        Index(
+            "ix_browser_sessions_user_recency",
+            "user_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+
+class TeacherInvitation(Base):
+    __tablename__ = "teacher_invitations"
+
+    id = Column(Integer, primary_key=True)
+    token_digest = Column(String(64), nullable=False)
+    email_digest = Column(String(64), nullable=False, index=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=_utc_now_naive,
+        server_default=func.now(),
+        nullable=False,
+    )
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    consumed_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    created_by = Column(String(100), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "token_digest",
+            name="uq_teacher_invitation_token_digest",
+        ),
+        CheckConstraint(
+            "length(token_digest) = 64",
+            name="ck_teacher_invitation_token_digest",
+        ),
+        CheckConstraint(
+            "token_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_teacher_invitation_token_digest_lower_hex",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "length(email_digest) = 64",
+            name="ck_teacher_invitation_email_digest",
+        ),
+        CheckConstraint(
+            "email_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_teacher_invitation_email_digest_lower_hex",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "length(created_by) BETWEEN 1 AND 100",
+            name="ck_teacher_invitation_created_by",
+        ),
+        CheckConstraint(
+            "created_by ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,99}$'",
+            name="ck_teacher_invitation_created_by_format",
+        ).ddl_if(dialect="postgresql"),
+        Index(
+            "uq_teacher_invitation_active_email",
+            "email_digest",
+            unique=True,
+            sqlite_where=and_(consumed_at.is_(None), revoked_at.is_(None)),
+            postgresql_where=and_(consumed_at.is_(None), revoked_at.is_(None)),
+        ),
+    )
+
+
+class OperatorAuditEvent(Base):
+    __tablename__ = "operator_audit_events"
+
+    id = Column(Integer, primary_key=True)
+    actor_identifier = Column(String(100), nullable=False, index=True)
+    action = Column(String(64), nullable=False, index=True)
+    outcome = Column(String(16), nullable=False)
+    resource_digest = Column(String(64), nullable=False, index=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=_utc_now_naive,
+        server_default=func.now(),
+        nullable=False,
+        index=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "length(actor_identifier) BETWEEN 1 AND 100",
+            name="ck_operator_audit_actor_identifier",
+        ),
+        CheckConstraint(
+            "actor_identifier ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,99}$'",
+            name="ck_operator_audit_actor_identifier_format",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "action IN ("
+            "'TEACHER_INVITATION_CREATED', "
+            "'TEACHER_INVITATION_REVOKED', "
+            "'ACCOUNT_DISABLED', "
+            "'ACCOUNT_ENABLED'"
+            ")",
+            name="ck_operator_audit_action",
+        ),
+        CheckConstraint(
+            "outcome IN ('SUCCEEDED', 'NOT_FOUND', 'CONFLICT')",
+            name="ck_operator_audit_outcome",
+        ),
+        CheckConstraint(
+            "length(resource_digest) = 64",
+            name="ck_operator_audit_resource_digest",
+        ),
+        CheckConstraint(
+            "resource_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_operator_audit_resource_digest_lower_hex",
+        ).ddl_if(dialect="postgresql"),
     )
 
 class UserSettings(Base):
@@ -155,11 +342,34 @@ class Teacher(Base):
     __tablename__ = "teachers"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String)
-    email = Column(String, unique=True, index=True)
+    email = Column(String(100), unique=True, index=True, nullable=False)
     hashed_password = Column(String)
-    user_id = Column(Integer, ForeignKey("users.id"))
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     user = relationship("User", backref="teacher_profile")
     classes = relationship("Class", back_populates="teacher")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_teachers_user_id"),
+        CheckConstraint(
+            "email COLLATE \"C\" = "
+            "translate(btrim(email), "
+            "'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+            "'abcdefghijklmnopqrstuvwxyz') COLLATE \"C\"",
+            name="ck_teachers_email_canonical",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "octet_length(email) = char_length(email)",
+            name="ck_teachers_email_ascii",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "email !~ '[[:space:]]'",
+            name="ck_teachers_email_no_whitespace",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "email !~ '[[:cntrl:]]'",
+            name="ck_teachers_email_no_controls",
+        ).ddl_if(dialect="postgresql"),
+    )
 
 class Class(Base):
     __tablename__ = "classes"
@@ -368,10 +578,24 @@ class PasswordReset(Base):
     used = Column(Boolean, default=False, nullable=False)
     delivery_status = Column(String(16), default="PENDING", nullable=False, index=True)
     delivery_attempted_at = Column(DateTime(timezone=True), nullable=True)
+    delivery_claim_digest = Column(String(64), nullable=True)
 
     __table_args__ = (
         CheckConstraint(
             "delivery_status IN ('PENDING', 'PROCESSING', 'DELIVERED', 'FAILED')",
             name="ck_password_reset_delivery_status",
         ),
+        CheckConstraint(
+            "delivery_claim_digest IS NULL OR length(delivery_claim_digest) = 64",
+            name="ck_password_reset_delivery_claim_digest",
+        ),
+        CheckConstraint(
+            "delivery_claim_digest IS NULL OR "
+            "delivery_claim_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_password_reset_delivery_claim_digest_lower_hex",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "token IS NULL OR token ~ '^[0-9a-f]{64}$'",
+            name="ck_password_reset_token_lower_hex",
+        ).ddl_if(dialect="postgresql"),
     )

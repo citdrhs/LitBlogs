@@ -8,9 +8,10 @@ from pydantic import BaseModel
 import auth_security
 import main
 import models
-from auth_security import hash_password, issue_access_token
+from auth_security import hash_password
 from config import Settings
 from database import SessionLocal
+from identity_controls import issue_browser_session
 
 
 def _student_payload(suffix: str = "one") -> dict:
@@ -26,6 +27,20 @@ def _student_payload(suffix: str = "one") -> dict:
 
 def _register(client, suffix: str = "one"):
     response = client.post("/api/auth/register", json=_student_payload(suffix))
+    assert response.status_code == 202
+    assert response.headers.get_list("set-cookie") == []
+    return response
+
+
+def _register_and_login(client, suffix: str = "one"):
+    _register(client, suffix)
+    response = client.post(
+        "/api/auth/login",
+        json={
+            "email": _student_payload(suffix)["email"],
+            "password": _student_payload(suffix)["password"],
+        },
+    )
     assert response.status_code == 200
     return response
 
@@ -51,9 +66,20 @@ def _create_student(suffix: str) -> models.User:
 def _set_cookie_auth(client, user_id: int, csrf_token: str = "synthetic-csrf-token") -> str:
     session_cookie_name = main.settings.session_cookie_name
     csrf_cookie_name = main.settings.csrf_cookie_name
-    client.cookies.set(session_cookie_name, issue_access_token(str(user_id)))
+    client.cookies.set(session_cookie_name, _issue_server_session(user_id))
     client.cookies.set(csrf_cookie_name, csrf_token)
     return csrf_token
+
+
+def _issue_server_session(user_id: int) -> str:
+    with SessionLocal() as db:
+        issued = issue_browser_session(
+            db,
+            user_id=user_id,
+            settings=main.settings,
+        )
+        db.commit()
+        return issued.token
 
 
 def _cookie_header(response, cookie_name: str) -> str:
@@ -106,7 +132,7 @@ def _production_settings() -> Settings:
         session_cookie_name="__Host-litblog-session",
         csrf_cookie_name="__Host-litblog-csrf",
         session_cookie_secure=True,
-        teacher_access_code=secrets.token_urlsafe(24),
+        teacher_invite_hmac_key=secrets.token_urlsafe(48),
         admin_access_code=secrets.token_urlsafe(24),
         admin_code=secrets.token_urlsafe(24),
         email_host="smtp.school.example",
@@ -134,19 +160,26 @@ def test_csrf_comparison_uses_constant_time_bytes(monkeypatch):
     assert calls == [(b"supplied-csrf", b"configured-csrf")]
 
 
-def test_registration_sets_protected_session_and_readable_csrf_cookies(client):
+def test_registration_is_generic_and_does_not_create_browser_session(client):
     response = _register(client)
-    max_age = main.settings.access_token_expire_minutes * 60
-
-    session_header = _cookie_header(response, main.settings.session_cookie_name)
-    csrf_header = _cookie_header(response, main.settings.csrf_cookie_name)
-    _assert_cookie_attributes(session_header, http_only=True, secure=False, max_age=max_age)
-    _assert_cookie_attributes(csrf_header, http_only=False, secure=False, max_age=max_age)
+    assert response.json() == {
+        "message": "If registration can be completed, sign in with the submitted credentials."
+    }
+    assert client.cookies.get(main.settings.session_cookie_name) is None
+    assert client.cookies.get(main.settings.csrf_cookie_name) is None
     _assert_no_jwt_fields(response.json())
 
 
 def test_login_rotates_csrf_and_never_returns_the_jwt(client):
     _register(client)
+    first_response = client.post(
+        "/api/auth/login",
+        json={
+            "email": _student_payload()["email"],
+            "password": _student_payload()["password"],
+        },
+    )
+    assert first_response.status_code == 200
     first_csrf = client.cookies.get(main.settings.csrf_cookie_name)
 
     response = client.post(
@@ -191,7 +224,7 @@ def test_production_login_marks_both_cookies_secure(monkeypatch, client):
 
 
 def test_safe_session_endpoint_returns_typed_nonsecret_metadata(client):
-    _register(client)
+    _register_and_login(client)
 
     response = client.get("/api/auth/session")
 
@@ -212,14 +245,15 @@ def test_safe_session_endpoint_returns_typed_nonsecret_metadata(client):
 
 def test_every_browser_auth_success_route_uses_the_nonsecret_session_schema():
     browser_auth_paths = {
-        "/api/auth/register",
         "/api/auth/login",
         "/api/auth/google-signup",
         "/api/auth/google-login",
         "/api/auth/microsoft-login",
         "/api/auth/microsoft-signup",
     }
-    routes = {route.path: route for route in main.app.routes if route.path in browser_auth_paths}
+    routes = {
+        route.path: route for route in main.app.routes if route.path in browser_auth_paths
+    }
 
     assert set(routes) == browser_auth_paths
     assert {
@@ -230,10 +264,14 @@ def test_every_browser_auth_success_route_uses_the_nonsecret_session_schema():
     assert set(main.SessionMetadataResponse.model_fields).isdisjoint(
         {"token", "access_token", "token_type", "password"}
     )
+    register_route = next(
+        route for route in main.app.routes if route.path == "/api/auth/register"
+    )
+    assert register_route.response_model is main.RegistrationAcceptedResponse
 
 
 def test_cookie_authenticated_mutation_requires_matching_csrf_before_mutation(client):
-    _register(client)
+    _register_and_login(client)
     csrf_token = client.cookies.get(main.settings.csrf_cookie_name)
 
     missing = client.put("/api/user/settings", json={"darkMode": True})
@@ -260,7 +298,7 @@ def test_cookie_authenticated_mutation_requires_matching_csrf_before_mutation(cl
 
 
 def test_safe_cookie_authenticated_requests_do_not_require_csrf(client):
-    _register(client)
+    _register_and_login(client)
 
     response = client.get("/api/auth/session")
 
@@ -269,7 +307,7 @@ def test_safe_cookie_authenticated_requests_do_not_require_csrf(client):
 
 def test_bearer_authenticated_mutation_remains_supported_without_csrf(client):
     user = _create_student("bearer")
-    token = issue_access_token(str(user.id))
+    token = _issue_server_session(user.id)
 
     response = client.put(
         "/api/user/settings",
@@ -286,7 +324,7 @@ def test_cookie_and_bearer_credentials_are_rejected_as_ambiguous(client, bearer_
     cookie_user = _create_student("cookie")
     bearer_user = cookie_user if bearer_subject == "same" else _create_student("bearer-conflict")
     csrf_token = _set_cookie_auth(client, cookie_user.id)
-    bearer_token = issue_access_token(str(bearer_user.id))
+    bearer_token = _issue_server_session(bearer_user.id)
 
     response = client.put(
         "/api/user/settings",
@@ -304,7 +342,7 @@ def test_cookie_and_bearer_credentials_are_rejected_as_ambiguous(client, bearer_
 
 
 def test_logout_requires_cookie_csrf_and_clears_both_cookies(client):
-    _register(client)
+    _register_and_login(client)
     session_cookie_name = main.settings.session_cookie_name
     csrf_cookie_name = main.settings.csrf_cookie_name
     csrf_token = client.cookies.get(csrf_cookie_name)

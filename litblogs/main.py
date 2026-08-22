@@ -35,8 +35,9 @@ from google.oauth2 import id_token
 from jwt.exceptions import InvalidTokenError
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from sqlalchemy import and_, or_, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 import models
 import schemas
@@ -99,14 +100,26 @@ from auth_security import (
     decode_access_token,
     hash_password,
     issue_access_token,
-    provisioning_code_matches,
     verify_and_update_password,
+    verify_password,
 )
 from config import get_settings
 from database import SessionLocal, get_db, initialize_database, reset_database
+from identity_controls import (
+    SessionIssuanceDenied,
+    consume_teacher_invitation,
+    find_active_browser_session,
+    invalidate_password_reset_requests,
+    issue_browser_session,
+    normalize_email,
+    record_operator_audit_event,
+    revoke_all_sessions,
+    revoke_session,
+)
 from oauth_security import verify_google_id_token, verify_microsoft_id_token
 
 settings = get_settings()
+_DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(32))
 
 
 def _utc_now_naive() -> datetime:
@@ -172,15 +185,29 @@ OAUTH_AUTH_PATHS = frozenset(
         "/api/auth/microsoft-signup",
     }
 )
+SENSITIVE_CREDENTIAL_AUTH_PATHS = frozenset(
+    {
+        "/api/auth/register",
+        "/api/auth/login",
+        "/api/auth/change-password",
+        "/api/auth/forgot-password",
+        "/api/auth/reset-password",
+    }
+)
 GOOGLE_IDENTITY_ISSUER = "https://accounts.google.com"
 
 
 @app.exception_handler(RequestValidationError)
-async def safe_oauth_request_validation_error(request: Request, exc: RequestValidationError):
+async def safe_auth_request_validation_error(request: Request, exc: RequestValidationError):
     if request.url.path in OAUTH_AUTH_PATHS:
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={"detail": "External authentication failed"},
+        )
+    if request.url.path in SENSITIVE_CREDENTIAL_AUTH_PATHS:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={"detail": "Invalid authentication request"},
         )
     return await request_validation_exception_handler(request, exc)
 
@@ -284,10 +311,15 @@ def _push_endpoint_host_allowed(hostname: str) -> bool:
 class LoginRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    # Login performs an exact lookup against an already-validated stored address.
-    # A bounded string preserves synthetic/reserved-domain test and recovery accounts.
-    email: str = Field(min_length=3, max_length=254)
+    # Login canonicalizes the address before the case-insensitive identity lookup.
+    # The bound matches the persisted account column.
+    email: str = Field(min_length=3, max_length=100)
     password: str = Field(min_length=1, max_length=1_024)
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_size(cls, value: str) -> str:
+        return schemas.validate_password_request_bytes(value)
 
 
 class SessionMetadataResponse(BaseModel):
@@ -299,6 +331,14 @@ class SessionMetadataResponse(BaseModel):
     is_admin: bool
 
 
+class RegistrationAcceptedResponse(BaseModel):
+    message: str
+
+
+class UserStatusResponse(BaseModel):
+    disabled: bool
+
+
 class OAuthLoginRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -307,7 +347,7 @@ class OAuthLoginRequest(BaseModel):
 
 class OAuthSignupRequest(OAuthLoginRequest):
     role: str | None = Field(default=None, max_length=16)
-    accessCode: str | None = Field(default=None, max_length=256)
+    teacherInvitationToken: str | None = Field(default=None, max_length=512)
 
 
 class UserSettingsUpdateRequest(BaseModel):
@@ -629,7 +669,28 @@ def _session_metadata(user: models.User) -> dict:
     }
 
 
-def _set_browser_session(response: Response, user: models.User) -> None:
+def _set_browser_session(
+    response: Response,
+    user: models.User,
+    db: Session,
+    *,
+    expected_password_hash: str | None = None,
+    authentication_error_detail: str = "External authentication failed",
+) -> None:
+    try:
+        issued = issue_browser_session(
+            db,
+            user_id=user.id,
+            settings=settings,
+            expected_password_hash=expected_password_hash,
+        )
+    except SessionIssuanceDenied as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=authentication_error_detail,
+        ) from exc
+    db.commit()
     max_age = settings.access_token_expire_minutes * 60
     cookie_options = {
         "max_age": max_age,
@@ -639,7 +700,7 @@ def _set_browser_session(response: Response, user: models.User) -> None:
     }
     response.set_cookie(
         _session_cookie_name(),
-        create_access_token(data={"sub": str(user.id)}),
+        issued.token,
         httponly=True,
         **cookie_options,
     )
@@ -692,7 +753,13 @@ def _create_federated_user(
     last_name: str,
     role: models.UserRole,
 ) -> models.User:
-    if db.query(models.User).filter(models.User.email == email).first() is not None:
+    normalized_email = normalize_email(email)
+    if (
+        db.query(models.User)
+        .filter(models.User.email == normalized_email)
+        .first()
+        is not None
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="External authentication failed",
@@ -700,7 +767,7 @@ def _create_federated_user(
 
     user = models.User(
         username=f"oauth-{secrets.token_hex(12)}",
-        email=email,
+        email=normalized_email,
         password=hash_password(secrets.token_urlsafe(32)),
         first_name=first_name[:50],
         last_name=last_name[:50],
@@ -715,7 +782,7 @@ def _create_federated_user(
     )
     db.add_all((user, identity))
     try:
-        db.commit()
+        db.flush()
     except IntegrityError as exc:
         db.rollback()
         winner = _find_federated_user(
@@ -730,78 +797,94 @@ def _create_federated_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="External authentication failed",
         ) from exc
-    db.refresh(user)
     return user
 
 
-@app.post("/api/auth/register", response_model=SessionMetadataResponse)
+def _require_active_federated_user(user: models.User) -> models.User:
+    if user.disabled_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="External authentication failed",
+        )
+    return user
+
+
+REGISTRATION_ACCEPTED_RESPONSE = {
+    "message": "If registration can be completed, sign in with the submitted credentials."
+}
+
+
+def _registration_email_domain_allowed(normalized_email: str) -> bool:
+    allowed_domains = settings.allowed_email_domains
+    if not allowed_domains:
+        return True
+    return normalized_email.rsplit("@", 1)[-1] in allowed_domains
+
+
+@app.post(
+    "/api/auth/register",
+    response_model=RegistrationAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def register(
     user_data: schemas.UserCreate,
-    response: Response,
     db: Session = Depends(get_db),
 ):
-    """Register a new user"""
-    # Check if email already exists
-    existing_user = db.query(models.User).filter(models.User.email == user_data.email).first()
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
-        )
-    
-    # Validate role
+    """Accept an account request without disclosing account or invite state."""
+    hashed_password = await run_in_threadpool(hash_password, user_data.password)
     try:
-        role = models.UserRole[user_data.role]
-    except KeyError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid role"
-        ) from exc
+        normalized_email = normalize_email(str(user_data.email))
+    except (TypeError, ValueError):
+        return REGISTRATION_ACCEPTED_RESPONSE
+    role = models.UserRole.__members__.get(user_data.role)
+    existing_user = (
+        db.query(models.User.id)
+        .filter(
+            or_(
+                models.User.email == normalized_email,
+                models.User.username == user_data.username,
+            )
+        )
+        .first()
+    )
+    eligible = (
+        existing_user is None
+        and _registration_email_domain_allowed(normalized_email)
+        and role in {
+            models.UserRole.STUDENT,
+            models.UserRole.TEACHER,
+        }
+    )
 
-    if role == models.UserRole.ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid role",
+    if eligible and role == models.UserRole.TEACHER:
+        eligible = consume_teacher_invitation(
+            db,
+            token=user_data.teacher_invitation_token or "",
+            email=normalized_email,
+            settings=settings,
         )
 
-    # Public registration may provision teachers only with the configured code.
-    if role == models.UserRole.TEACHER:
-        if not user_data.access_code:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"{role.name.lower()} access code is required"
-            )
-        
-        # Verify the access code
-        if role == models.UserRole.TEACHER and not provisioning_code_matches(
-            user_data.access_code,
-            _secret_value(settings.teacher_access_code),
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid teacher access code"
-            )
-    
-    # Hash the password
-    hashed_password = hash_password(user_data.password)
-    
-    # Create new user
-    new_user = models.User(
-        username=user_data.username,
-        email=user_data.email,
-        password=hashed_password,
-        first_name=user_data.first_name,
-        last_name=user_data.last_name,
-        role=role,
-        is_admin=False,
+    if not eligible:
+        db.rollback()
+        return REGISTRATION_ACCEPTED_RESPONSE
+
+    db.add(
+        models.User(
+            username=user_data.username,
+            email=normalized_email,
+            password=hashed_password,
+            first_name=user_data.first_name,
+            last_name=user_data.last_name,
+            role=role,
+            is_admin=False,
+        )
     )
-    
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    
-    _set_browser_session(response, new_user)
-    return _session_metadata(new_user)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+
+    return REGISTRATION_ACCEPTED_RESPONSE
 
 def create_access_token(data: dict):
     return issue_access_token(data.get("sub"), settings=settings)
@@ -858,6 +941,26 @@ async def get_current_user(
     except (InvalidTokenError, TypeError, ValueError) as exc:
         raise credentials_exception from exc
 
+    browser_session = find_active_browser_session(
+        db,
+        user_id=user_id,
+        jti=payload["jti"],
+    )
+    if browser_session is None:
+        raise credentials_exception
+
+    user = (
+        db.query(models.User)
+        .filter(
+            models.User.id == user_id,
+            models.User.disabled_at.is_(None),
+        )
+        .first()
+    )
+    if user is None:
+        raise credentials_exception
+    request.state.browser_session_id = browser_session.id
+
     if cookie_token and request.method.upper() in UNSAFE_HTTP_METHODS:
         if not csrf_token_matches(
             request.headers.get(CSRF_HEADER_NAME),
@@ -867,10 +970,6 @@ async def get_current_user(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="CSRF validation failed",
             )
-    
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-    if user is None:
-        raise credentials_exception
     return user
 
 @app.get("/api/auth/session", response_model=SessionMetadataResponse)
@@ -880,11 +979,111 @@ async def get_browser_session(current_user: models.User = Depends(get_current_us
 
 @app.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout(
+    request: Request,
     response: Response,
+    db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
     del current_user
+    revoke_session(
+        db,
+        session_id=request.state.browser_session_id,
+    )
+    db.commit()
     _clear_browser_session(response)
+
+
+@app.post("/api/auth/change-password", status_code=status.HTTP_204_NO_CONTENT)
+async def change_password(
+    payload: schemas.ChangePasswordRequest,
+    response: Response,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    verified_hash = current_user.password
+    password_valid = await run_in_threadpool(
+        verify_password,
+        payload.current_password,
+        verified_hash,
+    )
+    if not password_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+    new_password_hash = await run_in_threadpool(hash_password, payload.new_password)
+    result = db.execute(
+        update(models.User)
+        .where(
+            models.User.id == current_user.id,
+            models.User.password == verified_hash,
+            models.User.disabled_at.is_(None),
+        )
+        .values(password=new_password_hash)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Password changed concurrently; sign in again",
+        )
+    revoke_all_sessions(db, user_id=current_user.id)
+    invalidate_password_reset_requests(db, user_id=current_user.id)
+    db.commit()
+    _clear_browser_session(response)
+
+
+@app.put(
+    "/api/users/{user_id}/status",
+    response_model=UserStatusResponse,
+)
+async def update_user_status(
+    user_id: int,
+    payload: schemas.UserStatusUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    if payload.disabled and user_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Administrators cannot disable their current account",
+        )
+    target_user = (
+        db.query(models.User)
+        .filter(models.User.id == user_id)
+        .with_for_update()
+        .first()
+    )
+    if target_user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    try:
+        if payload.disabled:
+            target_user.disabled_at = _utc_now_naive()
+            revoke_all_sessions(db, user_id=target_user.id)
+            invalidate_password_reset_requests(db, user_id=target_user.id)
+            audit_action = "ACCOUNT_DISABLED"
+        else:
+            target_user.disabled_at = None
+            audit_action = "ACCOUNT_ENABLED"
+        record_operator_audit_event(
+            db,
+            actor_identifier=f"admin-user:{current_user.id}",
+            action=audit_action,
+            outcome="SUCCEEDED",
+            resource_email=target_user.email,
+            settings=settings,
+        )
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Account status could not be updated",
+        ) from None
+    return {"disabled": payload.disabled}
 
 
 @app.post("/api/auth/login", response_model=SessionMetadataResponse)
@@ -893,28 +1092,29 @@ async def login(
     response: Response,
     db: Session = Depends(get_db),
 ):
-    user = db.query(models.User).filter(models.User.email == login_data.email).first()
-    
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="Invalid email or password"
+    try:
+        normalized_email = normalize_email(str(login_data.email))
+    except (TypeError, ValueError):
+        normalized_email = ""
+    user = (
+        db.query(models.User)
+        .filter(
+            models.User.email == normalized_email,
+            models.User.disabled_at.is_(None),
         )
+        .first()
+    )
     
-    # Check if this is a social login account by trying to verify password
-    # If password verification fails, it might be a social account
-    verified_password_hash = user.password
-    password_valid, upgraded_password_hash = verify_and_update_password(
+    verified_password_hash = user.password if user is not None else _DUMMY_PASSWORD_HASH
+    password_valid, upgraded_password_hash = await run_in_threadpool(
+        verify_and_update_password,
         login_data.password,
         verified_password_hash,
     )
-    if not password_valid:
-        # Check if this user signed up with either Google or Microsoft
-        # Since we don't have the ID fields, we need to rely on other signals
-        # One approach is to tell users to use social login if password is invalid
+    if user is None or not password_valid:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="Invalid email or password. If you signed up with Google or Microsoft, please use those login methods."
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password",
         )
     if upgraded_password_hash is not None:
         if not _persist_password_upgrade_if_current(
@@ -927,8 +1127,15 @@ async def login(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid email or password",
             )
+        verified_password_hash = upgraded_password_hash
     
-    _set_browser_session(response, user)
+    _set_browser_session(
+        response,
+        user,
+        db,
+        expected_password_hash=verified_password_hash,
+        authentication_error_detail="Invalid email or password",
+    )
     return _session_metadata(user)
 
 @app.post("/api/auth/google-signup", response_model=SessionMetadataResponse)
@@ -953,24 +1160,26 @@ def google_signup(
             subject=subject,
         )
         if user is not None:
-            _set_browser_session(response, user)
+            _require_active_federated_user(user)
+            _set_browser_session(response, user, db)
             return _session_metadata(user)
 
         selected_role = (token_data.role or "STUDENT").upper()
-        access_code = token_data.accessCode
 
         if selected_role not in {"STUDENT", "TEACHER"}:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid role",
             )
-        if selected_role == "TEACHER" and not provisioning_code_matches(
-            access_code,
-            _secret_value(settings.teacher_access_code),
+        if selected_role == "TEACHER" and not consume_teacher_invitation(
+            db,
+            token=token_data.teacherInvitationToken or "",
+            email=idinfo["email"],
+            settings=settings,
         ):
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Invalid teacher access code",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="External authentication failed",
             )
 
         user = _create_federated_user(
@@ -984,17 +1193,20 @@ def google_signup(
             role=models.UserRole[selected_role],
         )
 
-        _set_browser_session(response, user)
+        _set_browser_session(response, user, db)
         return _session_metadata(user)
 
     except HTTPException:
+        db.rollback()
         raise
     except ValueError as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="External authentication failed",
         ) from exc
     except Exception as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="External authentication failed",
@@ -1027,18 +1239,22 @@ def google_login(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="User not found. Please sign up and choose a role first."
             )
-        
-        _set_browser_session(response, user)
+
+        _require_active_federated_user(user)
+        _set_browser_session(response, user, db)
         return _session_metadata(user)
         
     except HTTPException:
+        db.rollback()
         raise
     except ValueError as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="External authentication failed",
         ) from exc
     except Exception as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="External authentication failed",
@@ -1070,13 +1286,16 @@ def microsoft_login(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="User not found. Please sign up and choose a role first."
             )
-        
-        _set_browser_session(response, user)
+
+        _require_active_federated_user(user)
+        _set_browser_session(response, user, db)
         return _session_metadata(user)
         
     except HTTPException:
+        db.rollback()
         raise
     except Exception as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="External authentication failed",
@@ -1105,24 +1324,26 @@ def microsoft_signup(
             subject=subject,
         )
         if existing_user is not None:
-            _set_browser_session(response, existing_user)
+            _require_active_federated_user(existing_user)
+            _set_browser_session(response, existing_user, db)
             return _session_metadata(existing_user)
 
         role = (microsoft_data.role or "STUDENT").upper()
-        access_code = microsoft_data.accessCode
 
         if role not in {"STUDENT", "TEACHER"}:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid role",
             )
-        if role == "TEACHER" and not provisioning_code_matches(
-            access_code,
-            _secret_value(settings.teacher_access_code),
+        if role == "TEACHER" and not consume_teacher_invitation(
+            db,
+            token=microsoft_data.teacherInvitationToken or "",
+            email=user_email,
+            settings=settings,
         ):
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Invalid teacher access code",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="External authentication failed",
             )
 
         user = _create_federated_user(
@@ -1136,12 +1357,14 @@ def microsoft_signup(
             role=models.UserRole[role],
         )
 
-        _set_browser_session(response, user)
+        _set_browser_session(response, user, db)
         return _session_metadata(user)
         
     except HTTPException:
+        db.rollback()
         raise
     except Exception as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="External authentication failed",
@@ -1625,21 +1848,38 @@ async def create_class(
         )
     
     try:
-        # Find the teacher record for this user
-        teacher = db.query(models.Teacher).filter(
-            models.Teacher.email == current_user.email
-        ).first()
+        # Serialize creation on the canonical User -> Teacher association. This
+        # prevents concurrent requests from creating duplicate teacher rows and
+        # keeps ownership attached to user_id rather than a denormalized email.
+        locked_user = (
+            db.query(models.User)
+            .filter(
+                models.User.id == current_user.id,
+                models.User.disabled_at.is_(None),
+                models.User.role == models.UserRole.TEACHER,
+            )
+            .with_for_update(of=models.User)
+            .first()
+        )
+        if locked_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only active teachers can create classes",
+            )
+
+        teacher = _get_teacher_record(db, locked_user)
         
         if not teacher:
-            # Create a teacher record if it doesn't exist
             teacher = models.Teacher(
-                name=f"{current_user.first_name} {current_user.last_name}",
-                email=current_user.email,
-                user_id=current_user.id
+                name=f"{locked_user.first_name} {locked_user.last_name}",
+                email=locked_user.email,
+                user_id=locked_user.id,
             )
             db.add(teacher)
-            db.commit()
-            db.refresh(teacher)
+            db.flush()
+        elif teacher.email != locked_user.email:
+            # The migration performs the same reconciliation for legacy rows.
+            teacher.email = locked_user.email
         
         # Generate a unique access code
         access_code = generate_unique_code(db)
@@ -1665,6 +1905,9 @@ async def create_class(
             "teacher_id": new_class.teacher_id
         }
     
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(
@@ -2940,6 +3183,7 @@ async def unsubscribe_push_notifications(
 @app.delete("/api/user/account")
 async def delete_user_account(
     confirm: str,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -2947,14 +3191,27 @@ async def delete_user_account(
     if confirm.strip().upper() != "DELETE":
         raise HTTPException(status_code=400, detail="Confirmation must be DELETE")
 
-    user = db.query(models.User).filter(models.User.id == current_user.id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
     try:
+        # Every account lifecycle operation locks the parent User before child
+        # session/reset rows. This prevents reverse-order deadlocks and closes
+        # the window for a newly issued session to survive account deletion.
+        user = (
+            db.query(models.User)
+            .filter(
+                models.User.id == current_user.id,
+                models.User.disabled_at.is_(None),
+            )
+            .with_for_update(of=models.User)
+            .first()
+        )
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        revoke_all_sessions(db, user_id=user.id)
         _delete_user_dependencies(db, user)
         db.delete(user)
         db.commit()
+        _clear_browser_session(response)
         return {"message": "Account deleted successfully"}
     except HTTPException:
         db.rollback()
@@ -3899,13 +4156,18 @@ async def update_student_notes(
 class ForgotPasswordRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    email: EmailStr
+    email: EmailStr = Field(max_length=100)
 
 class ResetPasswordRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     token: str = Field(min_length=1, max_length=128)
     new_password: str = Field(min_length=15, max_length=1_024)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_password_size(cls, value: str) -> str:
+        return schemas.validate_password_request_bytes(value)
 
 EMAIL_HOST = settings.email_host
 EMAIL_PORT = settings.email_port
@@ -3988,14 +4250,17 @@ def _password_reset_token_digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _password_reset_claim_digest(claim_nonce: str) -> str:
+    return hashlib.sha256(
+        b"litblog:password-reset-delivery-claim:v1\0"
+        + claim_nonce.encode("utf-8")
+    ).hexdigest()
+
+
 def _usable_password_reset_filters(raw_token: str):
     token_digest = _password_reset_token_digest(raw_token)
     return (
-        or_(
-            models.PasswordReset.token == token_digest,
-            # Preserve outstanding links created before the digest migration.
-            models.PasswordReset.token == raw_token,
-        ),
+        models.PasswordReset.token == token_digest,
         models.PasswordReset.expires_at > _utc_now_naive(),
         models.PasswordReset.used.is_(False),
         models.PasswordReset.delivery_status == PASSWORD_RESET_DELIVERED,
@@ -4012,6 +4277,7 @@ def _queue_password_reset(db: Session, user: models.User) -> None:
         models.PasswordReset.used: False,
         models.PasswordReset.delivery_status: PASSWORD_RESET_PENDING,
         models.PasswordReset.delivery_attempted_at: None,
+        models.PasswordReset.delivery_claim_digest: None,
     }
 
     try:
@@ -4045,7 +4311,7 @@ def _queue_password_reset(db: Session, user: models.User) -> None:
         db.rollback()
 
 
-def _claim_password_reset_delivery() -> tuple[int, str] | None:
+def _claim_password_reset_delivery() -> tuple[int, str, str] | None:
     db = SessionLocal()
     try:
         now = _utc_now_naive()
@@ -4072,6 +4338,27 @@ def _claim_password_reset_delivery() -> tuple[int, str] | None:
         ]
 
         for reset_id in candidate_ids:
+            locked_reset = (
+                db.query(models.PasswordReset, models.User)
+                .join(
+                    models.User,
+                    models.User.id == models.PasswordReset.user_id,
+                )
+                .filter(models.PasswordReset.id == reset_id, claimable)
+                .with_for_update(of=models.User)
+                .first()
+            )
+            if locked_reset is None:
+                db.rollback()
+                continue
+            reset_request, user = locked_reset
+            if user.disabled_at is not None:
+                invalidate_password_reset_requests(db, user_id=user.id)
+                db.commit()
+                continue
+
+            claim_nonce = secrets.token_urlsafe(32)
+            claim_digest = _password_reset_claim_digest(claim_nonce)
             claimed = (
                 db.query(models.PasswordReset)
                 .filter(models.PasswordReset.id == reset_id, claimable)
@@ -4079,6 +4366,7 @@ def _claim_password_reset_delivery() -> tuple[int, str] | None:
                     {
                         models.PasswordReset.delivery_status: PASSWORD_RESET_PROCESSING,
                         models.PasswordReset.delivery_attempted_at: now,
+                        models.PasswordReset.delivery_claim_digest: claim_digest,
                     },
                     synchronize_session=False,
                 )
@@ -4087,22 +4375,10 @@ def _claim_password_reset_delivery() -> tuple[int, str] | None:
                 db.rollback()
                 continue
 
+            claimed_reset_id = reset_request.id
+            claimed_email = user.email
             db.commit()
-            reset_request = (
-                db.query(models.PasswordReset)
-                .filter(models.PasswordReset.id == reset_id)
-                .first()
-            )
-            if reset_request is None:
-                return None
-            user = db.query(models.User).filter(models.User.id == reset_request.user_id).first()
-            if user is None:
-                reset_request.delivery_status = PASSWORD_RESET_FAILED
-                reset_request.token = None
-                reset_request.expires_at = None
-                db.commit()
-                continue
-            return reset_request.id, user.email
+            return claimed_reset_id, claimed_email, claim_nonce
         return None
     except Exception:
         db.rollback()
@@ -4111,31 +4387,70 @@ def _claim_password_reset_delivery() -> tuple[int, str] | None:
         db.close()
 
 
-def _complete_password_reset_delivery(reset_id: int, raw_token: str, delivered: bool) -> None:
+def _complete_password_reset_delivery(
+    reset_id: int,
+    claim_nonce: str,
+    raw_token: str,
+    delivered: bool,
+) -> bool:
     db = SessionLocal()
     try:
-        reset_request = (
+        claim_digest = _password_reset_claim_digest(claim_nonce)
+        locked_reset = (
+            db.query(models.PasswordReset, models.User)
+            .join(
+                models.User,
+                models.User.id == models.PasswordReset.user_id,
+            )
+            .filter(
+                models.PasswordReset.id == reset_id,
+                models.PasswordReset.delivery_status == PASSWORD_RESET_PROCESSING,
+                models.PasswordReset.delivery_claim_digest == claim_digest,
+            )
+            .with_for_update(of=models.User)
+            .first()
+        )
+        if locked_reset is None:
+            return False
+        _reset_request, user = locked_reset
+        if user.disabled_at is not None:
+            invalidate_password_reset_requests(db, user_id=user.id)
+            db.commit()
+            return False
+
+        if delivered:
+            completion_values = {
+                models.PasswordReset.token: _password_reset_token_digest(raw_token),
+                models.PasswordReset.expires_at: (
+                    _utc_now_naive() + PASSWORD_RESET_LIFETIME
+                ),
+                models.PasswordReset.delivery_status: PASSWORD_RESET_DELIVERED,
+                models.PasswordReset.delivery_claim_digest: None,
+            }
+        else:
+            completion_values = {
+                models.PasswordReset.token: None,
+                models.PasswordReset.expires_at: None,
+                models.PasswordReset.delivery_status: PASSWORD_RESET_FAILED,
+                models.PasswordReset.delivery_claim_digest: None,
+            }
+        completed = (
             db.query(models.PasswordReset)
             .filter(
                 models.PasswordReset.id == reset_id,
                 models.PasswordReset.delivery_status == PASSWORD_RESET_PROCESSING,
+                models.PasswordReset.delivery_claim_digest == claim_digest,
             )
-            .first()
+            .update(completion_values, synchronize_session=False)
         )
-        if reset_request is None:
-            return
-
-        if delivered:
-            reset_request.token = _password_reset_token_digest(raw_token)
-            reset_request.expires_at = _utc_now_naive() + PASSWORD_RESET_LIFETIME
-            reset_request.delivery_status = PASSWORD_RESET_DELIVERED
-        else:
-            reset_request.token = None
-            reset_request.expires_at = None
-            reset_request.delivery_status = PASSWORD_RESET_FAILED
+        if completed != 1:
+            db.rollback()
+            return False
         db.commit()
+        return True
     except Exception:
         db.rollback()
+        return False
     finally:
         db.close()
 
@@ -4145,10 +4460,15 @@ def _dispatch_password_reset_emails_once(batch_size: int = 100) -> None:
         claimed = _claim_password_reset_delivery()
         if claimed is None:
             return
-        reset_id, email = claimed
+        reset_id, email, claim_nonce = claimed
         raw_token = secrets.token_urlsafe(32)
         delivered = send_password_reset_email(email, raw_token)
-        _complete_password_reset_delivery(reset_id, raw_token, delivered)
+        _complete_password_reset_delivery(
+            reset_id,
+            claim_nonce,
+            raw_token,
+            delivered,
+        )
 
 
 def _password_reset_worker_loop() -> None:
@@ -4186,9 +4506,21 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
     generic_response = {
         "message": "If an account exists, password reset instructions will be sent."
     }
+    try:
+        normalized_email = normalize_email(str(request.email))
+    except (TypeError, ValueError):
+        return generic_response
     
     # Find user by email
-    user = db.query(models.User).filter(models.User.email == request.email).first()
+    user = (
+        db.query(models.User)
+        .filter(
+            models.User.email == normalized_email,
+            models.User.disabled_at.is_(None),
+        )
+        .with_for_update(of=models.User)
+        .first()
+    )
     
     if not user:
         db.commit()
@@ -4197,6 +4529,28 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
     _queue_password_reset(db, user)
     
     return generic_response
+
+
+def _lock_usable_password_reset_user(
+    db: Session,
+    *,
+    password_reset_id: int,
+    raw_token: str,
+) -> models.User | None:
+    return (
+        db.query(models.User)
+        .join(
+            models.PasswordReset,
+            models.PasswordReset.user_id == models.User.id,
+        )
+        .filter(
+            models.PasswordReset.id == password_reset_id,
+            *_usable_password_reset_filters(raw_token),
+            models.User.disabled_at.is_(None),
+        )
+        .with_for_update(of=models.User)
+        .first()
+    )
 
 @app.post("/api/auth/reset-password")
 def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db)):
@@ -4209,7 +4563,11 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
     # Find token in database
     password_reset_id = (
         db.query(models.PasswordReset.id)
-        .filter(*_usable_password_reset_filters(request.token))
+        .join(models.User, models.User.id == models.PasswordReset.user_id)
+        .filter(
+            *_usable_password_reset_filters(request.token),
+            models.User.disabled_at.is_(None),
+        )
         .scalar()
     )
     
@@ -4222,25 +4580,31 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
     # Hash the new password
     hashed_password = hash_password(request.new_password)
 
-    consumed_user_id = db.execute(
-        update(models.PasswordReset)
-        .where(
-            models.PasswordReset.id == password_reset_id,
-            *_usable_password_reset_filters(request.token),
-        )
-        .values(used=True)
-        .returning(models.PasswordReset.user_id)
-    ).scalar_one_or_none()
-    if consumed_user_id is None:
-        db.rollback()
-        raise HTTPException(status_code=400, detail="Invalid or expired token")
-
-    user = db.query(models.User).filter(models.User.id == consumed_user_id).first()
+    user = _lock_usable_password_reset_user(
+        db,
+        password_reset_id=password_reset_id,
+        raw_token=request.token,
+    )
     if user is None:
         db.rollback()
         raise HTTPException(status_code=400, detail="Invalid or expired token")
 
+    consumed = db.execute(
+        update(models.PasswordReset)
+        .where(
+            models.PasswordReset.id == password_reset_id,
+            models.PasswordReset.user_id == user.id,
+            *_usable_password_reset_filters(request.token),
+        )
+        .values(used=True)
+        .execution_options(synchronize_session=False)
+    )
+    if consumed.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+
     user.password = hashed_password
+    revoke_all_sessions(db, user_id=user.id)
     db.commit()
     
     return {"message": "Password reset successfully"}

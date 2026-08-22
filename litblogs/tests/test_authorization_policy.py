@@ -66,6 +66,7 @@ EXPECTED_API_ROUTES = frozenset(
         ("GET", "/api/users"),
         ("POST", "/api/assignments/{assignment_id}/submit"),
         ("POST", "/api/auth/forgot-password"),
+        ("POST", "/api/auth/change-password"),
         ("POST", "/api/auth/google-login"),
         ("POST", "/api/auth/google-signup"),
         ("POST", "/api/auth/login"),
@@ -101,6 +102,7 @@ EXPECTED_API_ROUTES = frozenset(
         ("PUT", "/api/classes/{class_id}/restore"),
         ("PUT", "/api/classes/{class_id}/students/{student_id}/notes"),
         ("PUT", "/api/user/settings"),
+        ("PUT", "/api/users/{user_id}/status"),
     }
 )
 

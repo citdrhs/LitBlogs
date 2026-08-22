@@ -9,7 +9,7 @@ const FAQ = ({ darkMode }) => {
   const faqItems = [
     {
       question: "How can I join my teacher's class?",
-      answer: "Use the provided teacher code in the sign-up menu to join the class.",
+      answer: "After signing in, open Classes, choose Join Class, and enter the six-character class code your teacher provided.",
       image: assetPath("faq1.png")
     },
     {
