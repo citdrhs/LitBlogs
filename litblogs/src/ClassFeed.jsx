@@ -22,6 +22,7 @@ import CommentThread from './components/CommentThread';
 import { formatRelativeTime, setupTimeUpdater } from './utils/timeUtils';
 import { mediaPath } from './utils/urlUtils';
 import { logoutBrowserSession } from './utils/auth';
+import { buildPostRequestPayload } from './utils/postRequestContract';
 import { openPdfViewerModal } from './components/PdfViewerModal';
 import {
   createSanitizedRichTextContainer,
@@ -2327,11 +2328,10 @@ const ClassFeed = () => {
     try {
       setLoading(true);
       
-      const postData = {
+      const postData = buildPostRequestPayload({
         title: postTitle,
-        content: content,
-        class_id: classId
-      };
+        content,
+      });
       
       let response;
       
