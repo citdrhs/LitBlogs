@@ -7,7 +7,7 @@ import Loader from './components/Loader';
 import Footer from './components/Footer';
 import { GoogleLogin } from '@react-oauth/google';
 import { useMsal } from "@azure/msal-react";
-import { loginRequest } from "./config/msalConfig";
+import { loginRequest, oauthProviderConfig } from "./config/msalConfig";
 import { FaMicrosoft } from 'react-icons/fa';
 import { resolveAppAsset } from './utils/urlUtils';
 import { fetchBrowserSession } from './utils/auth';
@@ -164,8 +164,8 @@ const SignUp = () => {
         return;
       }
 
-      // Validate access code for teachers and admins
-      if ((role === 'TEACHER' || role === 'ADMIN') && !accessCode) {
+      // Validate the teacher provisioning code.
+      if (role === 'TEACHER' && !accessCode) {
         setErrorMessage(`Please enter the ${role.toLowerCase()} access code`);
         return;
       }
@@ -227,8 +227,8 @@ const SignUp = () => {
         return;
       }
 
-      // Check if access code is provided for Teacher/Admin roles
-      if ((role === 'TEACHER' || role === 'ADMIN') && !accessCode) {
+      // Check if the teacher access code is provided.
+      if (role === 'TEACHER' && !accessCode) {
         setErrorMessage(`Please enter an access code for ${role.toLowerCase()} role`);
         return;
       }
@@ -240,9 +240,9 @@ const SignUp = () => {
       const { credential } = credentialResponse;
       
       await axios.post('/auth/google-signup', {
-          token: credential,
-          role: role,
-          accessCode: accessCode || undefined
+          idToken: credential,
+          role,
+          ...(role === 'TEACHER' ? { accessCode } : {}),
       });
       const session = await fetchBrowserSession();
       
@@ -252,9 +252,9 @@ const SignUp = () => {
       });
       setShowSuccessModal(true);
       
-    } catch (error) {
+    } catch {
       console.error('Google sign up failed');
-      setErrorMessage(error.response?.data?.detail || 'Google sign up failed. Please try again.');
+      setErrorMessage('Google sign-up failed. Please try again.');
     } finally {
       setIsLoading(false);
     }
@@ -273,8 +273,8 @@ const SignUp = () => {
         return;
       }
 
-      // Validate access code for teachers and admins
-      if ((role === 'TEACHER' || role === 'ADMIN') && !accessCode) {
+      // Validate the teacher provisioning code.
+      if (role === 'TEACHER' && !accessCode) {
         setErrorMessage(`Please enter the ${role.toLowerCase()} access code`);
         return;
       }
@@ -282,16 +282,10 @@ const SignUp = () => {
       setIsLoading(true);
       const response = await instance.loginPopup(loginRequest);
       
-      // Send token to backend with role and access code
       await axios.post('/auth/microsoft-signup', {
-        msUserData: {
-          email: response.account.username,
-          firstName: response.account.name?.split(' ')[0] || '',
-          lastName: response.account.name?.split(' ')[1] || '',
-          microsoftId: response.account.localAccountId
-        },
-        role: role,
-        accessCode: accessCode
+        idToken: response.idToken,
+        role,
+        ...(role === 'TEACHER' ? { accessCode } : {}),
       });
       
       const session = await fetchBrowserSession();
@@ -309,7 +303,7 @@ const SignUp = () => {
       } else if (error.response?.status === 400) {
         setErrorMessage("User already exists. Please sign in instead.");
       } else {
-        setErrorMessage(error.response?.data?.detail || error.message || 'Microsoft signup failed');
+        setErrorMessage('Microsoft sign-up failed. Please try again.');
       }
     } finally {
       setIsLoading(false);
@@ -546,11 +540,10 @@ const SignUp = () => {
               <option value="">Select Role</option>
               <option value="STUDENT">Student</option>
               <option value="TEACHER">Teacher</option>
-              <option value="ADMIN">Admin</option>
             </select>
           </motion.div>
 
-          {(role === 'TEACHER' || role === 'ADMIN') && (
+          {role === 'TEACHER' && (
             <div>
               <label className="block text-sm font-medium mb-2">Access Code</label>
               <input
@@ -591,20 +584,21 @@ const SignUp = () => {
         </form>
 
         {/* Divider */}
-        <div className="mt-6 mb-6 flex items-center">
+        {(oauthProviderConfig.google.enabled || oauthProviderConfig.microsoft.enabled) && <div className="mt-6 mb-6 flex items-center">
           <div className="flex-1 border-t border-gray-300 dark:border-gray-600"></div>
           <span className="mx-4 text-sm text-gray-500 dark:text-gray-400">or continue with</span>
           <div className="flex-1 border-t border-gray-300 dark:border-gray-600"></div>
-        </div>
+        </div>}
 
         {/* Social signup buttons */}
         <div className="text-center">
-          <GoogleLogin
+          {oauthProviderConfig.google.enabled && <GoogleLogin
             onSuccess={handleGoogleSignUpSuccess}
             onError={handleGoogleSignUpFailure}
             text="signup_with"
-          />
-          <button
+          />}
+          {oauthProviderConfig.microsoft.enabled && <button
+            type="button"
             onClick={handleMicrosoftSignUp}
             className="mt-4 flex items-center gap-2 w-full p-2 text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 rounded-sm transition-all duration-300"
             style={{ height: '40px' }}
@@ -615,7 +609,7 @@ const SignUp = () => {
             <div className="flex-[2] text-center pr-20 text-sm">
               <span>Sign up with Microsoft</span>
             </div>
-          </button>
+          </button>}
         </div>
 
         <div className="mt-6 text-center">
@@ -667,9 +661,7 @@ const SignUp = () => {
               <p className="mb-6">
                 {successData?.role === 'STUDENT'
                   ? "You've been successfully registered as a student. Click below to go to your class hub!"
-                  : successData?.role === 'TEACHER'
-                  ? "You've been successfully registered as a teacher. Click below to access your dashboard!"
-                  : "You've been successfully registered as an admin. Click below to access your dashboard!"}
+                  : "You've been successfully registered as a teacher. Click below to access your dashboard!"}
               </p>
               {successData?.role === 'STUDENT' ? (
                 <Link 
@@ -680,7 +672,7 @@ const SignUp = () => {
                 >
                   Go to Student Hub
                 </Link>
-              ) : successData?.role === 'TEACHER' ? (
+              ) : (
                 <Link 
                   to="/teacher-dashboard"
                   className={`block w-full p-4 text-center text-white rounded-lg ${
@@ -688,15 +680,6 @@ const SignUp = () => {
                   } transition-colors duration-300`}
                 >
                   Go to Teacher Dashboard
-                </Link>
-              ) : (
-                <Link 
-                  to="/admin-dashboard"
-                  className={`block w-full p-4 text-center text-white rounded-lg ${
-                    darkMode ? 'bg-teal-600 hover:bg-teal-500' : 'bg-blue-600 hover:bg-blue-700'
-                  } transition-colors duration-300`}
-                >
-                  Go to Admin Dashboard
                 </Link>
               )}
             </motion.div>
