@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
+import { logoutBrowserSession } from './utils/auth';
 import { assetPath } from './utils/urlUtils';
 import './LitBlogs.css'; // Import your styles
 
@@ -48,18 +49,20 @@ const LitBlogs = () => {
   }, [darkMode]);
 
   useEffect(() => {
-    const storedUserInfo = localStorage.getItem('user_info');
+    const storedUserInfo = sessionStorage.getItem('user_info');
     if (storedUserInfo) {
       setUserInfo(JSON.parse(storedUserInfo));
     }
   }, []);
 
-  const handleSignOut = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user_info');
-    localStorage.removeItem('class_info');
-    setUserInfo(null);
-    navigate('/');
+  const handleSignOut = async () => {
+    try {
+      await logoutBrowserSession();
+      setUserInfo(null);
+      navigate('/');
+    } catch {
+      window.alert('Unable to sign out. Please try again.');
+    }
   };
 
   return (

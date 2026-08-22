@@ -4,6 +4,7 @@ import { motion } from 'framer-motion';
 import axios from 'axios';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
+import { logoutBrowserSession } from './utils/auth';
 
 const AdminDashboard = () => {
   const navigate = useNavigate();
@@ -19,22 +20,12 @@ const AdminDashboard = () => {
   const [userQuery, setUserQuery] = useState('');
 
   useEffect(() => {
-    const token = localStorage.getItem('token');
-    if (!token) {
-      navigate('/sign-in');
-      return;
-    }
-
     const fetchData = async () => {
       try {
-        const config = {
-          headers: { Authorization: `Bearer ${token}` }
-        };
-
         // Fetch all users and classes
         const [usersResponse, classesResponse] = await Promise.all([
-          axios.get('/users', config),
-          axios.get('/classes', config)
+          axios.get('/users'),
+          axios.get('/classes')
         ]);
 
         setUsers(usersResponse.data);
@@ -48,21 +39,23 @@ const AdminDashboard = () => {
     };
 
     fetchData();
-  }, [navigate]);
+  }, []);
 
   useEffect(() => {
-    const storedUserInfo = localStorage.getItem('user_info');
+    const storedUserInfo = sessionStorage.getItem('user_info');
     if (storedUserInfo) {
       setUserInfo(JSON.parse(storedUserInfo));
     }
   }, []);
 
-  const handleSignOut = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user_info');
-    localStorage.removeItem('class_info');
-    setUserInfo(null);
-    navigate('/');
+  const handleSignOut = async () => {
+    try {
+      await logoutBrowserSession();
+      setUserInfo(null);
+      navigate('/');
+    } catch {
+      window.alert('Unable to sign out. Please try again.');
+    }
   };
 
   const totalUsers = users.length;

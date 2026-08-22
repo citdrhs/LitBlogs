@@ -9,7 +9,8 @@ import { GoogleLogin } from '@react-oauth/google';
 import { useMsal } from "@azure/msal-react";
 import { loginRequest } from "./config/msalConfig";
 import { FaMicrosoft } from 'react-icons/fa';
-import { apiPath, resolveAppAsset } from './utils/urlUtils';
+import { resolveAppAsset } from './utils/urlUtils';
+import { fetchBrowserSession } from './utils/auth';
 
 const SignUp = () => {
   const { instance } = useMsal();
@@ -189,7 +190,7 @@ const SignUp = () => {
       const username = email.split('@')[0] + Math.floor(Math.random() * 1000);
 
       // Send registration data to backend with correct field names
-      const response = await axios.post('/auth/register', {
+      await axios.post('/auth/register', {
         username: username,
         email: email,
         password: password,
@@ -199,25 +200,16 @@ const SignUp = () => {
         access_code: accessCode // Changed from accessCode to access_code
       });
 
-      // Handle successful registration
-      localStorage.setItem('token', response.data.token);
-      const userInfo = {
-        role: response.data.role,
-        userId: response.data.id,
-        username: response.data.username,
-        firstName: response.data.first_name,
-      };
-      localStorage.setItem('user_info', JSON.stringify(userInfo));
+      const session = await fetchBrowserSession();
 
       // Show success modal
       setSuccessData({
-        role: response.data.role,
-        classInfo: response.data.class_info
+        role: session.role
       });
       setShowSuccessModal(true);
 
     } catch (error) {
-      console.error('Registration error:', error);
+      console.error('Registration failed');
       // Handle error message properly
       const errorMessage = error.response?.data?.detail || 'Registration failed. Please try again.';
       setErrorMessage(typeof errorMessage === 'object' ? errorMessage.msg : errorMessage);
@@ -247,65 +239,29 @@ const SignUp = () => {
       // Get the ID token from the Google response
       const { credential } = credentialResponse;
       
-      // Send the token to your backend for verification
-      const response = await fetch(apiPath('/auth/google-signup'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ 
+      await axios.post('/auth/google-signup', {
           token: credential,
           role: role,
           accessCode: accessCode || undefined
-        }),
-        credentials: 'include'
       });
-      
-      const data = await response.json();
-      
-      if (!response.ok) {
-        throw new Error(data.detail || 'Failed to sign up with Google');
-      }
-      
-      // Store user info in localStorage
-      localStorage.setItem('token', data.token);
-      
-      // Store user info
-      const userInfo = {
-        role: data.role,
-        userId: data.id,
-        username: data.username,
-        firstName: data.first_name,
-      };
-      localStorage.setItem('user_info', JSON.stringify(userInfo));
-      
-      // For students, store class info
-      if (data.role === 'STUDENT' && data.class_info) {
-        const classInfo = {
-          id: data.class_info.id,
-          name: data.class_info.name,
-          code: data.class_info.access_code
-        };
-        localStorage.setItem('class_info', JSON.stringify(classInfo));
-      }
+      const session = await fetchBrowserSession();
       
       // Show success modal with user role information
       setSuccessData({
-        role: data.role,
-        classInfo: data.class_info
+        role: session.role
       });
       setShowSuccessModal(true);
       
     } catch (error) {
-      console.error('Google sign up failed:', error);
-      setErrorMessage(error.message || 'Google sign up failed. Please try again.');
+      console.error('Google sign up failed');
+      setErrorMessage(error.response?.data?.detail || 'Google sign up failed. Please try again.');
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleGoogleSignUpFailure = (error) => {
-    console.error('Google sign up error:', error);
+  const handleGoogleSignUpFailure = () => {
+    console.error('Google sign up failed');
     setErrorMessage('Google sign up failed. Please try again.');
   };
 
@@ -327,7 +283,7 @@ const SignUp = () => {
       const response = await instance.loginPopup(loginRequest);
       
       // Send token to backend with role and access code
-      const backendResponse = await axios.post('/auth/microsoft-signup', {
+      await axios.post('/auth/microsoft-signup', {
         msUserData: {
           email: response.account.username,
           firstName: response.account.name?.split(' ')[0] || '',
@@ -338,24 +294,16 @@ const SignUp = () => {
         accessCode: accessCode
       });
       
-      // Handle successful signup
-      localStorage.setItem('token', backendResponse.data.token);
-      const userInfo = {
-        role: backendResponse.data.role,
-        userId: backendResponse.data.id,
-        username: backendResponse.data.username,
-        firstName: backendResponse.data.first_name,
-      };
-      localStorage.setItem('user_info', JSON.stringify(userInfo));
+      const session = await fetchBrowserSession();
 
       // Show success modal with role info
       setSuccessData({
-        role: backendResponse.data.role
+        role: session.role
       });
       setShowSuccessModal(true);
       
     } catch (error) {
-      console.error('Microsoft signup error:', error);
+      console.error('Microsoft signup failed');
       if (error.response?.status === 403) {
         setErrorMessage("Invalid access code");
       } else if (error.response?.status === 400) {

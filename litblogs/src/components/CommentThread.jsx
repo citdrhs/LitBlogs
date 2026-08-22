@@ -9,7 +9,6 @@ const CommentThread = ({
   comment, 
   classId, 
   postId, 
-  token, 
   onReply, 
   onLike, 
   depth = 0, 
@@ -43,10 +42,7 @@ const CommentThread = ({
     
     setLoadingMore(true);
     try {
-      const response = await axios.get(
-        `/comments/${comment.id}/replies?skip=${comment.replies.length}`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
+      const response = await axios.get(`/comments/${comment.id}/replies?skip=${comment.replies.length}`);
       
       // Update comment with new replies
       comment.replies = [...comment.replies, ...response.data.replies];
@@ -80,8 +76,7 @@ const CommentThread = ({
       // Call API
       const response = await axios.post(
         `/comments/${comment.id}/like`,
-        {}, 
-        { headers: { Authorization: `Bearer ${token}` } }
+        {}
       );
       
       // Update with actual data from server
@@ -117,8 +112,7 @@ const CommentThread = ({
         {
           content: replyText,
           parent_id: comment.id
-        },
-        { headers: { Authorization: `Bearer ${token}` } }
+        }
       );
       
       // Add the new reply to the comment
@@ -318,7 +312,6 @@ const CommentThread = ({
                           comment={reply}
                           classId={classId}
                           postId={postId}
-                          token={token}
                           onReply={onReply}
                           onLike={onLike}
                           depth={depth + 1}

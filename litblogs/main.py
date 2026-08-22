@@ -16,13 +16,12 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 from typing import List
-from urllib.parse import urlsplit
 
 import bleach
 import jwt
 import uvicorn
 from bleach.css_sanitizer import CSSSanitizer
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import OAuth2PasswordBearer
@@ -38,6 +37,7 @@ from sqlalchemy.orm import Session
 import models
 import schemas
 from auth_security import (
+    csrf_token_matches,
     decode_access_token,
     hash_password,
     issue_access_token,
@@ -58,24 +58,12 @@ except Exception:
 def _should_reset_database_on_startup() -> bool:
     return settings.reset_database_on_startup
 
-def _origin_from_url(url: str | None) -> str | None:
-    if not url:
-        return None
-
-    parsed = urlsplit(url)
-    if not parsed.scheme or not parsed.netloc:
-        return None
-
-    return f"{parsed.scheme}://{parsed.netloc}"
-
-
 def _secret_value(value) -> str | None:
     return value.get_secret_value() if value is not None else None
 
 FRONTEND_URL = (settings.frontend_url or "https://drhscit.org/dren").rstrip("/")
 MICROSOFT_REDIRECT_URI = (settings.microsoft_redirect_uri or FRONTEND_URL).rstrip("/")
 CORS_ALLOWED_ORIGINS = list(settings.cors_allowed_origins)
-FRONTEND_ORIGIN = _origin_from_url(FRONTEND_URL)
 VAPID_PUBLIC_KEY = settings.vapid_public_key
 VAPID_PRIVATE_KEY = settings.vapid_private_key.get_secret_value() if settings.vapid_private_key else ""
 VAPID_SUBJECT = settings.vapid_subject
@@ -85,11 +73,8 @@ PUSH_REMINDER_INTERVAL_SECONDS = settings.push_reminder_interval_seconds
 _push_scheduler_stop_event = threading.Event()
 _push_scheduler_thread: threading.Thread | None = None
 
-if FRONTEND_ORIGIN and FRONTEND_ORIGIN not in CORS_ALLOWED_ORIGINS:
-    CORS_ALLOWED_ORIGINS.append(FRONTEND_ORIGIN)
-
-if not CORS_ALLOWED_ORIGINS:
-    CORS_ALLOWED_ORIGINS = ["https://drhscit.org"]
+if "*" in CORS_ALLOWED_ORIGINS:
+    raise RuntimeError("CORS_ALLOWED_ORIGINS must not contain a wildcard when credentials are enabled")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -193,6 +178,17 @@ def _sync_admin_flag(db: Session, user: models.User) -> models.User:
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+
+class SessionMetadataResponse(BaseModel):
+    user_id: int
+    username: str
+    first_name: str | None = None
+    last_name: str | None = None
+    role: str
+    is_admin: bool
+
+
 class UserSettingsUpdateRequest(BaseModel):
     darkMode: bool | None = None
     reducedMotion: bool | None = None
@@ -227,7 +223,12 @@ DEFAULT_USER_SETTINGS = {
     "editorFontSize": "medium",
 }
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+DEFAULT_SESSION_COOKIE_NAME = "litblog-session"
+DEFAULT_CSRF_COOKIE_NAME = "litblog-csrf"
+CSRF_HEADER_NAME = "X-CSRF-Token"
+UNSAFE_HTTP_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token", auto_error=False)
 
 def _normalize_editor_font_size(value: str | None) -> str:
     normalized = str(value or "").lower()
@@ -464,8 +465,64 @@ def _stop_push_scheduler() -> None:
 
 # ---------- Authentication Endpoints ----------
 
-@app.post("/api/auth/register")
-async def register(user_data: schemas.UserCreate, db: Session = Depends(get_db)):
+
+def _session_cookie_name() -> str:
+    return settings.session_cookie_name or DEFAULT_SESSION_COOKIE_NAME
+
+
+def _csrf_cookie_name() -> str:
+    return settings.csrf_cookie_name or DEFAULT_CSRF_COOKIE_NAME
+
+
+def _session_metadata(user: models.User) -> dict:
+    return {
+        "user_id": user.id,
+        "username": user.username,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "role": user.role.value,
+        "is_admin": bool(user.is_admin),
+    }
+
+
+def _set_browser_session(response: Response, user: models.User) -> None:
+    max_age = settings.access_token_expire_minutes * 60
+    cookie_options = {
+        "max_age": max_age,
+        "path": "/",
+        "secure": settings.session_cookie_secure,
+        "samesite": "strict",
+    }
+    response.set_cookie(
+        _session_cookie_name(),
+        create_access_token(data={"sub": str(user.id)}),
+        httponly=True,
+        **cookie_options,
+    )
+    response.set_cookie(
+        _csrf_cookie_name(),
+        secrets.token_urlsafe(32),
+        httponly=False,
+        **cookie_options,
+    )
+
+
+def _clear_browser_session(response: Response) -> None:
+    common_options = {
+        "path": "/",
+        "secure": settings.session_cookie_secure,
+        "samesite": "strict",
+    }
+    response.delete_cookie(_session_cookie_name(), httponly=True, **common_options)
+    response.delete_cookie(_csrf_cookie_name(), httponly=False, **common_options)
+
+
+@app.post("/api/auth/register", response_model=SessionMetadataResponse)
+async def register(
+    user_data: schemas.UserCreate,
+    response: Response,
+    db: Session = Depends(get_db),
+):
     """Register a new user"""
     # Check if email already exists
     existing_user = db.query(models.User).filter(models.User.email == user_data.email).first()
@@ -529,18 +586,8 @@ async def register(user_data: schemas.UserCreate, db: Session = Depends(get_db))
     db.commit()
     db.refresh(new_user)
     
-    # Create access token
-    access_token = create_access_token(data={"sub": str(new_user.id)})
-    
-    return {
-        "id": new_user.id,
-        "username": new_user.username,
-        "email": new_user.email,
-        "first_name": new_user.first_name,
-        "last_name": new_user.last_name,
-        "role": new_user.role.value,
-        "token": access_token
-    }
+    _set_browser_session(response, new_user)
+    return _session_metadata(new_user)
 
 def create_access_token(data: dict):
     return issue_access_token(data.get("sub"), settings=settings)
@@ -571,25 +618,67 @@ def _persist_password_upgrade_if_current(
         db.rollback()
         raise
 
-async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+async def get_current_user(
+    request: Request,
+    bearer_token: str | None = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    cookie_token = request.cookies.get(_session_cookie_name())
+    authorization_header = request.headers.get("Authorization")
+    if cookie_token and authorization_header:
+        raise credentials_exception
+    if authorization_header and not bearer_token:
+        raise credentials_exception
+
+    token = bearer_token or cookie_token
+    if not token:
+        raise credentials_exception
     try:
         payload = decode_access_token(token, settings=settings)
         user_id = int(payload["sub"])
     except (InvalidTokenError, TypeError, ValueError) as exc:
         raise credentials_exception from exc
+
+    if cookie_token and request.method.upper() in UNSAFE_HTTP_METHODS:
+        if not csrf_token_matches(
+            request.headers.get(CSRF_HEADER_NAME),
+            request.cookies.get(_csrf_cookie_name()),
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="CSRF validation failed",
+            )
     
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if user is None:
         raise credentials_exception
     return user
 
-@app.post("/api/auth/login")
-async def login(login_data: LoginRequest, db: Session = Depends(get_db)):
+@app.get("/api/auth/session", response_model=SessionMetadataResponse)
+async def get_browser_session(current_user: models.User = Depends(get_current_user)):
+    return _session_metadata(current_user)
+
+
+@app.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(
+    response: Response,
+    current_user: models.User = Depends(get_current_user),
+):
+    del current_user
+    _clear_browser_session(response)
+
+
+@app.post("/api/auth/login", response_model=SessionMetadataResponse)
+async def login(
+    login_data: LoginRequest,
+    response: Response,
+    db: Session = Depends(get_db),
+):
     user = db.query(models.User).filter(models.User.email == login_data.email).first()
     
     if not user:
@@ -625,38 +714,15 @@ async def login(login_data: LoginRequest, db: Session = Depends(get_db)):
                 detail="Invalid email or password",
             )
     
-    # Create access token with user ID
-    access_token = create_access_token(data={"sub": str(user.id)})
+    _set_browser_session(response, user)
+    return _session_metadata(user)
 
-    # Get class info for students
-    class_info = None
-    if user.role == models.UserRole.STUDENT:
-        enrollment = db.query(models.ClassEnrollment).filter(
-            models.ClassEnrollment.student_id == user.id
-        ).first()
-        if enrollment:
-            class_ = db.query(models.Class).filter(
-                models.Class.id == enrollment.class_id
-            ).first()
-            class_info = {
-                "id": class_.id,
-                "name": class_.name,
-                "access_code": class_.access_code
-            }
-
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "role": user.role.value,
-        "class_info": class_info,
-        "user_id": user.id,
-        "username": user.username,
-        "email": user.email,
-        "is_admin": user.is_admin
-    }
-
-@app.post("/api/auth/google-signup")
-async def google_signup(token_data: dict, db: Session = Depends(get_db)):
+@app.post("/api/auth/google-signup", response_model=SessionMetadataResponse)
+async def google_signup(
+    token_data: dict,
+    response: Response,
+    db: Session = Depends(get_db),
+):
     """Handle Google Sign Up"""
     try:        
         # Get the credential - check both possible locations
@@ -726,7 +792,6 @@ async def google_signup(token_data: dict, db: Session = Depends(get_db)):
                     
                     idinfo = decoded
                 except Exception as jwt_error:
-                    print(f"JWT decode error: {str(jwt_error)}")
                     raise e from jwt_error  # Re-raise the original error if this fails
             else:
                 raise  # Re-raise the original error for other issues
@@ -741,17 +806,8 @@ async def google_signup(token_data: dict, db: Session = Depends(get_db)):
         user = db.query(models.User).filter(models.User.email == idinfo['email']).first()
         if user:
             user = _sync_admin_flag(db, user)
-            # Generate token for existing user
-            access_token = create_access_token(data={"sub": str(user.id)})
-            return {
-                "id": user.id,
-                "email": user.email,
-                "first_name": user.first_name,
-                "last_name": user.last_name,
-                "role": user.role,
-                "token": access_token,
-                "is_admin": user.is_admin
-            }
+            _set_browser_session(response, user)
+            return _session_metadata(user)
 
         # Create new user
         username = idinfo['email'].split('@')[0]
@@ -775,34 +831,28 @@ async def google_signup(token_data: dict, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(new_user)
 
-        # Generate token for new user
-        access_token = create_access_token(data={"sub": str(new_user.id)})
-        
-        return {
-            "id": new_user.id,
-            "email": new_user.email,
-            "first_name": new_user.first_name,
-            "last_name": new_user.last_name,
-            "role": new_user.role,
-            "token": access_token,
-            "is_admin": new_user.is_admin
-        }
+        _set_browser_session(response, new_user)
+        return _session_metadata(new_user)
 
-    except ValueError as e:
-        print(f"Google signup error: {str(e)}")
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="External authentication failed",
+        ) from exc
+    except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to verify Google token: {str(e)}"
-        ) from e
-    except Exception as e:
-        print(f"Unexpected error during Google signup: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An unexpected error occurred: {str(e)}"
-        ) from e
+            detail="External authentication failed",
+        ) from exc
 
-@app.post("/api/auth/google-login")
-async def google_login(token_data: dict, db: Session = Depends(get_db)):
+@app.post("/api/auth/google-login", response_model=SessionMetadataResponse)
+async def google_login(
+    token_data: dict,
+    response: Response,
+    db: Session = Depends(get_db),
+):
     """Process Google login - now with existence check"""
     try:
         # Extract the token
@@ -838,7 +888,6 @@ async def google_login(token_data: dict, db: Session = Depends(get_db)):
                     
                     idinfo = decoded
                 except Exception as jwt_error:
-                    print(f"JWT decode error: {str(jwt_error)}")
                     raise e from jwt_error  # Re-raise the original error if this fails
             else:
                 raise  # Re-raise the original error for other issues
@@ -856,48 +905,29 @@ async def google_login(token_data: dict, db: Session = Depends(get_db)):
                 detail="User not found. Please sign up and choose a role first."
             )
         
-        # Generate token
-        access_token = create_access_token(data={"sub": str(user.id)})
+        user = _sync_admin_flag(db, user)
+        _set_browser_session(response, user)
+        return _session_metadata(user)
         
-        # Get class info for students
-        class_info = None
-        if user.role == models.UserRole.STUDENT:
-            enrollment = db.query(models.ClassEnrollment).filter(
-                models.ClassEnrollment.student_id == user.id
-            ).first()
-            if enrollment:
-                class_ = db.query(models.Class).filter(
-                    models.Class.id == enrollment.class_id
-                ).first()
-                if class_:
-                    class_info = {
-                        "id": class_.id,
-                        "name": class_.name,
-                        "access_code": class_.access_code
-                    }
-        
-        return {
-            "access_token": access_token,
-            "token_type": "bearer",
-            "role": user.role.value,
-            "id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-            "is_admin": user.is_admin,
-            "class_info": class_info
-        }
-        
-    except Exception as e:
-        print(f"Google login error: {str(e)}")
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="External authentication failed",
+        ) from exc
+    except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to process Google login: {str(e)}"
-        ) from e
+            detail="External authentication failed",
+        ) from exc
 
-@app.post("/api/auth/microsoft-login")
-async def microsoft_login(microsoft_data: dict, db: Session = Depends(get_db)):
+@app.post("/api/auth/microsoft-login", response_model=SessionMetadataResponse)
+async def microsoft_login(
+    microsoft_data: dict,
+    response: Response,
+    db: Session = Depends(get_db),
+):
     """Process Microsoft login"""
     try:
         # Extract user info from the Microsoft data
@@ -915,54 +945,28 @@ async def microsoft_login(microsoft_data: dict, db: Session = Depends(get_db)):
             )
         
         user = _sync_admin_flag(db, user)
-
-        # Generate token
-        access_token = create_access_token(data={"sub": str(user.id)})
+        _set_browser_session(response, user)
+        return _session_metadata(user)
         
-        # Get class info for students
-        class_info = None
-        if user.role == models.UserRole.STUDENT:
-            enrollment = db.query(models.ClassEnrollment).filter(
-                models.ClassEnrollment.student_id == user.id
-            ).first()
-            if enrollment:
-                class_ = db.query(models.Class).filter(
-                    models.Class.id == enrollment.class_id
-                ).first()
-                if class_:
-                    class_info = {
-                        "id": class_.id,
-                        "name": class_.name,
-                        "access_code": class_.access_code
-                    }
-        
-        return {
-            "access_token": access_token,
-            "token_type": "bearer",
-            "role": user.role.value,
-            "id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-            "is_admin": user.is_admin,
-            "class_info": class_info
-        }
-        
-    except Exception as e:
-        print(f"Microsoft login error: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to process Microsoft login: {str(e)}"
-        ) from e
+            detail="External authentication failed",
+        ) from exc
 
 # Add these constants at the top with your other constants
 MS_CLIENT_ID = settings.microsoft_client_id
 MS_CLIENT_SECRET = _secret_value(settings.microsoft_client_secret)
 MS_AUTHORITY = f"https://login.microsoftonline.com/{settings.microsoft_tenant_id or 'common'}"
 
-@app.post("/api/auth/microsoft-token")
-async def get_microsoft_token(request_data: dict, db: Session = Depends(get_db)):
+@app.post("/api/auth/microsoft-token", response_model=SessionMetadataResponse)
+async def get_microsoft_token(
+    request_data: dict,
+    response: Response,
+    db: Session = Depends(get_db),
+):
     """Exchange authorization code for tokens and handle signup"""
     try:
         auth_code = request_data.get('auth_code')
@@ -986,12 +990,12 @@ async def get_microsoft_token(request_data: dict, db: Session = Depends(get_db))
         if "error" in result:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Failed to get token: {result.get('error_description')}"
+                detail="External authentication failed",
             )
 
         # Get user info from Microsoft Graph
-        access_token = result['access_token']
-        headers = {'Authorization': f'Bearer {access_token}'}
+        provider_access_token = result['access_token']
+        headers = {'Authorization': f'Bearer {provider_access_token}'}
         graph_response = requests.get(
             'https://graph.microsoft.com/v1.0/me',
             headers=headers
@@ -1050,28 +1054,24 @@ async def get_microsoft_token(request_data: dict, db: Session = Depends(get_db))
             db.commit()
             db.refresh(user)
 
-        # Generate our app's token
-        access_token = create_access_token(data={"sub": str(user.id)})
-        
-        return {
-            "access_token": access_token,
-            "token_type": "bearer",
-            "user_id": user.id,
-            "role": user.role,
-            "username": user.username,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-            "is_admin": user.is_admin
-        }
+        user = _sync_admin_flag(db, user)
+        _set_browser_session(response, user)
+        return _session_metadata(user)
 
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to process Microsoft signup: {str(e)}"
-        ) from e
+            detail="External authentication failed",
+        ) from exc
 
-@app.post("/api/auth/microsoft-signup", response_model=schemas.UserResponse)
-async def microsoft_signup(microsoft_data: dict, db: Session = Depends(get_db)):
+@app.post("/api/auth/microsoft-signup", response_model=SessionMetadataResponse)
+async def microsoft_signup(
+    microsoft_data: dict,
+    response: Response,
+    db: Session = Depends(get_db),
+):
     """Process Microsoft signup"""
     try:
         # Extract user info from the Microsoft data
@@ -1130,21 +1130,9 @@ async def microsoft_signup(microsoft_data: dict, db: Session = Depends(get_db)):
             db.commit()
             db.refresh(existing_user)
             
-            # Generate token for the existing user
-            access_token = create_access_token(data={"sub": str(existing_user.id)})
-            
-            # Return user data
-            return {
-                "id": existing_user.id,
-                "username": existing_user.username,
-                "email": existing_user.email,
-                "first_name": existing_user.first_name,
-                "last_name": existing_user.last_name,
-                "role": existing_user.role,
-                "token": access_token,
-                "is_admin": _sync_admin_flag(db, existing_user).is_admin,
-                "created_at": existing_user.created_at
-            }
+            existing_user = _sync_admin_flag(db, existing_user)
+            _set_browser_session(response, existing_user)
+            return _session_metadata(existing_user)
         
         # Create new user
         username = user_email.split('@')[0] + str(random.randint(1000, 9999))
@@ -1168,30 +1156,17 @@ async def microsoft_signup(microsoft_data: dict, db: Session = Depends(get_db)):
         db.add(new_user)
         db.commit()
         db.refresh(new_user)
+
+        _set_browser_session(response, new_user)
+        return _session_metadata(new_user)
         
-        # Generate token for the new user
-        access_token = create_access_token(data={"sub": str(new_user.id)})
-        
-        # Return user data
-        return {
-            "id": new_user.id,
-            "username": new_user.username,
-            "email": new_user.email,
-            "first_name": new_user.first_name,
-            "last_name": new_user.last_name,
-            "role": new_user.role,
-            "token": access_token,
-            "is_admin": new_user.is_admin,
-            "created_at": new_user.created_at
-        }
-        
-    except Exception as e:
-        # Log the full error for debugging
-        print(f"Microsoft signup error: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to process Microsoft sign-up: {str(e)}"
-        ) from e
+            detail="External authentication failed",
+        ) from exc
 
 @app.get("/api/user/id/{user_id}")
 async def get_user_info(

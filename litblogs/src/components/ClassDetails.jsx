@@ -96,7 +96,7 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
     : 'bg-blue-500/20 text-blue-700 border border-blue-200';
 
   useEffect(() => {
-    const storedUserInfo = localStorage.getItem('user_info');
+    const storedUserInfo = sessionStorage.getItem('user_info');
     if (storedUserInfo) {
       setUserInfo(JSON.parse(storedUserInfo));
     }
@@ -106,11 +106,8 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
     setActiveTab(initialTab || 'Overview');
   }, [classData.id, initialTab]);
 
-  const refreshAssignments = async (token) => {
-    const assignmentsResponse = await axios.get(
-      `/classes/${classData.id}/assignments`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
+  const refreshAssignments = async () => {
+    const assignmentsResponse = await axios.get(`/classes/${classData.id}/assignments`);
     setAssignments(assignmentsResponse.data || []);
   };
 
@@ -141,44 +138,24 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
   useEffect(() => {
     const fetchClassDetails = async () => {
       try {
-        const token = localStorage.getItem('token');
-        const response = await axios.get(
-          `/classes/${classData.id}/details`,
-          {
-            headers: { Authorization: `Bearer ${token}` }
-          }
-        );
+        const response = await axios.get(`/classes/${classData.id}/details`);
         setClassDetails(response.data);
         setStudentCount(response.data.enrollment_count || 0);
         setLoading(false);
         
         // Fetch students enrolled in the class
-        const enrollmentResponse = await axios.get(
-          `/classes/${classData.id}/students`,
-          {
-            headers: { Authorization: `Bearer ${token}` }
-          }
-        );
+        const enrollmentResponse = await axios.get(`/classes/${classData.id}/students`);
         setStudents(enrollmentResponse.data);
         setStudentCount(enrollmentResponse.data.length);
         
         // Fetch posts for this class
-        const postsResponse = await axios.get(
-          `/classes/${classData.id}/posts`,
-          {
-            headers: { Authorization: `Bearer ${token}` }
-          }
-        );
+        const postsResponse = await axios.get(`/classes/${classData.id}/posts`);
         setPosts(postsResponse.data);
         setPostCount(postsResponse.data.length);
 
         const [assignmentsResponse, analyticsResponse] = await Promise.all([
-          axios.get(`/classes/${classData.id}/assignments`, {
-            headers: { Authorization: `Bearer ${token}` }
-          }),
-          axios.get(`/classes/${classData.id}/analytics`, {
-            headers: { Authorization: `Bearer ${token}` }
-          })
+          axios.get(`/classes/${classData.id}/assignments`),
+          axios.get(`/classes/${classData.id}/analytics`)
         ]);
         setAssignments(assignmentsResponse.data || []);
         setAnalytics(analyticsResponse.data || null);
@@ -214,7 +191,6 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
   const handleSaveAssignment = async () => {
     try {
       setSavingAssignment(true);
-      const token = localStorage.getItem('token');
       const serializedDueDate = serializeAssignmentDueDate(assignmentForm.due_date);
       const payload = {
         title: assignmentForm.title,
@@ -227,22 +203,16 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
       if (editingAssignmentId) {
         await axios.put(
           `/classes/${classData.id}/assignments/${editingAssignmentId}`,
-          payload,
-          {
-            headers: { Authorization: `Bearer ${token}` }
-          }
+          payload
         );
       } else {
         await axios.post(
           `/classes/${classData.id}/assignments`,
-          payload,
-          {
-            headers: { Authorization: `Bearer ${token}` }
-          }
+          payload
         );
       }
 
-      await refreshAssignments(token);
+      await refreshAssignments();
       resetAssignmentForm();
     } catch (error) {
       setError(error.response?.data?.detail || 'Failed to save assignment');
@@ -254,11 +224,7 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
 
   const loadAssignmentSubmissions = async (assignmentId) => {
     try {
-      const token = localStorage.getItem('token');
-      const response = await axios.get(
-        `/classes/${classData.id}/assignments/${assignmentId}/submissions`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
+      const response = await axios.get(`/classes/${classData.id}/assignments/${assignmentId}/submissions`);
       setAssignmentSubmissions((prev) => ({
         ...prev,
         [assignmentId]: response.data

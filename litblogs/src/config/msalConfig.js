@@ -10,7 +10,7 @@ export const msalConfig = {
     navigateToLoginRequestUrl: true
   },
   cache: {
-    cacheLocation: "sessionStorage",
+    cacheLocation: "memoryStorage",
     storeAuthStateInCookie: false,
   },
   system: {
