@@ -60,7 +60,6 @@ describe("third-party privacy policy", () => {
       "autolink",
       "charmap",
       "code",
-      "emoticons",
       "fullscreen",
       "help",
       "image",
@@ -82,6 +81,14 @@ describe("third-party privacy policy", () => {
     expect(classFeedSource).toContain("help_tabs: ['shortcuts', 'keyboardnav']");
     expect(classFeedSource).toContain("branding: false");
     expect(classFeedSource).toContain("promotion: false");
+  });
+
+  it("does not load editor plugins with remote asset defaults", () => {
+    const editorSource = readProjectFile("src/components/SelfHostedEditor.jsx");
+    const classFeedSource = readProjectFile("src/ClassFeed.jsx");
+
+    expect(editorSource).not.toContain("tinymce/plugins/emoticons");
+    expect(classFeedSource).not.toMatch(/["']emoticons["']/);
   });
 
   it("uses same-origin profile cover choices", () => {

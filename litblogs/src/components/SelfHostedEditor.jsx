@@ -10,8 +10,6 @@ import 'tinymce/plugins/anchor';
 import 'tinymce/plugins/autolink';
 import 'tinymce/plugins/charmap';
 import 'tinymce/plugins/code';
-import 'tinymce/plugins/emoticons';
-import 'tinymce/plugins/emoticons/js/emojis';
 import 'tinymce/plugins/fullscreen';
 import 'tinymce/plugins/help';
 import 'tinymce/plugins/help/js/i18n/keynav/en';

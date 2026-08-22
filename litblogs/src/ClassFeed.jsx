@@ -467,7 +467,7 @@ const TINYMCE_CONFIG = {
     'advlist', 'autolink', 'lists', 'link', 'image', 'charmap', 'preview',
     'anchor', 'searchreplace', 'visualblocks', 'code', 'fullscreen',
     'insertdatetime', 'table', 'help', 'wordcount',
-    'quickbars', 'emoticons'
+    'quickbars'
   ],
   toolbar: [
     'formatselect | fontsizeinput | forecolor backcolor | blocks',
