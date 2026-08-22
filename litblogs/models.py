@@ -408,6 +408,7 @@ class AssignmentDraft(Base):
     assignment_id = Column(Integer, ForeignKey("assignments.id", ondelete="CASCADE"), nullable=False)
     student_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     content = Column(Text, nullable=True)
+    revision = Column(Integer, default=0, server_default="0", nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     assignment = relationship("Assignment", back_populates="drafts")
@@ -415,6 +416,10 @@ class AssignmentDraft(Base):
 
     __table_args__ = (
         UniqueConstraint('assignment_id', 'student_id', name='unique_assignment_draft'),
+        CheckConstraint(
+            "revision >= 0 AND revision <= 2147483647",
+            name="assignment_drafts_revision_range",
+        ),
     )
 
 class AssignmentSubmission(Base):

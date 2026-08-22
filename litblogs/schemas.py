@@ -9,6 +9,7 @@ from auth_security import MAX_PASSWORD_BYTES
 MAX_RICH_TEXT_LENGTH = 100_000
 MAX_SHORT_TEXT_LENGTH = 10_000
 MAX_DESCRIPTION_LENGTH = 50_000
+MAX_ASSIGNMENT_CONTENT_LENGTH = 1_000_000
 
 
 def validate_password_request_bytes(value: str) -> str:
@@ -224,10 +225,18 @@ class AssignmentResponse(BaseModel):
     visibility: str
 
 class AssignmentSubmissionCreate(StrictRequest):
-    content: str | None = Field(default=None, max_length=MAX_RICH_TEXT_LENGTH)
+    content: str | None = Field(
+        default=None,
+        max_length=MAX_ASSIGNMENT_CONTENT_LENGTH,
+    )
+    expected_draft_revision: int = Field(ge=0, le=2_147_483_646)
 
 class AssignmentDraftUpdate(StrictRequest):
-    content: str | None = Field(default=None, max_length=MAX_RICH_TEXT_LENGTH)
+    content: str | None = Field(
+        default=None,
+        max_length=MAX_ASSIGNMENT_CONTENT_LENGTH,
+    )
+    expected_revision: int = Field(ge=0, le=2_147_483_646)
 
 class AssignmentSubmissionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)

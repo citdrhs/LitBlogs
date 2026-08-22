@@ -198,6 +198,12 @@ GOOGLE_IDENTITY_ISSUER = "https://accounts.google.com"
 
 @app.exception_handler(RequestValidationError)
 async def safe_auth_request_validation_error(request: Request, exc: RequestValidationError):
+    if _is_private_assignment_mutation(request):
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={"detail": "Invalid assignment request"},
+            headers=ASSIGNMENT_PRIVATE_CACHE_HEADERS,
+        )
     if request.url.path in OAUTH_AUTH_PATHS:
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -229,6 +235,15 @@ MAX_VIDEO_UPLOAD_BYTES = 100 * 1024 * 1024
 MAX_PDF_UPLOAD_BYTES = 25 * 1024 * 1024
 UPLOAD_REQUEST_OVERHEAD_BYTES = 1024 * 1024
 MAX_RICH_TEXT_INPUT_LENGTH = 1_000_000
+MAX_ASSIGNMENT_REQUEST_BODY_BYTES = (
+    6 * schemas.MAX_ASSIGNMENT_CONTENT_LENGTH
+    + 64 * 1024
+)
+ASSIGNMENT_PRIVATE_CACHE_HEADERS = {
+    "Cache-Control": "private, no-store",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
 SAFE_UPLOAD_PATH_CHARACTERS = frozenset(
     string.ascii_letters + string.digits + "._-"
 )
@@ -257,17 +272,45 @@ def _upload_request_body_limit(scope: dict) -> int | None:
     return file_limit + UPLOAD_REQUEST_OVERHEAD_BYTES
 
 
+def _private_assignment_request_body_limit(scope: dict) -> int | None:
+    if scope.get("type") != "http":
+        return None
+
+    method = str(scope.get("method") or "").upper()
+    path = str(scope.get("path") or "").rstrip("/") or "/"
+    path_match = re.fullmatch(
+        r"/api/assignments/[^/]+/(?P<operation>draft|submit)",
+        path,
+    )
+    if not path_match:
+        return None
+
+    operation = path_match.group("operation")
+    if (
+        (operation == "draft" and method == "PUT")
+        or (operation == "submit" and method == "POST")
+    ):
+        return MAX_ASSIGNMENT_REQUEST_BODY_BYTES
+    return None
+
+
 class UploadRequestBodyLimitMiddleware:
-    """Reject oversized upload bodies before Starlette parses multipart data."""
+    """Reject bounded private and upload bodies before Starlette parses them."""
 
     def __init__(self, app):
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        request_limit = _upload_request_body_limit(scope)
+        assignment_limit = _private_assignment_request_body_limit(scope)
+        request_limit = (
+            assignment_limit
+            if assignment_limit is not None
+            else _upload_request_body_limit(scope)
+        )
         if request_limit is None:
             await self.app(scope, receive, send)
             return
+        is_private_assignment = assignment_limit is not None
 
         for header_name, header_value in scope.get("headers", []):
             if header_name.lower() != b"content-length":
@@ -277,7 +320,12 @@ class UploadRequestBodyLimitMiddleware:
             except (TypeError, ValueError):
                 break
             if content_length > request_limit:
-                await self._send_too_large(scope, receive, send)
+                await self._send_too_large(
+                    scope,
+                    receive,
+                    send,
+                    private_assignment=is_private_assignment,
+                )
                 return
             break
 
@@ -304,14 +352,35 @@ class UploadRequestBodyLimitMiddleware:
         except _UploadRequestTooLarge:
             if response_started:
                 raise
-            await self._send_too_large(scope, receive, send)
+            await self._send_too_large(
+                scope,
+                receive,
+                send,
+                private_assignment=is_private_assignment,
+            )
 
     @staticmethod
-    async def _send_too_large(scope, receive, send):
+    async def _send_too_large(
+        scope,
+        receive,
+        send,
+        *,
+        private_assignment: bool = False,
+    ):
         response = JSONResponse(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            content={"detail": "Upload request exceeds the allowed size"},
-            headers={"Cache-Control": "no-store"},
+            content={
+                "detail": (
+                    "Invalid assignment request"
+                    if private_assignment
+                    else "Upload request exceeds the allowed size"
+                )
+            },
+            headers=(
+                ASSIGNMENT_PRIVATE_CACHE_HEADERS
+                if private_assignment
+                else {"Cache-Control": "no-store"}
+            ),
         )
         await response(scope, receive, send)
 
@@ -2479,19 +2548,69 @@ async def update_assignment(
         "visibility": db_assignment.visibility
     }
 
+_PRIVATE_ASSIGNMENT_MUTATION_PATH = re.compile(
+    r"^/api/assignments/[^/]+/(?P<operation>draft|submit)/?$"
+)
+
+
+def _is_private_assignment_mutation(request: Request) -> bool:
+    """Keep rejected private assignment bodies out of validation responses."""
+    path_match = _PRIVATE_ASSIGNMENT_MUTATION_PATH.fullmatch(request.url.path)
+    return bool(path_match) and (
+        (path_match.group("operation") == "draft" and request.method == "PUT")
+        or (path_match.group("operation") == "submit" and request.method == "POST")
+    )
+
+
+def _set_private_no_store(response: Response) -> None:
+    response.headers.update(ASSIGNMENT_PRIVATE_CACHE_HEADERS)
+
+
+def _draft_revision_conflict() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Assignment draft changed in another session",
+        headers=ASSIGNMENT_PRIVATE_CACHE_HEADERS,
+    )
+
+
+def _advance_assignment_draft_tombstone(
+    db: Session,
+    *,
+    draft: models.AssignmentDraft | None,
+    assignment_id: int,
+    student_id: int,
+) -> models.AssignmentDraft:
+    if draft is None:
+        draft = models.AssignmentDraft(
+            assignment_id=assignment_id,
+            student_id=student_id,
+            content=None,
+            revision=1,
+        )
+        db.add(draft)
+    else:
+        draft.content = None
+        draft.revision += 1
+    draft.updated_at = _utc_now_naive()
+    return draft
+
+
 @app.get("/api/classes/{class_id}/assignments")
 async def list_assignments(
     class_id: int,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    _set_private_no_store(response)
     _ensure_class_access(db, current_user, class_id)
     assignments = db.query(models.Assignment).filter(
         models.Assignment.class_id == class_id
     ).order_by(models.Assignment.due_date.asc()).all()
 
     total_students = _get_class_student_count(db, class_id)
-    response = []
+    assignment_items = []
 
     for assignment in assignments:
         stats = _get_assignment_stats(db, assignment, total_students)
@@ -2507,7 +2626,7 @@ async def list_assignments(
                 models.AssignmentDraft.student_id == current_user.id
             ).first()
 
-        response.append({
+        assignment_items.append({
             "id": assignment.id,
             "class_id": assignment.class_id,
             "title": assignment.title,
@@ -2529,18 +2648,22 @@ async def list_assignments(
             } if submission else None,
             "my_draft": {
                 "content": draft.content,
-                "updated_at": draft.updated_at
-            } if draft and draft.content else None
+                "updated_at": draft.updated_at,
+                "revision": draft.revision
+            } if draft and draft.content else None,
+            "my_draft_revision": draft.revision if draft else 0
         })
 
-    return response
+    return assignment_items
 
 @app.get("/api/assignments/{assignment_id}/draft")
 async def get_assignment_draft(
     assignment_id: int,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    _set_private_no_store(response)
     if current_user.role != models.UserRole.STUDENT:
         raise HTTPException(status_code=403, detail="Only students can access assignment drafts")
 
@@ -2558,16 +2681,19 @@ async def get_assignment_draft(
     return {
         "content": draft.content if draft and draft.content else "",
         "saved_at": draft.updated_at if draft and draft.content else None,
-        "has_draft": bool(draft and draft.content)
+        "has_draft": bool(draft and draft.content),
+        "revision": draft.revision if draft else 0
     }
 
 @app.put("/api/assignments/{assignment_id}/draft")
 async def save_assignment_draft(
     assignment_id: int,
     payload: schemas.AssignmentDraftUpdate,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    _set_private_no_store(response)
     if current_user.role != models.UserRole.STUDENT:
         raise HTTPException(status_code=403, detail="Only students can save assignment drafts")
 
@@ -2577,49 +2703,55 @@ async def save_assignment_draft(
 
     _ensure_active_class_access(db, current_user, assignment.class_id)
 
+    # The user row is stable even when no draft row exists yet. Locking it
+    # serializes revision-zero creates as well as updates and submissions.
+    db.query(models.User).filter(
+        models.User.id == current_user.id
+    ).with_for_update().one()
+
     draft = db.query(models.AssignmentDraft).filter(
         models.AssignmentDraft.assignment_id == assignment_id,
         models.AssignmentDraft.student_id == current_user.id
     ).first()
 
-    content = payload.content if payload.content is not None else ""
-    if content == "":
-        if draft:
-            db.delete(draft)
-            db.commit()
-        return {
-            "content": "",
-            "saved_at": None,
-            "has_draft": False
-        }
+    current_revision = draft.revision if draft else 0
+    if payload.expected_revision != current_revision:
+        raise _draft_revision_conflict()
+
+    content = payload.content if payload.content else None
 
     if not draft:
         draft = models.AssignmentDraft(
             assignment_id=assignment_id,
             student_id=current_user.id,
-            content=content
+            content=content,
+            revision=1,
         )
         db.add(draft)
     else:
         draft.content = content
+        draft.revision += 1
 
     draft.updated_at = _utc_now_naive()
     db.commit()
     db.refresh(draft)
 
     return {
-        "content": draft.content,
-        "saved_at": draft.updated_at,
-        "has_draft": True
+        "content": draft.content or "",
+        "saved_at": draft.updated_at if draft.content else None,
+        "has_draft": bool(draft.content),
+        "revision": draft.revision,
     }
 
 @app.post("/api/assignments/{assignment_id}/submit")
 async def submit_assignment(
     assignment_id: int,
     submission: schemas.AssignmentSubmissionCreate,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    _set_private_no_store(response)
     if current_user.role != models.UserRole.STUDENT:
         raise HTTPException(status_code=403, detail="Only students can submit assignments")
 
@@ -2629,10 +2761,19 @@ async def submit_assignment(
 
     _ensure_active_class_access(db, current_user, assignment.class_id)
 
+    # Serialize with autosave even before the first draft row is created.
+    db.query(models.User).filter(
+        models.User.id == current_user.id
+    ).with_for_update().one()
+
     draft = db.query(models.AssignmentDraft).filter(
         models.AssignmentDraft.assignment_id == assignment_id,
         models.AssignmentDraft.student_id == current_user.id
     ).first()
+
+    current_draft_revision = draft.revision if draft else 0
+    if submission.expected_draft_revision != current_draft_revision:
+        raise _draft_revision_conflict()
 
     submitted_at = _utc_now_naive()
     due_date = assignment.due_date
@@ -2656,10 +2797,15 @@ async def submit_assignment(
         existing.content = submission.content
         existing.submitted_at = submitted_at
         existing.is_late = is_late
-        if draft:
-            db.delete(draft)
+        draft = _advance_assignment_draft_tombstone(
+            db,
+            draft=draft,
+            assignment_id=assignment_id,
+            student_id=current_user.id,
+        )
         db.commit()
         db.refresh(existing)
+        db.refresh(draft)
         
         return {
             "id": existing.id,
@@ -2670,7 +2816,8 @@ async def submit_assignment(
             "is_late": existing.is_late,
             "ai_percentage": existing.ai_percentage,
             "ai_highlighted_html": existing.ai_highlighted_html,
-            "ai_sentence_analysis": existing.ai_sentence_analysis
+            "ai_sentence_analysis": existing.ai_sentence_analysis,
+            "draft_revision": draft.revision,
         }
 
     new_submission = models.AssignmentSubmission(
@@ -2681,10 +2828,15 @@ async def submit_assignment(
         is_late=is_late
     )
     db.add(new_submission)
-    if draft:
-        db.delete(draft)
+    draft = _advance_assignment_draft_tombstone(
+        db,
+        draft=draft,
+        assignment_id=assignment_id,
+        student_id=current_user.id,
+    )
     db.commit()
     db.refresh(new_submission)
+    db.refresh(draft)
     
     return {
         "id": new_submission.id,
@@ -2695,7 +2847,8 @@ async def submit_assignment(
         "is_late": new_submission.is_late,
         "ai_percentage": new_submission.ai_percentage,
         "ai_highlighted_html": new_submission.ai_highlighted_html,
-        "ai_sentence_analysis": new_submission.ai_sentence_analysis
+        "ai_sentence_analysis": new_submission.ai_sentence_analysis,
+        "draft_revision": draft.revision,
     }
 
 @app.get("/api/classes/{class_id}/assignments/{assignment_id}/submissions")
