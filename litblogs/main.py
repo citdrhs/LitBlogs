@@ -3,11 +3,10 @@
 # uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
-import smtplib
-import ssl
 import stat
 import string
 import threading
@@ -16,8 +15,6 @@ from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from html import escape
 from http.cookies import CookieError, SimpleCookie
 from ipaddress import ip_address
@@ -38,13 +35,15 @@ from fastapi.security import OAuth2PasswordBearer
 from google.oauth2 import id_token
 from jwt.exceptions import InvalidTokenError
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
-from sqlalchemy import and_, or_, update
+from sqlalchemy import or_, text, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import MutableHeaders
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 import models
+import password_reset_delivery
 import schemas
 from access_control import (
     can_access_class as _can_access_class,
@@ -109,7 +108,7 @@ from auth_security import (
     verify_password,
 )
 from config import get_settings
-from database import SessionLocal, get_db, initialize_database, reset_database
+from database import SessionLocal, check_database_readiness, get_db
 from identity_controls import (
     SessionIssuanceDenied,
     consume_teacher_invitation,
@@ -122,6 +121,7 @@ from identity_controls import (
     revoke_session,
 )
 from oauth_security import verify_google_id_token, verify_microsoft_id_token
+from observability import RequestObservabilityMiddleware
 from upload_assets import (
     add_active_profile_asset,
     add_pending_asset,
@@ -155,7 +155,12 @@ from upload_scanner import (
 )
 
 settings = get_settings()
+security_logger = logging.getLogger("litblogs.security")
+readiness_logger = logging.getLogger("litblogs.readiness")
 _DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(32))
+# Preserve the existing test/integration patch point while sharing the standalone
+# delivery module's SMTP client.
+smtplib = password_reset_delivery.smtplib
 
 
 def _utc_now_naive() -> datetime:
@@ -173,9 +178,6 @@ except Exception:
     webpush = None
     WebPushException = Exception
 
-def _should_reset_database_on_startup() -> bool:
-    return settings.reset_database_on_startup
-
 def _secret_value(value) -> str | None:
     return value.get_secret_value() if value is not None else None
 
@@ -184,7 +186,12 @@ CORS_ALLOWED_ORIGINS = list(settings.cors_allowed_origins)
 VAPID_PUBLIC_KEY = settings.vapid_public_key
 VAPID_PRIVATE_KEY = settings.vapid_private_key.get_secret_value() if settings.vapid_private_key else ""
 VAPID_SUBJECT = settings.vapid_subject
-WEB_PUSH_ENABLED = bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY and webpush)
+WEB_PUSH_ENABLED = bool(
+    settings.push_notifications_enabled
+    and VAPID_PUBLIC_KEY
+    and VAPID_PRIVATE_KEY
+    and webpush
+)
 PUSH_REMINDER_INTERVAL_SECONDS = settings.push_reminder_interval_seconds
 PUSH_ALLOWED_ENDPOINT_HOSTS = settings.push_allowed_endpoint_hosts
 PUSH_DELIVERY_TIMEOUT_SECONDS = settings.push_delivery_timeout_seconds
@@ -192,39 +199,21 @@ PASSWORD_RESET_WORKER_ENABLED = settings.password_reset_worker_enabled
 PASSWORD_RESET_WORKER_INTERVAL_SECONDS = settings.password_reset_worker_interval_seconds
 PASSWORD_RESET_CLAIM_TIMEOUT_SECONDS = settings.password_reset_claim_timeout_seconds
 
-_push_scheduler_stop_event = threading.Event()
-_push_scheduler_thread: threading.Thread | None = None
-_password_reset_worker_stop_event = threading.Event()
-_password_reset_worker_thread: threading.Thread | None = None
-_upload_cleanup_stop_event = threading.Event()
-_upload_cleanup_thread: threading.Thread | None = None
-UPLOAD_CLEANUP_INTERVAL_SECONDS = 300
-
 if "*" in CORS_ALLOWED_ORIGINS:
     raise RuntimeError("CORS_ALLOWED_ORIGINS must not contain a wildcard when credentials are enabled")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if _should_reset_database_on_startup():
-        reset_database()
-        print("RESET_DATABASE_ON_STARTUP is enabled. Database was reset on startup.")
-    else:
-        initialize_database(allow_schema_create=settings.app_env != "production")
-
     if settings.upload_scanner_required:
         await run_in_threadpool(upload_scanner.preflight)
+    yield
 
-    _start_push_scheduler()
-    _start_password_reset_worker()
-    _start_upload_cleanup_worker()
-    try:
-        yield
-    finally:
-        _stop_upload_cleanup_worker()
-        _stop_password_reset_worker()
-        _stop_push_scheduler()
-
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    lifespan=lifespan,
+    docs_url="/api/docs" if settings.api_docs_enabled else None,
+    redoc_url="/api/redoc" if settings.api_docs_enabled else None,
+    openapi_url="/api/openapi.json" if settings.api_docs_enabled else None,
+)
 
 OAUTH_AUTH_PATHS = frozenset(
     {
@@ -271,9 +260,15 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Accept", "Authorization", "Content-Type", "X-CSRF-Token"],
 )
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=list(settings.allowed_hosts)
+    or ["testserver", "localhost", "127.0.0.1", "[::1]"],
+)
+app.add_middleware(RequestObservabilityMiddleware)
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = (
@@ -1136,6 +1131,14 @@ class UserStatusResponse(BaseModel):
     disabled: bool
 
 
+class PublicRuntimeConfigResponse(BaseModel):
+    csrf_cookie_name: str
+    google_client_id: str
+    microsoft_client_id: str
+    microsoft_tenant_id: str
+    local_password_registration_enabled: bool
+
+
 class OAuthLoginRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1296,7 +1299,7 @@ def _make_push_payload(assignment: models.Assignment) -> dict:
     return {
         "title": "Assignment Reminder",
         "body": f"{assignment.title} is due within 24 hours.",
-        "url": "/class-feed",
+        "url": f"/class-feed/{assignment.class_id}",
         "tag": f"assignment-reminder-{assignment.id}",
     }
 
@@ -1329,12 +1332,32 @@ def _send_web_push(subscription: models.PushSubscription, payload: dict) -> bool
     except Exception:
         return False
 
-def _dispatch_assignment_push_reminders_once() -> None:
+REMINDER_DISPATCH_LOCK_ID = 4_979_842_103
+
+
+def _try_acquire_reminder_dispatch_lock(db: Session) -> bool:
+    bind = db.get_bind()
+    if bind.dialect.name == "postgresql":
+        return bool(
+            db.execute(
+                text("SELECT pg_try_advisory_xact_lock(:lock_id)"),
+                {"lock_id": REMINDER_DISPATCH_LOCK_ID},
+            ).scalar_one()
+        )
+    if settings.app_env == "test":
+        return True
+    raise RuntimeError("Reminder dispatch requires PostgreSQL outside tests")
+
+
+def _dispatch_assignment_push_reminders_once() -> bool:
     if not WEB_PUSH_ENABLED:
-        return
+        return True
 
     db = SessionLocal()
     try:
+        if not _try_acquire_reminder_dispatch_lock(db):
+            return True
+
         now_utc = _utc_now_naive()
         students = (
             db.query(models.User)
@@ -1362,7 +1385,10 @@ def _dispatch_assignment_push_reminders_once() -> None:
 
             due_soon_assignments = (
                 db.query(models.Assignment)
-                .filter(models.Assignment.class_id.in_(class_ids))
+                .filter(
+                    models.Assignment.class_id.in_(class_ids),
+                    models.Assignment.visibility == "class",
+                )
                 .all()
             )
 
@@ -1417,32 +1443,14 @@ def _dispatch_assignment_push_reminders_once() -> None:
                         )
                     )
 
-            db.commit()
+        db.commit()
+        return True
     except Exception:
-        print("Push reminder dispatcher failed")
+        db.rollback()
+        security_logger.error("push_reminder_dispatch_failed")
+        return False
     finally:
         db.close()
-
-def _push_scheduler_loop() -> None:
-    while not _push_scheduler_stop_event.is_set():
-        _dispatch_assignment_push_reminders_once()
-        _push_scheduler_stop_event.wait(PUSH_REMINDER_INTERVAL_SECONDS)
-
-def _start_push_scheduler() -> None:
-    global _push_scheduler_thread
-    if _push_scheduler_thread and _push_scheduler_thread.is_alive():
-        return
-
-    _push_scheduler_stop_event.clear()
-    _push_scheduler_thread = threading.Thread(target=_push_scheduler_loop, name="push-reminder-scheduler", daemon=True)
-    _push_scheduler_thread.start()
-
-def _stop_push_scheduler() -> None:
-    global _push_scheduler_thread
-    _push_scheduler_stop_event.set()
-    if _push_scheduler_thread and _push_scheduler_thread.is_alive():
-        _push_scheduler_thread.join(timeout=2)
-    _push_scheduler_thread = None
 
 # ---------- Authentication Endpoints ----------
 
@@ -2193,6 +2201,57 @@ async def get_user_info(
 def home():
     return {"message": "Welcome to LitBlogs Backend"}
 
+@app.get("/api/health/live", include_in_schema=False)
+def liveness():
+    return {"status": "ok"}
+
+
+@app.get(
+    "/api/runtime-config",
+    response_model=PublicRuntimeConfigResponse,
+    include_in_schema=False,
+)
+def public_runtime_config(response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    return PublicRuntimeConfigResponse(
+        csrf_cookie_name=settings.csrf_cookie_name or "",
+        google_client_id=settings.google_client_id or "",
+        microsoft_client_id=settings.microsoft_client_id or "",
+        microsoft_tenant_id=settings.microsoft_tenant_id or "",
+        local_password_registration_enabled=(
+            settings.local_password_registration_enabled
+            and settings.app_env != "production"
+        ),
+    )
+
+
+@app.get("/api/health/ready", include_in_schema=False)
+def readiness(request: Request):
+    try:
+        check_database_readiness()
+    except Exception as exc:
+        reason = (
+            "database_unreachable"
+            if isinstance(exc, (ConnectionError, OSError, TimeoutError, SQLAlchemyError))
+            else "migration_mismatch"
+        )
+        readiness_logger.error(
+            json.dumps(
+                {
+                    "event": "readiness_failed",
+                    "reason": reason,
+                    "request_id": getattr(request.state, "request_id", "unavailable"),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service not ready",
+        ) from None
+    return {"status": "ready"}
+
 @app.get("/api/classes/{class_id}/details")
 async def get_class_details(
     class_id: int,
@@ -2734,43 +2793,18 @@ def reconcile_upload_assets(
     )
 
 
-def _reconcile_upload_assets_once() -> None:
+def _reconcile_upload_assets_once() -> bool:
     db = SessionLocal()
     try:
         reconcile_upload_assets(db)
         db.commit()
+        return True
     except Exception:
         db.rollback()
-        print("Upload cleanup reconciliation failed")
+        security_logger.error('{"event":"upload_reconciliation_failed"}')
+        return False
     finally:
         db.close()
-
-
-def _upload_cleanup_loop() -> None:
-    while not _upload_cleanup_stop_event.is_set():
-        _reconcile_upload_assets_once()
-        _upload_cleanup_stop_event.wait(UPLOAD_CLEANUP_INTERVAL_SECONDS)
-
-
-def _start_upload_cleanup_worker() -> None:
-    global _upload_cleanup_thread
-    if _upload_cleanup_thread and _upload_cleanup_thread.is_alive():
-        return
-    _upload_cleanup_stop_event.clear()
-    _upload_cleanup_thread = threading.Thread(
-        target=_upload_cleanup_loop,
-        name="upload-cleanup-worker",
-        daemon=True,
-    )
-    _upload_cleanup_thread.start()
-
-
-def _stop_upload_cleanup_worker() -> None:
-    global _upload_cleanup_thread
-    _upload_cleanup_stop_event.set()
-    if _upload_cleanup_thread and _upload_cleanup_thread.is_alive():
-        _upload_cleanup_thread.join(timeout=2)
-    _upload_cleanup_thread = None
 
 
 def _rollback_upload_session(db: Session) -> None:
@@ -3244,9 +3278,14 @@ async def list_assignments(
 ):
     _set_private_no_store(response)
     _ensure_class_access(db, current_user, class_id)
-    assignments = db.query(models.Assignment).filter(
+    assignments_query = db.query(models.Assignment).filter(
         models.Assignment.class_id == class_id
-    ).order_by(models.Assignment.due_date.asc()).all()
+    )
+    if current_user.role == models.UserRole.STUDENT:
+        assignments_query = assignments_query.filter(
+            models.Assignment.visibility == "class"
+        )
+    assignments = assignments_query.order_by(models.Assignment.due_date.asc()).all()
 
     total_students = _get_class_student_count(db, class_id)
     assignment_items = []
@@ -3295,6 +3334,17 @@ async def list_assignments(
 
     return assignment_items
 
+
+def _ensure_assignment_visible_to_student(
+    current_user: models.User,
+    assignment: models.Assignment,
+) -> None:
+    if (
+        current_user.role == models.UserRole.STUDENT
+        and assignment.visibility != "class"
+    ):
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
 @app.get("/api/assignments/{assignment_id}/draft")
 async def get_assignment_draft(
     assignment_id: int,
@@ -3310,6 +3360,7 @@ async def get_assignment_draft(
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
+    _ensure_assignment_visible_to_student(current_user, assignment)
     _ensure_class_access(db, current_user, assignment.class_id)
 
     draft = db.query(models.AssignmentDraft).filter(
@@ -3340,6 +3391,7 @@ async def save_assignment_draft(
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
+    _ensure_assignment_visible_to_student(current_user, assignment)
     _ensure_active_class_access(db, current_user, assignment.class_id)
 
     # The user row is stable even when no draft row exists yet. Locking it
@@ -3398,6 +3450,7 @@ async def submit_assignment(
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
+    _ensure_assignment_visible_to_student(current_user, assignment)
     _ensure_active_class_access(db, current_user, assignment.class_id)
 
     # Serialize with autosave even before the first draft row is created.
@@ -5518,83 +5571,37 @@ EMAIL_FROM = settings.email_from
 
 
 def send_password_reset_email(email: str, token: str) -> bool:
-    """Send password reset email with reset link"""
-    reset_url = f"{FRONTEND_URL}/reset-password#token={token}"
-    if not all([EMAIL_HOST, EMAIL_USERNAME, EMAIL_PASSWORD, EMAIL_FROM]):
-        return False
-    
-    message = MIMEMultipart("alternative")
-    message["Subject"] = "Reset Your LitBlog Password"
-    message["From"] = EMAIL_FROM
-    message["To"] = email
-    
-    # Create HTML version of the message
-    html = f"""
-        <html>
-            <head></head>
-            <body style="margin:0; padding:0; background-color:#f3f4f6;">
-                <div style="max-width:640px; margin:0 auto; padding:32px 16px;">
-                    <div style="background-color:#ffffff; border-radius:16px; padding:32px; font-family: Arial, sans-serif; color:#111827; box-shadow:0 10px 30px rgba(0,0,0,0.08);">
-                        <div style="text-align:center; margin-bottom:24px;">
-                            <h1 style="margin:0; font-size:24px; font-weight:700;">Reset your LitBlog password</h1>
-                            <p style="margin:8px 0 0; color:#6b7280; font-size:14px;">We received a request to reset your password.</p>
-                        </div>
-                        <p style="font-size:16px; line-height:1.6; margin:0 0 24px;">
-                            Click the button below to set a new password. This link will expire in <strong>1 hour</strong>.
-                        </p>
-                        <div style="text-align:center; margin:24px 0;">
-                            <a href="{reset_url}" style="display:inline-block; background-color:#4F46E5; color:#ffffff; text-decoration:none; padding:12px 24px; border-radius:999px; font-weight:600;">Reset Password</a>
-                        </div>
-                        <p style="font-size:14px; color:#6b7280; line-height:1.6; margin:0 0 16px;">
-                            If you didn't request a password reset, you can safely ignore this email.
-                        </p>
-                        <div style="background-color:#f9fafb; border-radius:12px; padding:16px; font-size:12px; color:#6b7280;">
-                            Having trouble with the button? Copy and paste this link into your browser:<br />
-                            <span style="word-break:break-all; color:#4F46E5;">{reset_url}</span>
-                        </div>
-                    </div>
-                    <p style="text-align:center; color:#9ca3af; font-size:12px; margin-top:16px;">&copy; {_utc_now_naive().year} LitBlog</p>
-                </div>
-            </body>
-        </html>
-        """
-    
-    # Attach HTML part
-    part = MIMEText(html, "html")
-    message.attach(part)
-    
-    # Send email
-    try:
-        with smtplib.SMTP(
-            EMAIL_HOST,
-            EMAIL_PORT,
-            timeout=EMAIL_SMTP_TIMEOUT_SECONDS,
-        ) as server:
-            server.starttls(context=ssl.create_default_context())
-            server.login(EMAIL_USERNAME, EMAIL_PASSWORD)
-            server.sendmail(EMAIL_FROM, email, message.as_string())
-        return True
-    except Exception:
-        return False
+    """Send password reset email through the shared delivery primitive."""
+
+    return password_reset_delivery.send_password_reset_email(
+        password_reset_delivery.PasswordResetEmailSettings(
+            frontend_url=FRONTEND_URL,
+            email_host=EMAIL_HOST,
+            email_port=EMAIL_PORT,
+            email_smtp_timeout_seconds=EMAIL_SMTP_TIMEOUT_SECONDS,
+            email_username=EMAIL_USERNAME,
+            email_password=EMAIL_PASSWORD,
+            email_from=str(EMAIL_FROM) if EMAIL_FROM is not None else None,
+        ),
+        email,
+        token,
+    )
 
 
-PASSWORD_RESET_PENDING = "PENDING"
-PASSWORD_RESET_PROCESSING = "PROCESSING"
-PASSWORD_RESET_DELIVERED = "DELIVERED"
-PASSWORD_RESET_FAILED = "FAILED"
+PASSWORD_RESET_PENDING = password_reset_delivery.PASSWORD_RESET_PENDING
+PASSWORD_RESET_PROCESSING = password_reset_delivery.PASSWORD_RESET_PROCESSING
+PASSWORD_RESET_DELIVERED = password_reset_delivery.PASSWORD_RESET_DELIVERED
+PASSWORD_RESET_FAILED = password_reset_delivery.PASSWORD_RESET_FAILED
 PASSWORD_RESET_COOLDOWN = timedelta(minutes=5)
-PASSWORD_RESET_LIFETIME = timedelta(hours=1)
+PASSWORD_RESET_LIFETIME = password_reset_delivery.PASSWORD_RESET_LIFETIME
 
 
 def _password_reset_token_digest(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return password_reset_delivery.password_reset_token_digest(token)
 
 
 def _password_reset_claim_digest(claim_nonce: str) -> str:
-    return hashlib.sha256(
-        b"litblog:password-reset-delivery-claim:v1\0"
-        + claim_nonce.encode("utf-8")
-    ).hexdigest()
+    return password_reset_delivery.password_reset_claim_digest(claim_nonce)
 
 
 def _usable_password_reset_filters(raw_token: str):
@@ -5652,79 +5659,10 @@ def _queue_password_reset(db: Session, user: models.User) -> None:
 
 
 def _claim_password_reset_delivery() -> tuple[int, str, str] | None:
-    db = SessionLocal()
-    try:
-        now = _utc_now_naive()
-        stale_before = now - timedelta(seconds=PASSWORD_RESET_CLAIM_TIMEOUT_SECONDS)
-        claimable = or_(
-            models.PasswordReset.delivery_status == PASSWORD_RESET_PENDING,
-            and_(
-                models.PasswordReset.delivery_status == PASSWORD_RESET_PROCESSING,
-                or_(
-                    models.PasswordReset.delivery_attempted_at.is_(None),
-                    models.PasswordReset.delivery_attempted_at <= stale_before,
-                ),
-            ),
-        )
-        candidate_ids = [
-            reset_id
-            for (reset_id,) in (
-                db.query(models.PasswordReset.id)
-                .filter(claimable)
-                .order_by(models.PasswordReset.created_at, models.PasswordReset.id)
-                .limit(25)
-                .all()
-            )
-        ]
-
-        for reset_id in candidate_ids:
-            locked_reset = (
-                db.query(models.PasswordReset, models.User)
-                .join(
-                    models.User,
-                    models.User.id == models.PasswordReset.user_id,
-                )
-                .filter(models.PasswordReset.id == reset_id, claimable)
-                .with_for_update(of=models.User)
-                .first()
-            )
-            if locked_reset is None:
-                db.rollback()
-                continue
-            reset_request, user = locked_reset
-            if user.disabled_at is not None:
-                invalidate_password_reset_requests(db, user_id=user.id)
-                db.commit()
-                continue
-
-            claim_nonce = secrets.token_urlsafe(32)
-            claim_digest = _password_reset_claim_digest(claim_nonce)
-            claimed = (
-                db.query(models.PasswordReset)
-                .filter(models.PasswordReset.id == reset_id, claimable)
-                .update(
-                    {
-                        models.PasswordReset.delivery_status: PASSWORD_RESET_PROCESSING,
-                        models.PasswordReset.delivery_attempted_at: now,
-                        models.PasswordReset.delivery_claim_digest: claim_digest,
-                    },
-                    synchronize_session=False,
-                )
-            )
-            if not claimed:
-                db.rollback()
-                continue
-
-            claimed_reset_id = reset_request.id
-            claimed_email = user.email
-            db.commit()
-            return claimed_reset_id, claimed_email, claim_nonce
-        return None
-    except Exception:
-        db.rollback()
-        return None
-    finally:
-        db.close()
+    return password_reset_delivery.claim_password_reset_delivery(
+        SessionLocal,
+        claim_timeout_seconds=PASSWORD_RESET_CLAIM_TIMEOUT_SECONDS,
+    )
 
 
 def _complete_password_reset_delivery(
@@ -5733,112 +5671,23 @@ def _complete_password_reset_delivery(
     raw_token: str,
     delivered: bool,
 ) -> bool:
-    db = SessionLocal()
-    try:
-        claim_digest = _password_reset_claim_digest(claim_nonce)
-        locked_reset = (
-            db.query(models.PasswordReset, models.User)
-            .join(
-                models.User,
-                models.User.id == models.PasswordReset.user_id,
-            )
-            .filter(
-                models.PasswordReset.id == reset_id,
-                models.PasswordReset.delivery_status == PASSWORD_RESET_PROCESSING,
-                models.PasswordReset.delivery_claim_digest == claim_digest,
-            )
-            .with_for_update(of=models.User)
-            .first()
-        )
-        if locked_reset is None:
-            return False
-        _reset_request, user = locked_reset
-        if user.disabled_at is not None:
-            invalidate_password_reset_requests(db, user_id=user.id)
-            db.commit()
-            return False
-
-        if delivered:
-            completion_values = {
-                models.PasswordReset.token: _password_reset_token_digest(raw_token),
-                models.PasswordReset.expires_at: (
-                    _utc_now_naive() + PASSWORD_RESET_LIFETIME
-                ),
-                models.PasswordReset.delivery_status: PASSWORD_RESET_DELIVERED,
-                models.PasswordReset.delivery_claim_digest: None,
-            }
-        else:
-            completion_values = {
-                models.PasswordReset.token: None,
-                models.PasswordReset.expires_at: None,
-                models.PasswordReset.delivery_status: PASSWORD_RESET_FAILED,
-                models.PasswordReset.delivery_claim_digest: None,
-            }
-        completed = (
-            db.query(models.PasswordReset)
-            .filter(
-                models.PasswordReset.id == reset_id,
-                models.PasswordReset.delivery_status == PASSWORD_RESET_PROCESSING,
-                models.PasswordReset.delivery_claim_digest == claim_digest,
-            )
-            .update(completion_values, synchronize_session=False)
-        )
-        if completed != 1:
-            db.rollback()
-            return False
-        db.commit()
-        return True
-    except Exception:
-        db.rollback()
-        return False
-    finally:
-        db.close()
+    return password_reset_delivery.complete_password_reset_delivery(
+        SessionLocal,
+        reset_id,
+        claim_nonce,
+        raw_token,
+        delivered,
+    )
 
 
 def _dispatch_password_reset_emails_once(batch_size: int = 100) -> None:
-    for _ in range(batch_size):
-        claimed = _claim_password_reset_delivery()
-        if claimed is None:
-            return
-        reset_id, email, claim_nonce = claimed
-        raw_token = secrets.token_urlsafe(32)
-        delivered = send_password_reset_email(email, raw_token)
-        _complete_password_reset_delivery(
-            reset_id,
-            claim_nonce,
-            raw_token,
-            delivered,
-        )
-
-
-def _password_reset_worker_loop() -> None:
-    while not _password_reset_worker_stop_event.is_set():
-        _dispatch_password_reset_emails_once()
-        _password_reset_worker_stop_event.wait(PASSWORD_RESET_WORKER_INTERVAL_SECONDS)
-
-
-def _start_password_reset_worker() -> None:
-    global _password_reset_worker_thread
-    if not PASSWORD_RESET_WORKER_ENABLED:
-        return
-    if _password_reset_worker_thread and _password_reset_worker_thread.is_alive():
-        return
-
-    _password_reset_worker_stop_event.clear()
-    _password_reset_worker_thread = threading.Thread(
-        target=_password_reset_worker_loop,
-        name="password-reset-delivery-worker",
-        daemon=True,
+    password_reset_delivery.dispatch_password_reset_batch(
+        batch_size=batch_size,
+        claim=_claim_password_reset_delivery,
+        send=send_password_reset_email,
+        complete=_complete_password_reset_delivery,
     )
-    _password_reset_worker_thread.start()
 
-
-def _stop_password_reset_worker() -> None:
-    global _password_reset_worker_thread
-    _password_reset_worker_stop_event.set()
-    if _password_reset_worker_thread and _password_reset_worker_thread.is_alive():
-        _password_reset_worker_thread.join(timeout=2)
-    _password_reset_worker_thread = None
 
 @app.post("/api/auth/forgot-password", status_code=status.HTTP_202_ACCEPTED)
 def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):

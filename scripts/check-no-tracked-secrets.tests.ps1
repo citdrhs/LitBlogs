@@ -85,6 +85,7 @@ function Test-HasViolation {
 $documentedCredentialNames = @(
     'DATABASE_URL',
     'SECRET_KEY',
+    'TEACHER_INVITE_HMAC_KEY',
     'ADMIN_ACCESS_CODE',
     'TEACHER_ACCESS_CODE',
     'ADMIN_CODE',
@@ -105,6 +106,7 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $testRepo 'scripts') | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $testRepo 'nested') | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $testRepo 'tests') | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $testRepo 'e2e') | Out-Null
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'check-no-tracked-secrets.ps1') -Destination (Join-Path $testRepo 'scripts\check-no-tracked-secrets.ps1')
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\.gitignore') -Destination (Join-Path $testRepo '.gitignore')
 
@@ -190,6 +192,23 @@ try {
     & git -C $testRepo add -- 'app.py' 'tests/test_config.py'
     $safeLookupResult = Invoke-SecretChecker $testRepo
     Add-TestResult 'allows fail-closed lookups and test placeholder fallbacks' ($safeLookupResult.ExitCode -eq 0)
+
+    Set-Content -LiteralPath (Join-Path $testRepo 'e2e\global-setup.mjs') -Value @(
+        'const baseEnvironment = {'
+        '  SECRET_KEY: randomPassword(),'
+        '  GOOGLE_CLIENT_ID: "e2e-google-client-id",'
+        '  VAPID_PUBLIC_KEY: "",'
+        '};'
+    )
+    & git -C $testRepo add -- 'e2e/global-setup.mjs'
+    $e2ePlaceholderResult = Invoke-SecretChecker $testRepo
+    Add-TestResult 'allows explicit placeholders in the E2E harness' ($e2ePlaceholderResult.ExitCode -eq 0)
+
+    Set-Content -LiteralPath (Join-Path $testRepo 'e2e\global-setup.mjs') -Value 'const GOOGLE_CLIENT_ID = "123456789012-real-client.apps.example.invalid";'
+    & git -C $testRepo add -- 'e2e/global-setup.mjs'
+    $e2eLiteralResult = Invoke-SecretChecker $testRepo
+    $e2eLiteralRejected = $e2eLiteralResult.ExitCode -eq 1 -and (Test-HasViolation $e2eLiteralResult 'LITERAL_SECRET' 'e2e/global-setup.mjs' 'GOOGLE_CLIENT_ID')
+    Add-TestResult 'rejects a credential-shaped literal in the E2E harness' $e2eLiteralRejected
 }
 finally {
     if (Test-Path -LiteralPath $testRepo) {

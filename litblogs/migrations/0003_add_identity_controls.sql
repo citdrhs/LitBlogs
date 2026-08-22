@@ -167,7 +167,7 @@ ALTER TABLE users
         CHECK (email !~ '[[:cntrl:]]');
 
 CREATE UNIQUE INDEX uq_users_email_normalized
-    ON users (email COLLATE "C");
+    ON users (email varchar_pattern_ops);
 
 ALTER TABLE teachers
     ALTER COLUMN email TYPE VARCHAR(100),

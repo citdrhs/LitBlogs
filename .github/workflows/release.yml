@@ -1,0 +1,369 @@
+name: Build reviewed release artifact
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  browser-journeys:
+    name: Browser release journeys
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:17.11-alpine3.24@sha256:7456ef82e5f5bc43d997f4781bbd7c0d6389bff397564649a356e206ba473aee
+        env:
+          POSTGRES_USER: litblogs_e2e_admin
+          POSTGRES_PASSWORD: e2e-ci-only-postgres-password
+          POSTGRES_DB: postgres
+          POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=scram-sha-256
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U litblogs_e2e_admin -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check out reviewed main commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: litblogs/requirements-dev.txt
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: litblogs/package-lock.json
+      - name: Install hash-locked backend dependencies
+        working-directory: litblogs
+        run: "python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.txt"
+      - name: Install frontend dependencies
+        working-directory: litblogs
+        run: npm ci
+      - name: Verify browser harness safety
+        working-directory: litblogs
+        run: |
+          python -m pytest -q e2e/support/test_database.py
+          node --test e2e/support/sanitized-reporter.test.mjs
+      - name: Install Chromium with system dependencies
+        working-directory: litblogs
+        run: npx playwright install --with-deps chromium
+      - name: Run seven browser journeys
+        working-directory: litblogs
+        env:
+          CI: "true"
+          E2E_ADMIN_DATABASE_URL: postgresql+psycopg2://litblogs_e2e_admin:e2e-ci-only-postgres-password@127.0.0.1:5432/postgres
+          E2E_DISPOSABLE_DATABASE_CONFIRMED: litblogs-e2e-only
+        run: npm run test:e2e
+      - name: Upload sanitized browser failure report
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-e2e-sanitized-${{ github.run_id }}-${{ github.run_attempt }}
+          path: litblogs/test-results/e2e/sanitized-failures/*.json
+          if-no-files-found: ignore
+          retention-days: 3
+          include-hidden-files: false
+
+  build-release:
+    name: Build immutable release artifact
+    needs: browser-journeys
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      archive-file: ${{ steps.package.outputs.file }}
+      bundle-name: ${{ steps.package.outputs.name }}
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:17.11-alpine3.24@sha256:7456ef82e5f5bc43d997f4781bbd7c0d6389bff397564649a356e206ba473aee
+        env:
+          POSTGRES_USER: litblog_release_ci
+          POSTGRES_PASSWORD: release-ci-only-postgres-password
+          POSTGRES_DB: litblog_test_release_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U litblog_release_ci -d litblog_test_release_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check out reviewed main commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            litblogs/requirements.in
+            litblogs/requirements-dev.in
+            litblogs/requirements-lock.in
+            litblogs/requirements.txt
+            litblogs/requirements-dev.txt
+            litblogs/requirements-lock.txt
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: litblogs/package-lock.json
+      - name: Verify reproducible Python dependency locks
+        working-directory: litblogs
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r requirements-lock.txt
+          python ../scripts/compile-python-locks.py
+          git diff --exit-code -- requirements.txt requirements-dev.txt requirements-lock.txt
+      - name: Install exact dependencies
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r litblogs/requirements-dev.txt
+          npm --prefix litblogs ci
+      - name: Verify backend against disposable PostgreSQL
+        working-directory: litblogs
+        env:
+          APP_ENV: test
+          TEST_DATABASE_URL: postgresql://litblog_release_ci:release-ci-only-postgres-password@localhost:5432/litblog_test_release_ci
+          DATABASE_URL: postgresql://litblog_release_ci:release-ci-only-postgres-password@localhost:5432/litblog_test_release_ci
+          TEST_POSTGRES_DATABASE: litblog_test_release_ci
+          ALLOW_TEST_DATABASE_DDL: "true"
+          RESET_DATABASE_ON_STARTUP: "false"
+        run: python -m pytest -q
+      - name: Verify migrations on disposable PostgreSQL
+        working-directory: litblogs
+        env:
+          APP_ENV: test
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGDATABASE: postgres
+          PGUSER: litblog_release_ci
+          PGPASSWORD: release-ci-only-postgres-password
+          TEST_DATABASE_URL: postgresql://litblogs_migrator:release-ci-only-migrator-password@localhost:5432/litblog_test_release_migrations_ci
+          LITBLOGS_MIGRATION_DATABASE_URL: postgresql://litblogs_migrator:release-ci-only-migrator-password@localhost:5432/litblog_test_release_migrations_ci
+        run: |
+          psql --set=ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE litblogs_migrator LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD 'release-ci-only-migrator-password';
+          CREATE ROLE litblogs_runtime LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE litblog_identity_owner NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE litblog_account_operator LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE litblog_invitation_operator LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+          CREATE DATABASE litblog_test_release_migrations_ci OWNER litblogs_migrator;
+          GRANT litblog_identity_owner TO litblogs_migrator WITH ADMIN FALSE, INHERIT TRUE, SET TRUE;
+          SQL
+          psql --set=ON_ERROR_STOP=1 --dbname=litblog_test_release_migrations_ci --command="ALTER SCHEMA public OWNER TO litblogs_migrator"
+          python -m alembic upgrade head
+          psql --set=ON_ERROR_STOP=1 --command="REVOKE litblog_identity_owner FROM litblogs_migrator"
+          python -m alembic current --check-heads
+          psql --set=ON_ERROR_STOP=1 --command="GRANT litblog_identity_owner TO litblogs_migrator WITH ADMIN FALSE, INHERIT TRUE, SET TRUE"
+          python -m alembic downgrade 985a04df032a
+          psql --set=ON_ERROR_STOP=1 --command="REVOKE litblog_identity_owner FROM litblogs_migrator"
+          psql --set=ON_ERROR_STOP=1 --command="GRANT litblog_identity_owner TO litblogs_migrator WITH ADMIN FALSE, INHERIT TRUE, SET TRUE"
+          python -m alembic upgrade head
+          psql --set=ON_ERROR_STOP=1 --command="REVOKE litblog_identity_owner FROM litblogs_migrator"
+          psql --set=ON_ERROR_STOP=1 --command="GRANT litblog_identity_owner TO litblogs_migrator WITH ADMIN FALSE, INHERIT TRUE, SET TRUE"
+          python -m alembic downgrade base
+          psql --set=ON_ERROR_STOP=1 --command="REVOKE litblog_identity_owner FROM litblogs_migrator"
+          psql --set=ON_ERROR_STOP=1 --command="GRANT litblog_identity_owner TO litblogs_migrator WITH ADMIN FALSE, INHERIT TRUE, SET TRUE"
+          python -m alembic upgrade head
+          psql --set=ON_ERROR_STOP=1 --command="REVOKE litblog_identity_owner FROM litblogs_migrator"
+          python -m alembic current --check-heads
+          python -m alembic check
+          psql --set=ON_ERROR_STOP=1 <<'SQL'
+          DO $policy$
+          BEGIN
+            IF EXISTS (
+              SELECT 1
+              FROM pg_auth_members AS membership
+              JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
+              JOIN pg_roles AS member_role ON member_role.oid = membership.member
+              WHERE granted_role.rolname IN (
+                'litblogs_migrator', 'litblogs_runtime', 'litblog_identity_owner',
+                'litblog_account_operator', 'litblog_invitation_operator'
+              ) OR member_role.rolname IN (
+                'litblogs_migrator', 'litblogs_runtime', 'litblog_identity_owner',
+                'litblog_account_operator', 'litblog_invitation_operator'
+              )
+            ) THEN
+              RAISE EXCEPTION 'unexpected synthetic application role membership';
+            END IF;
+          END
+          $policy$;
+          ALTER ROLE litblogs_migrator NOLOGIN;
+          ALTER ROLE litblogs_runtime NOLOGIN;
+          ALTER ROLE litblog_account_operator NOLOGIN;
+          ALTER ROLE litblog_invitation_operator NOLOGIN;
+          CREATE DATABASE litblog_test_release_operator_ci OWNER litblogs_migrator TEMPLATE litblog_test_release_migrations_ci;
+          CREATE ROLE litblogs_backup LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD 'release-ci-only-backup-password';
+          GRANT pg_read_all_data TO litblogs_backup;
+          DO $backup_role$
+          BEGIN
+            IF NOT COALESCE((
+              SELECT role.rolcanlogin
+                AND role.rolinherit
+                AND NOT role.rolsuper
+                AND NOT role.rolcreatedb
+                AND NOT role.rolcreaterole
+                AND NOT role.rolreplication
+                AND NOT role.rolbypassrls
+              FROM pg_roles AS role
+              WHERE role.rolname = 'litblogs_backup'
+            ), FALSE) OR NOT COALESCE((
+              SELECT COUNT(*) = 1
+                AND BOOL_AND(
+                  granted_role.rolname = 'pg_read_all_data'
+                  AND NOT membership.admin_option
+                )
+              FROM pg_auth_members AS membership
+              JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
+              JOIN pg_roles AS member_role ON member_role.oid = membership.member
+              WHERE member_role.rolname = 'litblogs_backup'
+            ), FALSE) OR EXISTS (
+              SELECT 1
+              FROM pg_auth_members AS membership
+              JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
+              WHERE granted_role.rolname = 'litblogs_backup'
+            ) THEN
+              RAISE EXCEPTION 'backup role attributes or memberships are not exact';
+            END IF;
+          END
+          $backup_role$;
+          REVOKE CONNECT, TEMPORARY ON DATABASE postgres FROM PUBLIC;
+          REVOKE CONNECT, TEMPORARY ON DATABASE template0 FROM PUBLIC;
+          REVOKE CONNECT, TEMPORARY ON DATABASE template1 FROM PUBLIC;
+          REVOKE CONNECT, TEMPORARY ON DATABASE litblog_test_release_ci FROM PUBLIC;
+          REVOKE CONNECT, TEMPORARY ON DATABASE litblog_test_release_migrations_ci FROM PUBLIC;
+          REVOKE CONNECT, TEMPORARY ON DATABASE litblog_test_release_operator_ci FROM PUBLIC;
+          GRANT CONNECT ON DATABASE litblog_test_release_operator_ci TO litblogs_backup;
+          DO $backup_scope$
+          BEGIN
+            IF EXISTS (
+              SELECT 1
+              FROM pg_database
+              WHERE has_database_privilege(
+                  'litblogs_backup', datname, 'CREATE'
+                ) OR has_database_privilege(
+                  'litblogs_backup', datname, 'TEMPORARY'
+                ) OR has_database_privilege(
+                  'litblogs_backup', datname, 'CONNECT'
+                ) IS DISTINCT FROM (datname = 'litblog_test_release_operator_ci')
+            ) THEN
+              RAISE EXCEPTION 'backup role database scope is not exact';
+            END IF;
+          END
+          $backup_scope$;
+          SQL
+          if PGPASSWORD=release-ci-only-backup-password psql --host=localhost --username=litblogs_backup --dbname=postgres --command='SELECT 1' >/dev/null 2>&1; then
+            echo 'backup role unexpectedly reached a non-target database' >&2
+            exit 1
+          fi
+      - name: Exercise real PostgreSQL backup and restore tooling
+        working-directory: litblogs
+        env:
+          POSTGRES_OPERATOR_CONTAINER_ID: ${{ job.services.postgres.id }}
+          POSTGRES_OPERATOR_BACKUP_DATABASE_URL: postgresql://litblogs_backup:release-ci-only-backup-password@127.0.0.1:5432/litblog_test_release_operator_ci?sslmode=verify-full&sslrootcert=/etc/litblogs/postgres-root-ca.pem
+          POSTGRES_OPERATOR_RESTORE_DATABASE_URL: postgresql://litblog_release_ci:release-ci-only-postgres-password@127.0.0.1:5432/litblog_test_release_operator_ci?sslmode=verify-full&sslrootcert=/etc/litblogs/postgres-root-ca.pem
+        # The real integration test applies GRANT pg_write_all_data TO pg_read_all_data,
+        # requires backup-precheck rejection, and always runs
+        # REVOKE pg_write_all_data FROM pg_read_all_data before returning.
+        run: python -m pytest tests/test_postgres_operator_integration.py -q
+      - name: Verify frontend and static security gates
+        run: |
+          npm --prefix litblogs run test:run
+          npm --prefix litblogs run lint
+          npm --prefix litblogs run build
+          python scripts/run-backend-ruff.py
+          python scripts/run-backend-bandit.py
+          python -m pip_audit -r litblogs/requirements-dev.txt
+          python -m pip_audit -r litblogs/requirements.txt
+          npm --prefix litblogs audit --audit-level=high
+          npm --prefix litblogs audit --omit=dev --audit-level=high
+          python scripts/check-generic-secrets.py
+          python scripts/validate-repository-policy.py
+      - name: Generate dependency SBOMs
+        run: |
+          test ! -e "$RUNNER_TEMP/litblogs-release-output"
+          mkdir -m 0700 "$RUNNER_TEMP/litblogs-release-output"
+          python -m pip_audit -r litblogs/requirements.txt -f cyclonedx-json -o "$RUNNER_TEMP/litblogs-release-output/python-sbom.cdx.json"
+          npm --prefix litblogs sbom --omit=dev --sbom-format=cyclonedx > "$RUNNER_TEMP/litblogs-release-output/frontend-sbom.cdx.json"
+      - name: Assemble versioned source and frontend artifact
+        id: package
+        run: |
+          short_sha="$(git rev-parse --short=12 HEAD)"
+          source_date_epoch="$(git show -s --format=%ct HEAD)"
+          staging="$RUNNER_TEMP/litblogs-release"
+          mkdir -p "$staging/tree"
+          git archive --format=tar HEAD -- deploy docs/operations litblogs/*.py litblogs/alembic.ini litblogs/migrations/env.py litblogs/migrations/sqlite_contract.py litblogs/migrations/script.py.mako litblogs/migrations/versions litblogs/requirements.txt litblogs/requirements.in litblogs/requirements-lock.txt litblogs/requirements-lock.in | tar -xf - -C "$staging/tree"
+          test -f "$staging/tree/litblogs/password_reset_delivery.py"
+          test -f "$staging/tree/litblogs/runtime_database_identity.py"
+          test -f "$staging/tree/litblogs/migrations/sqlite_contract.py"
+          cp -R litblogs/dist "$staging/tree/litblogs/dist"
+          printf 'commit=%s\nbuilt_at_epoch=%s\n' "$GITHUB_SHA" "$source_date_epoch" > "$staging/tree/RELEASE-MANIFEST"
+          artifact="$RUNNER_TEMP/litblogs-release-output/litblogs-${short_sha}.tar.gz"
+          tar --sort=name --mtime="@${source_date_epoch}" --owner=0 --group=0 --numeric-owner -C "$staging/tree" -czf "$artifact" .
+          archive_file="$(basename "$artifact")"
+          (cd "$RUNNER_TEMP/litblogs-release-output" && sha256sum "$archive_file" *-sbom.cdx.json > SHA256SUMS)
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+          echo "file=$archive_file" >> "$GITHUB_OUTPUT"
+          echo "name=litblogs-${short_sha}" >> "$GITHUB_OUTPUT"
+      - name: Upload reviewed artifact and manifests
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: ${{ runner.temp }}/litblogs-release-output/
+          if-no-files-found: error
+          retention-days: 30
+
+  attest-release:
+    name: Attest reviewed release artifact
+    needs: build-release
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production-release
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download the immutable reviewed bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build-release.outputs.bundle-name }}
+          path: release
+      - name: Attest build provenance
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: release/${{ needs.build-release.outputs.archive-file }}
+      - name: Attest Python dependency SBOM
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: release/${{ needs.build-release.outputs.archive-file }}
+          sbom-path: release/python-sbom.cdx.json
+      - name: Attest frontend dependency SBOM
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: release/${{ needs.build-release.outputs.archive-file }}
+          sbom-path: release/frontend-sbom.cdx.json

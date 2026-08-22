@@ -40,15 +40,19 @@ REGISTRATION_ACCEPTED = {
 def _production_settings_data() -> dict:
     return {
         "app_env": "production",
-        "database_url": "postgresql://litblog_app@database.internal/litblog",
+        "database_url": (
+            f"postgresql://litblog_app:{secrets.token_urlsafe(24)}@database.internal/litblog"
+            "?sslmode=verify-full&sslrootcert=/etc/litblogs/postgres-root-ca.pem"
+        ),
         "secret_key": secrets.token_urlsafe(48),
         "teacher_invite_hmac_key": secrets.token_urlsafe(48),
-        "jwt_issuer": "https://api.litblogs.school.example",
-        "jwt_audience": "litblogs.school.example",
+        "jwt_issuer": "https://api.litblogs.school.edu",
+        "jwt_audience": "litblogs.school.edu",
         "access_token_expire_minutes": 30,
-        "frontend_url": "https://litblogs.school.example",
-        "cors_allowed_origins": ("https://litblogs.school.example",),
-        "allowed_email_domains": ("school.example",),
+        "frontend_url": "https://litblogs.school.edu",
+        "cors_allowed_origins": ("https://litblogs.school.edu",),
+        "allowed_hosts": ("litblogs.school.edu",),
+        "allowed_email_domains": ("school.edu",),
         "google_client_id": "987654321.apps.googleusercontent.com",
         "microsoft_client_id": "2f1c67a1-91e2-46a3-941f-b88e31763e51",
         "microsoft_tenant_id": "871bd3e0-2dc0-4a40-9b07-9d03068c2364",
@@ -60,10 +64,10 @@ def _production_settings_data() -> dict:
         "session_cookie_secure": True,
         "admin_access_code": secrets.token_urlsafe(24),
         "admin_code": secrets.token_urlsafe(24),
-        "email_host": "smtp.school.example",
+        "email_host": "smtp.school.edu",
         "email_username": "litblog-reset",
         "email_password": secrets.token_urlsafe(24),
-        "email_from": "no-reply@school.example",
+        "email_from": "no-reply@school.edu",
         "password_reset_worker_enabled": True,
         "local_password_registration_enabled": False,
         **production_upload_settings(),
@@ -190,8 +194,15 @@ def test_user_model_has_disabled_timestamp_and_session_cascade():
     assert "ix_browser_sessions_user_recency" in {
         index.name for index in models.BrowserSession.__table__.indexes
     }
-    assert "uq_users_email_normalized" in {
-        index.name for index in models.User.__table__.indexes
+    email_index = next(
+        index
+        for index in models.User.__table__.indexes
+        if index.name == "uq_users_email_normalized"
+    )
+    assert email_index.unique is True
+    assert tuple(expression.key for expression in email_index.expressions) == ("email",)
+    assert email_index.dialect_options["postgresql"]["ops"] == {
+        "email": "varchar_pattern_ops"
     }
     teacher_constraint_names = {
         constraint.name
@@ -779,6 +790,80 @@ def _registration_payload(
 
 def _private_email_input(email: str) -> io.StringIO:
     return io.StringIO(f"{email}\n")
+
+
+@pytest.mark.parametrize(
+    ("dialect_name", "qualified_table"),
+    [
+        ("postgresql", "public.operator_audit_events"),
+        ("sqlite", "operator_audit_events"),
+    ],
+)
+def test_operator_audit_insert_uses_only_append_only_runtime_columns(
+    dialect_name,
+    qualified_table,
+):
+    class RecordingSession:
+        def __init__(self):
+            self.statement = None
+            self.parameters = None
+
+        def get_bind(self):
+            return SimpleNamespace(dialect=SimpleNamespace(name=dialect_name))
+
+        def execute(self, statement, parameters):
+            self.statement = statement
+            self.parameters = parameters
+
+        def add(self, _record):
+            pytest.fail("operator audit writes must not use ORM implicit RETURNING")
+
+        def flush(self):
+            pytest.fail("operator audit writes must execute directly without a flush")
+
+    db = RecordingSession()
+    identity_controls.record_operator_audit_event(
+        db,
+        actor_identifier="admin-user:7",
+        action="ACCOUNT_DISABLED",
+        outcome="SUCCEEDED",
+        resource_email="audit-target@example.com",
+        settings=identity_controls.get_settings(),
+    )
+
+    normalized = " ".join(str(db.statement).casefold().split())
+    assert normalized == (
+        f"insert into {qualified_table} "
+        "(actor_identifier, action, outcome, resource_digest) "
+        "values (:actor_identifier, :action, :outcome, :resource_digest)"
+    )
+    assert " returning " not in f" {normalized} "
+    assert "created_at" not in normalized
+    assert set(db.parameters) == {
+        "actor_identifier",
+        "action",
+        "outcome",
+        "resource_digest",
+    }
+
+
+def test_operator_audit_insert_rejects_an_unsupported_database_dialect():
+    class UnsupportedSession:
+        def get_bind(self):
+            return SimpleNamespace(dialect=SimpleNamespace(name="mysql"))
+
+        def execute(self, _statement, _parameters):
+            pytest.fail("unsupported database dialect must fail before audit insertion")
+
+    with pytest.raises(RuntimeError, match="unsupported database dialect"):
+        identity_controls.record_operator_audit_event(
+            UnsupportedSession(),
+            actor_identifier="admin-user:7",
+            action="ACCOUNT_DISABLED",
+            outcome="SUCCEEDED",
+            resource_email="audit-target@example.com",
+            settings=identity_controls.get_settings(),
+        )
 
 
 def _sqlite_account_status_executor(

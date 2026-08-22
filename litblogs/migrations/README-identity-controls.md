@@ -1,12 +1,11 @@
 # Identity controls migration runbook
 
+Revisions `c5136f36e302` and `f1ad78b2035f` are the authoritative identity-schema and
+exact-ACL migrations in the reviewed single-head Alembic chain.
 `0002_add_authorization_constraints.sql` and `0003_add_identity_controls.sql` are
-executable semantic references for this branch's pre-Alembic lineage. The enterprise
-deployment stack uses a single-head Alembic history: both files must be converted into
-ordered Alembic revisions, followed by a model-drift check, before release. Raw SQL
-must not ship or be applied alongside that Alembic history. The standalone SQL
-commands below are retained only for isolated validation of this branch's required
-DDL semantics.
+retained only as semantic references for the pre-Alembic lineage. Raw SQL must not ship
+or be applied alongside the Alembic history. The standalone SQL commands below
+exist only to document the required DDL and privilege semantics.
 
 Migration `0003` follows `0002` and adds revocable server-side browser sessions,
 digest-only teacher invitations, a privacy-preserving operator audit trail, and the
@@ -60,8 +59,9 @@ again. Announce this planned logout to the school before the maintenance window.
 6. Run the queries below and stop if any returns a row. The application accepts ASCII
    school email identities only, removes U+0020 padding, stores them lowercase, and
    rejects every remaining space and ASCII control (C0 plus DEL). PostgreSQL enforces the exact same
-   locale-independent ASCII `translate(btrim(email), ...)` canonical form and pins
-   byte comparisons/indexing to `COLLATE "C"`. Resolve invalid or duplicate legacy identities
+   locale-independent ASCII `translate(btrim(email), ...)` canonical form, pins canonical
+   comparisons to `COLLATE "C"`, and enforces bytewise uniqueness with
+   `varchar_pattern_ops`. Resolve invalid or duplicate legacy identities
    through the reviewed account-reconciliation process before applying the boundary;
    do not delete or merge school records ad hoc. `teachers.user_id` is the canonical
    teacher/account association; the migration only backfills a null association when
@@ -144,6 +144,10 @@ database URL in process arguments. From the release directory the deployment com
 ```sh
 alembic upgrade head
 ```
+
+Alembic must connect to the live target so the revisions can run their fail-closed data
+and role preflights. `alembic upgrade head --sql` is deliberately rejected before it
+emits partial SQL; offline migration output is not a supported release artifact.
 
 Verify the new objects:
 
@@ -254,7 +258,7 @@ REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public
 REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public
     FROM PUBLIC, litblog_account_operator, litblog_invitation_operator;
 
-ALTER DEFAULT PRIVILEGES FOR ROLE litblogs_migrator IN SCHEMA public
+ALTER DEFAULT PRIVILEGES FOR ROLE litblogs_migrator
     REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 
 -- The non-login definer owns only the three routines and receives the least
@@ -286,7 +290,7 @@ GRANT USAGE ON SEQUENCE teacher_invitations_id_seq,
 -- The CREATE grant and membership exist only for these ALTER statements.
 BEGIN;
 GRANT CREATE ON SCHEMA public TO litblog_identity_owner;
-GRANT litblog_identity_owner TO litblogs_migrator;
+GRANT litblog_identity_owner TO litblogs_migrator WITH ADMIN FALSE, INHERIT TRUE, SET TRUE;
 ALTER FUNCTION public.operator_set_account_status(
     VARCHAR, BOOLEAN, VARCHAR, VARCHAR
 ) OWNER TO litblog_identity_owner;
@@ -546,3 +550,32 @@ is not part of application rollback. Such removal requires a separately approved
 schema-retirement migration after the retention period, after every disabled identity is
 reconciled, and only when no supported application version depends on the additive
 schema.
+
+An Alembic downgrade is therefore not an application-rollback mechanism. Identity
+revision `c5136f36e302` deliberately destroys legacy password-reset bearer secrets; the
+migration will not invent replacement tokens. Every revision at or above
+`c5136f36e302` refuses a downgrade before changing its current schema while any reset
+row has a null token or expiry. A separately reviewed schema-retirement rehearsal must
+first prove that those incompatible rows can be retired under the applicable retention
+policy.
+
+The final ACL downgrade is also fail-closed. If the three `SECURITY DEFINER` routines are
+owned by `litblog_identity_owner`, the executing `litblogs_migrator` must have one exact
+direct temporary edge before Alembic starts: `ADMIN FALSE`, `INHERIT TRUE`, and `SET
+TRUE`. A default, inherited, admin-enabled, or otherwise different membership is not an
+acceptable substitute. A bootstrap administrator—not the web runtime or either
+operator—grants it for the separately approved rehearsal and revokes it immediately
+after the command, including on failure:
+
+```sql
+GRANT litblog_identity_owner TO litblogs_migrator WITH ADMIN FALSE, INHERIT TRUE, SET TRUE;
+-- Run the separately approved Alembic downgrade as litblogs_migrator.
+REVOKE litblog_identity_owner FROM litblogs_migrator;
+```
+
+Before changing ownership, revision `f1ad78b2035f` proves cluster-wide that
+`litblog_identity_owner` owns exactly the three reviewed operator routines and no other
+object. The downgrade transfers only those exact signatures with explicit `ALTER
+FUNCTION ... OWNER TO CURRENT_USER`; it does not use `REASSIGN OWNED`. Never leave the
+temporary membership in place, and never improvise a production schema downgrade during
+an application rollback.

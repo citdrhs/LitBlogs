@@ -37,6 +37,7 @@ $sourceExtensions = @(
 # conventional aliases that should never receive source-code literals.
 $knownServerSecretNames = @(
     'SECRET_KEY',
+    'TEACHER_INVITE_HMAC_KEY',
     'DATABASE_URL',
     'ADMIN_ACCESS_CODE',
     'TEACHER_ACCESS_CODE',
@@ -66,8 +67,8 @@ $literalFunctionFallbackPattern = '(?:os\.(?:getenv|environ\.get)|(?:settings|co
 $literalFunctionCoalescePattern = '(?:os\.(?:getenv|environ\.get)|(?:settings|config)\.get)\s*\(\s*["''](?<key>(?:' + $secretNamePattern + '))["'']\s*\)\s*(?:or|\?\?|\|\|)\s*(?:[rRuUbBfF]{0,2})?(?<quote>["''`])(?<value>.*?)\k<quote>'
 $literalJavaScriptDotFallbackPattern = '(?:process\.env\.|import\.meta\.env\.)(?<key>(?:' + $secretNamePattern + '))\s*(?:\?\?|\|\|)\s*(?<quote>["''`])(?<value>.*?)\k<quote>'
 $literalJavaScriptBracketFallbackPattern = '(?:process\.env|import\.meta\.env)\s*\[\s*["''](?<key>(?:' + $secretNamePattern + '))["'']\s*\]\s*(?:\?\?|\|\|)\s*(?<quote>["''`])(?<value>.*?)\k<quote>'
-$testFixturePathPattern = '(?i)(?:^|/)(?:tests?|testdata|fixtures?|mocks?|__tests__)(?:/|$)|(?:^|/)(?:test_.*|.*_(?:test|spec)|.*\.(?:test|spec))\.(?:py|pyi|js|jsx|mjs|cjs|ts|tsx|mts|cts)$'
-$placeholderPattern = '(?i)^(?:|test(?:[-_].*)?|testing(?:[-_].*)?|fixture(?:[-_].*)?|placeholder(?:[-_].*)?|example(?:[-_].*)?|dummy(?:[-_].*)?|fake(?:[-_].*)?|sample(?:[-_].*)?|mock(?:[-_].*)?|change[-_]?me|replace[-_]?me|not[-_]?a[-_]?secret|x+)$'
+$testFixturePathPattern = '(?i)(?:^|/)(?:tests?|testdata|fixtures?|mocks?|__tests__|e2e)(?:/|$)|(?:^|/)(?:test_.*|.*_(?:test|spec)|.*\.(?:test|spec))\.(?:py|pyi|js|jsx|mjs|cjs|ts|tsx|mts|cts)$'
+$placeholderPattern = '(?i)^(?:|test(?:[-_].*)?|testing(?:[-_].*)?|e2e(?:[-_].*)?|fixture(?:[-_].*)?|placeholder(?:[-_].*)?|example(?:[-_].*)?|dummy(?:[-_].*)?|fake(?:[-_].*)?|sample(?:[-_].*)?|mock(?:[-_].*)?|change[-_]?me|replace[-_]?me|not[-_]?a[-_]?secret|x+)$'
 
 foreach ($path in $trackedFiles) {
     $extension = [System.IO.Path]::GetExtension($path).ToLowerInvariant()

@@ -27,6 +27,7 @@ from config import Settings
 from database import SessionLocal
 
 GIB = 1024 * 1024 * 1024
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_registered_object_path_rejects_noncanonical_keys(tmp_path):
@@ -432,7 +433,7 @@ def test_pending_upload_is_owner_only_and_unmapped_object_is_never_served(
 
         rogue_key = "objects/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png"
         rogue_path = tmp_path / rogue_key
-        rogue_path.parent.mkdir(parents=True)
+        rogue_path.parent.mkdir(parents=True, exist_ok=True)
         rogue_path.write_bytes(PNG_BYTES)
         assert client.get(f"/api/uploads/{rogue_key}").status_code == 404
     finally:
@@ -1137,6 +1138,53 @@ def test_cleanup_expires_pending_and_reconciles_delete_pending(monkeypatch, tmp_
     assert not any(path.is_file() for path in tmp_path.rglob("*"))
 
 
+def test_one_shot_reconciliation_reports_success_to_the_service_wrapper(monkeypatch):
+    events = []
+
+    class FakeSession:
+        def commit(self):
+            events.append("commit")
+
+        def rollback(self):
+            events.append("rollback")
+
+        def close(self):
+            events.append("close")
+
+    session = FakeSession()
+    monkeypatch.setattr(main, "SessionLocal", lambda: session)
+    monkeypatch.setattr(main, "reconcile_upload_assets", lambda db: events.append("reconcile"))
+
+    assert main._reconcile_upload_assets_once() is True
+    assert events == ["reconcile", "commit", "close"]
+
+
+def test_one_shot_reconciliation_reports_failure_after_rollback(monkeypatch):
+    events = []
+
+    class FakeSession:
+        def commit(self):
+            events.append("commit")
+
+        def rollback(self):
+            events.append("rollback")
+
+        def close(self):
+            events.append("close")
+
+    session = FakeSession()
+    monkeypatch.setattr(main, "SessionLocal", lambda: session)
+
+    def fail_reconciliation(db):
+        events.append("reconcile")
+        raise RuntimeError("synthetic private failure detail")
+
+    monkeypatch.setattr(main, "reconcile_upload_assets", fail_reconciliation)
+
+    assert main._reconcile_upload_assets_once() is False
+    assert events == ["reconcile", "rollback", "close"]
+
+
 def test_delete_pending_cleanup_removes_registered_staging_before_tombstoning(
     monkeypatch,
     tmp_path,
@@ -1419,6 +1467,7 @@ def test_production_upload_root_requires_existing_real_service_custody(
     monkeypatch,
     tmp_path,
 ):
+    monkeypatch.setattr(config, "_is_canonical_production_upload_root", lambda _root: True)
     missing_root = _production_settings_data()
     missing_root["upload_root"] = tmp_path / "missing"
     with pytest.raises(ValidationError, match="UPLOAD_ROOT custody"):
@@ -1452,7 +1501,8 @@ def test_production_upload_root_requires_existing_real_service_custody(
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits only")
-def test_production_upload_root_rejects_group_or_world_writable(tmp_path):
+def test_production_upload_root_rejects_group_or_world_writable(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "_is_canonical_production_upload_root", lambda _root: True)
     upload_root = tmp_path / "insecure-root"
     upload_root.mkdir(mode=0o770)
     upload_root.chmod(0o770)
@@ -1463,6 +1513,7 @@ def test_production_upload_root_rejects_group_or_world_writable(tmp_path):
 
 
 def test_production_upload_root_rejects_mutable_ancestor(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "_is_canonical_production_upload_root", lambda _root: True)
     mutable_ancestor = tmp_path / "mutable-ancestor"
     mutable_ancestor.mkdir(mode=0o770)
     mutable_ancestor.chmod(0o770)
@@ -1760,25 +1811,20 @@ def test_legacy_inventory_reads_one_stable_file_and_excludes_only_registry_names
     assert records[0]["sha256_digest"] == __import__("hashlib").sha256(PNG_BYTES).hexdigest()
 
 
-def test_production_database_startup_never_uses_metadata_create_all(monkeypatch):
+def test_production_database_startup_never_uses_metadata_create_all():
     import database
 
-    calls = []
-    monkeypatch.setattr(
-        database.Base.metadata,
-        "create_all",
-        lambda **kwargs: calls.append(kwargs),
-    )
-    monkeypatch.setattr(database, "verify_database_schema", lambda: calls.append("verified"))
-    database.initialize_database(allow_schema_create=False)
-    assert calls == ["verified"]
-    assert "allow_schema_create=settings.app_env != \"production\"" in inspect.getsource(
-        main.lifespan
-    )
+    database_source = inspect.getsource(database)
+    lifespan_source = inspect.getsource(main.lifespan)
+    assert not hasattr(database, "initialize_database")
+    assert "create_all(" not in database_source
+    assert "drop_all(" not in database_source
+    assert "create_all(" not in lifespan_source
+    assert "drop_all(" not in lifespan_source
 
     destructive = _production_settings_data()
     destructive["reset_database_on_startup"] = True
-    with pytest.raises(ValidationError, match="RESET_DATABASE_ON_STARTUP"):
+    with pytest.raises(ValidationError, match="(?i)reset_database_on_startup"):
         Settings(**destructive)
 
 
@@ -2029,8 +2075,12 @@ def test_production_requires_explicit_upload_deployment_gates(
 
 
 def test_upload_asset_semantic_migration_reference_is_explicitly_not_alembic_ready():
-    migration = Path("migrations/0005_upload_asset_registry.sql").read_text(encoding="utf-8")
-    readme = Path("migrations/README-upload-asset-registry.md").read_text(encoding="utf-8")
+    migration = (BACKEND_ROOT / "migrations/0005_upload_asset_registry.sql").read_text(
+        encoding="utf-8"
+    )
+    readme = (BACKEND_ROOT / "migrations/README-upload-asset-registry.md").read_text(
+        encoding="utf-8"
+    )
     for marker in (
         "CREATE TABLE upload_assets",
         "ON DELETE SET NULL",

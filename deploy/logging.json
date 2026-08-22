@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "disable_existing_loggers": true,
+  "filters": {
+    "privacy_exception": {
+      "()": "observability.PrivacyExceptionFilter"
+    },
+    "privacy_fallback": {
+      "()": "observability.PrivacyFallbackFilter"
+    }
+  },
+  "formatters": {
+    "journal_message": {
+      "format": "%(message)s"
+    }
+  },
+  "handlers": {
+    "stderr": {
+      "class": "logging.StreamHandler",
+      "filters": [
+        "privacy_exception"
+      ],
+      "formatter": "journal_message",
+      "stream": "ext://sys.stderr"
+    },
+    "fallback_stderr": {
+      "class": "logging.StreamHandler",
+      "filters": [
+        "privacy_fallback"
+      ],
+      "formatter": "journal_message",
+      "stream": "ext://sys.stderr"
+    }
+  },
+  "loggers": {
+    "uvicorn": {
+      "handlers": [
+        "stderr"
+      ],
+      "level": "INFO",
+      "propagate": false
+    },
+    "uvicorn.error": {
+      "handlers": [
+        "stderr"
+      ],
+      "level": "INFO",
+      "propagate": false
+    },
+    "uvicorn.access": {
+      "handlers": [],
+      "level": "CRITICAL",
+      "propagate": false
+    },
+    "litblogs": {
+      "handlers": [
+        "stderr"
+      ],
+      "level": "INFO",
+      "propagate": false
+    },
+    "litblogs.requests": {
+      "handlers": [],
+      "level": "INFO",
+      "propagate": true
+    },
+    "litblogs.errors": {
+      "handlers": [],
+      "level": "ERROR",
+      "propagate": true
+    },
+    "litblogs.security": {
+      "handlers": [],
+      "level": "WARNING",
+      "propagate": true
+    }
+  },
+  "root": {
+    "handlers": [
+      "fallback_stderr"
+    ],
+    "level": "WARNING"
+  }
+}

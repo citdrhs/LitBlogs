@@ -154,9 +154,12 @@ export const configureAuthHttpClient = (
   httpClient = axios,
   {
     apiBasePath = "/api",
-    csrfCookieName = import.meta.env.VITE_CSRF_COOKIE_NAME || "litblog-csrf",
+    csrfCookieName,
   } = {},
 ) => {
+  if (!csrfCookieName) {
+    throw new Error("Browser configuration is unavailable");
+  }
   httpClient.defaults.baseURL = httpClient.defaults.baseURL || apiBasePath;
   httpClient.defaults.withCredentials = false;
   httpClient.interceptors.request.use((config) => {

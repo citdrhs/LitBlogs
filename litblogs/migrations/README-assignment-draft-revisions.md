@@ -1,9 +1,8 @@
 # Assignment draft revision migration
 
-`0004_assignment_draft_revisions.sql` is the semantic deployment reference for
-the ORM change in `models.AssignmentDraft`. Apply it to PostgreSQL before
-deploying application code that requires `expected_revision` and
-`expected_draft_revision`.
+Revision `f0684bf8ff2e` is the authoritative migration for the ORM change in
+`models.AssignmentDraft`. `0004_assignment_draft_revisions.sql` is retained only as a
+semantic reference; do not execute or ship it as a parallel migration path.
 
 The migration keeps existing draft content, gives those rows revision `0`, and
 makes draft content nullable so cleared drafts remain as revision tombstones.

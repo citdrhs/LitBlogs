@@ -997,6 +997,79 @@ def test_web_push_delivery_uses_a_bounded_network_timeout(monkeypatch):
     assert 0 < captured["timeout"] <= 10
 
 
+def test_assignment_push_payload_deep_links_to_the_assignment_class():
+    assignment = models.Assignment(
+        id=73,
+        class_id=19,
+        title="Close reading response",
+    )
+
+    payload = main._make_push_payload(assignment)
+
+    assert payload["url"] == "/class-feed/19"
+    assert payload["url"] != "/class-feed"
+
+
+def test_private_assignment_is_not_sent_to_enrolled_student_push_subscriptions(
+    client,
+    authorization_scenario,
+    monkeypatch,
+):
+    scenario = authorization_scenario
+    due_date = datetime.now(UTC) + timedelta(hours=1)
+    with SessionLocal() as db:
+        student_settings = models.UserSettings(
+            user_id=scenario["student_a"],
+            email_notifications=True,
+            assignment_reminders=True,
+        )
+        subscription = models.PushSubscription(
+            user_id=scenario["student_a"],
+            endpoint="https://fcm.googleapis.com/fcm/send/assignment-visibility",
+            p256dh="student-key",
+            auth="student-auth",
+        )
+        visible_assignment = models.Assignment(
+            class_id=scenario["class_a"],
+            title="Student close reading",
+            description="Assigned to students",
+            due_date=due_date,
+            created_by=scenario["teacher_a"],
+            allow_late=True,
+            visibility="class",
+        )
+        private_assignment = models.Assignment(
+            class_id=scenario["class_a"],
+            title="Teacher planning notes",
+            description="Not assigned to students",
+            due_date=due_date,
+            created_by=scenario["teacher_a"],
+            allow_late=True,
+            visibility="private",
+        )
+        db.add_all(
+            [student_settings, subscription, visible_assignment, private_assignment]
+        )
+        db.commit()
+        db.refresh(visible_assignment)
+        visible_assignment_id = visible_assignment.id
+
+    delivered_payloads = []
+
+    def capture_delivery(_subscription, payload):
+        delivered_payloads.append(payload)
+        return True
+
+    monkeypatch.setattr(main, "WEB_PUSH_ENABLED", True)
+    monkeypatch.setattr(main, "_send_web_push", capture_delivery)
+
+    assert main._dispatch_assignment_push_reminders_once() is True
+    assert [payload["tag"] for payload in delivered_payloads] == [
+        f"assignment-reminder-{visible_assignment_id}"
+    ]
+    assert all("Teacher planning notes" not in payload["body"] for payload in delivered_payloads)
+
+
 def test_push_subscription_endpoint_cannot_be_taken_over_by_another_user(
     client,
     authorization_scenario,
@@ -1459,3 +1532,224 @@ def test_student_and_teacher_assignment_journey(client, authorization_scenario):
     assert teacher_reply.status_code == 200
     assert student_replies.status_code == 200
     assert student_replies.json()[0]["content"] == "Private teacher response"
+
+
+def _create_private_assignment(client, scenario):
+    response = client.post(
+        f"/api/classes/{scenario['class_a']}/assignments",
+        headers=scenario["teacher_a_headers"],
+        json={
+            "title": "Teacher planning notes",
+            "description": "Not assigned to students",
+            "due_date": "2030-01-01T00:00:00Z",
+            "allow_late": True,
+            "visibility": "private",
+        },
+    )
+    assert response.status_code == 200
+    return response.json()["id"]
+
+
+def _make_existing_assignment_private(scenario):
+    with SessionLocal() as db:
+        assignment = (
+            db.query(models.Assignment)
+            .filter(models.Assignment.id == scenario["assignment_a"])
+            .one()
+        )
+        assignment.visibility = "private"
+        db.commit()
+
+
+def test_editing_private_assignment_without_visibility_keeps_it_private(
+    client,
+    authorization_scenario,
+):
+    scenario = authorization_scenario
+    assignment_id = _create_private_assignment(client, scenario)
+
+    update_response = client.put(
+        f"/api/classes/{scenario['class_a']}/assignments/{assignment_id}",
+        headers=scenario["teacher_a_headers"],
+        json={
+            "title": "Updated teacher planning notes",
+            "description": "Still not assigned to students",
+            "due_date": "2030-01-02T00:00:00Z",
+            "allow_late": False,
+        },
+    )
+    student_response = client.get(
+        f"/api/classes/{scenario['class_a']}/assignments",
+        headers=scenario["student_a_headers"],
+    )
+
+    assert update_response.status_code == 200
+    assert update_response.json()["visibility"] == "private"
+    assert assignment_id not in {item["id"] for item in student_response.json()}
+
+
+def test_private_assignment_is_hidden_from_students_but_visible_to_staff(
+    client,
+    authorization_scenario,
+):
+    scenario = authorization_scenario
+    assignment_id = _create_private_assignment(client, scenario)
+
+    student_response = client.get(
+        f"/api/classes/{scenario['class_a']}/assignments",
+        headers=scenario["student_a_headers"],
+    )
+    teacher_response = client.get(
+        f"/api/classes/{scenario['class_a']}/assignments",
+        headers=scenario["teacher_a_headers"],
+    )
+    admin_response = client.get(
+        f"/api/classes/{scenario['class_a']}/assignments",
+        headers=scenario["admin_headers"],
+    )
+
+    assert student_response.status_code == 200
+    assert teacher_response.status_code == 200
+    assert admin_response.status_code == 200
+    assert assignment_id not in {item["id"] for item in student_response.json()}
+    assert assignment_id in {item["id"] for item in teacher_response.json()}
+    assert assignment_id in {item["id"] for item in admin_response.json()}
+
+
+@pytest.mark.parametrize(
+    ("method", "path_suffix", "json_body"),
+    [
+        ("get", "submissions", None),
+        ("get", "submissions/{submission_a}/replies", None),
+        (
+            "post",
+            "submissions/{submission_a}/replies",
+            {"content": "Student reply to hidden work"},
+        ),
+    ],
+)
+def test_student_cannot_access_private_assignment_submissions_or_replies(
+    client,
+    authorization_scenario,
+    method,
+    path_suffix,
+    json_body,
+):
+    scenario = authorization_scenario
+    _make_existing_assignment_private(scenario)
+    request_kwargs = {"headers": scenario["student_a_headers"]}
+    if json_body is not None:
+        request_kwargs["json"] = json_body
+
+    response = getattr(client, method)(
+        (
+            f"/api/classes/{scenario['class_a']}/assignments/"
+            f"{scenario['assignment_a']}/{path_suffix.format(**scenario)}"
+        ),
+        **request_kwargs,
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Assignment not found"}
+    with SessionLocal() as db:
+        assert (
+            db.query(models.AssignmentSubmissionReply)
+            .filter(
+                models.AssignmentSubmissionReply.submission_id
+                == scenario["submission_a"],
+                models.AssignmentSubmissionReply.content
+                == "Student reply to hidden work",
+            )
+            .first()
+            is None
+        )
+
+
+def test_staff_retain_private_assignment_submission_and_reply_access(
+    client,
+    authorization_scenario,
+):
+    scenario = authorization_scenario
+    _make_existing_assignment_private(scenario)
+    submissions_url = (
+        f"/api/classes/{scenario['class_a']}/assignments/"
+        f"{scenario['assignment_a']}/submissions"
+    )
+    replies_url = f"{submissions_url}/{scenario['submission_b']}/replies"
+
+    teacher_submissions = client.get(
+        submissions_url,
+        headers=scenario["teacher_a_headers"],
+    )
+    admin_submissions = client.get(
+        submissions_url,
+        headers=scenario["admin_headers"],
+    )
+    teacher_replies = client.get(
+        replies_url,
+        headers=scenario["teacher_a_headers"],
+    )
+    admin_replies = client.get(
+        replies_url,
+        headers=scenario["admin_headers"],
+    )
+
+    assert teacher_submissions.status_code == 200
+    assert admin_submissions.status_code == 200
+    assert teacher_replies.status_code == 200
+    assert admin_replies.status_code == 200
+    assert teacher_replies.json()[0]["content"] == "Private teacher feedback"
+    assert admin_replies.json()[0]["content"] == "Private teacher feedback"
+
+
+@pytest.mark.parametrize(
+    ("method", "path_suffix", "json_body"),
+    [
+        ("get", "draft", None),
+        ("put", "draft", {"content": "Hidden draft", "expected_revision": 0}),
+        (
+            "post",
+            "submit",
+            {"content": "Hidden submission", "expected_draft_revision": 0},
+        ),
+    ],
+)
+def test_student_cannot_read_save_or_submit_private_assignment(
+    client,
+    authorization_scenario,
+    method,
+    path_suffix,
+    json_body,
+):
+    scenario = authorization_scenario
+    assignment_id = _create_private_assignment(client, scenario)
+    request_kwargs = {"headers": scenario["student_a_headers"]}
+    if json_body is not None:
+        request_kwargs["json"] = json_body
+
+    response = getattr(client, method)(
+        f"/api/assignments/{assignment_id}/{path_suffix}",
+        **request_kwargs,
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Assignment not found"}
+    with SessionLocal() as db:
+        assert (
+            db.query(models.AssignmentDraft)
+            .filter(
+                models.AssignmentDraft.assignment_id == assignment_id,
+                models.AssignmentDraft.student_id == scenario["student_a"],
+            )
+            .first()
+            is None
+        )
+        assert (
+            db.query(models.AssignmentSubmission)
+            .filter(
+                models.AssignmentSubmission.assignment_id == assignment_id,
+                models.AssignmentSubmission.student_id == scenario["student_a"],
+            )
+            .first()
+            is None
+        )

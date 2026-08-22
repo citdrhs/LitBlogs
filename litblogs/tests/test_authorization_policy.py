@@ -10,6 +10,9 @@ import main
 EXPECTED_PUBLIC_API_ROUTES = frozenset(
     {
         ("GET", "/api/"),
+        ("GET", "/api/health/live"),
+        ("GET", "/api/health/ready"),
+        ("GET", "/api/runtime-config"),
         ("POST", "/api/auth/forgot-password"),
         ("POST", "/api/auth/google-login"),
         ("POST", "/api/auth/google-signup"),
@@ -29,6 +32,8 @@ EXPECTED_API_ROUTES = frozenset(
         ("DELETE", "/api/upload/{file_path:path}"),
         ("DELETE", "/api/user/account"),
         ("GET", "/api/"),
+        ("GET", "/api/health/live"),
+        ("GET", "/api/health/ready"),
         ("GET", "/api/assignments/{assignment_id}/draft"),
         ("GET", "/api/auth/session"),
         ("GET", "/api/classes"),
@@ -50,6 +55,7 @@ EXPECTED_API_ROUTES = frozenset(
         ("GET", "/api/comments/{comment_id}/replies"),
         ("GET", "/api/push/public-key"),
         ("GET", "/api/push/subscription"),
+        ("GET", "/api/runtime-config"),
         ("GET", "/api/student/classes"),
         ("GET", "/api/student/posts"),
         ("GET", "/api/teacher/analytics"),

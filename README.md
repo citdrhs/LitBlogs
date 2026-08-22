@@ -1,179 +1,43 @@
 # LitBlogs
 
-A modern blogging platform for educational institutions, designed for teachers and students to share literary content, collaborate, and engage in classroom discussions.
+LitBlogs is a private-school blogging and classroom collaboration application. It uses a React/Vite frontend, a FastAPI backend, and PostgreSQL. Students can publish rich-text posts, comment, react, manage profiles, and complete assignments; teachers can manage classes, assignments, rosters, and student work.
 
-## Table of Contents
-- [Overview](#overview)
-- [System Requirements](#system-requirements)
-- [Production Deployment](#production-deployment)
-- [Environment Configuration](#environment-configuration)
-- [Maintenance Guide](#maintenance-guide)
-## Overview
+## Local development
 
-LitBlogs is a full-stack web application built with:
-- **Backend**: FastAPI (Python)
-- **Frontend**: React with Vite
-- **Database**: PostgreSQL
-- **Authentication**: JWT, Google OAuth, Microsoft OAuth
+Supported development versions are Python 3.13 and Node.js 24 LTS. The frontend package, `.nvmrc`, and `.node-version` fail closed on a different Node major.
 
-The platform supports role-based access (students, teachers, admins), class management, rich-text blog posts, comments, and user profiles.
-
-## System Requirements
-
-### Production Server
-- Ubuntu 20.04 LTS or newer
-- Python 3.10+
-- Node.js 18+
-- PostgreSQL 12+
-- NGINX
-- 2GB RAM minimum (4GB recommended)
-- 20GB storage minimum
-
-## Production Deployment
-
-### Prerequisites
-1. Python 3.10+
-2. Node.js 18+
-3. PostgreSQL 12+
-4. Git
-
-### Clone Repository
-Run this to get into the LitBlogs account model:
 ```bash
-sudo su litblogs
-```
-Go to /www/ by running the following command:
-```bash
-cd ~
-cd www
-```
-Then clone the repository:
-```bash
-git clone https://github.com/citdrhs/LitBlogs.git
-cd LitBlogs/litblogs
-```
-Run the commmand with sudo if you need permissions to clone the repository.
-
-### Backend Setup
-1. Create and activate a virtual environment:
-```bash
-python -m venv myvenv
-chown -R $USER:$USER /var/www/LitBlogs/litblogs/myvenv
-chown -R $USER:$USER /var/www/LitBlogs/litblogs
-source myvenv/bin/activate # On Windows: myvenv\Scripts\activate
+cd litblogs
+python -m venv .venv
+python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.txt
+npm ci
 ```
 
-2. Install dependencies:
+Copy `litblogs/.env.example` to an ignored local environment file and replace the development placeholders. The example is intentionally development-only; it is not a production secret template.
+
+Initialize or advance the local SQLite schema explicitly before starting the API. The migration loader accepts this file only when `APP_ENV=development`, `LITBLOGS_MIGRATION_DATABASE_URL` exactly equals `DATABASE_URL`, and the named `.db`/`.sqlite*` file resolves inside `litblogs` without a symlink escape:
+
 ```bash
-pip install -r requirements.txt
+cd litblogs
+set -a
+. ./.env
+set +a
+python -m alembic -c alembic.ini upgrade head
+python -m alembic -c alembic.ini current --check-heads
 ```
 
-`requirements.txt` now includes `pywebpush`, which is required for browser push notifications.
+`upgrade head` is idempotent and is the required fresh-local initialization path; application startup never creates or resets schema.
 
-3. Add the upload directory to the backend:
-While in /www/LitBlogs/litblogs, run the following command:
-```bash
-mkdir -p uploads
-cd uploads
-mkdir -p images
-mkdir -p files
-mkdir -p videos
-mkdir -p profile_images
-mkdir -p cover_images
-```
-Then go back to the main account by running
-```bash
-exit
-```
+Run the quality gates from the repository root:
 
-4. Install postgres:
 ```bash
-sudo apt-get install postgresql postgresql-contrib
+python -m pytest litblogs/tests -q
+npm --prefix litblogs run test:run
+npm --prefix litblogs run lint
+npm --prefix litblogs run build
+python -m ruff check litblogs
+python scripts/run-backend-bandit.py
 ```
-Create a user with the following command:
-```bash
-sudo -u postgres psql -c "CREATE USER postgres WITH PASSWORD 'postgres';"
-```
-Open psql:
-```bash
-sudo -u postgres psql
-```
-Create a database with the following command:
-```bash
-CREATE DATABASE litblogs;
-```
-Then exit psql:
-```bash
-\q
-```
-Or type exit
-Then run the service called blog to start the backend(service was already created)
-
-5. Run the backend server:
-```bash
-chmod +x /home/litblogs/www/LitBlogs/litblogs/run.sh
-sudo systemctl start blog
-```
-
-### Frontend Setup
-Go back to the litblogs account model and go to /www/LitBlogs/litblogs
-1. Install dependencies:
-```bash
-npm install --force
-```
-
-2. Run the frontend server:
-```bash
-npm run build
-```
-Go back to the main account by running
-```bash
-exit
-```
-3. Go to the nginx directory and edit the file:
-```bash
-sudo nano /etc/nginx/sites-enabled/tutorial
-```
-Add the following to the file:
-```bash
-server {
-    listen 7001;
-    listen [::]:7001;
-    server_name drhscit.org www.drhscit.org;
-
-    root /home/litblogs/www/LitBlogs/litblogs/dist;
-    index index.html;
-
-    # Frontend SPA
-    location / {
-        rewrite ^/dren(.*)$ /$1 last;
-        try_files $uri $uri/ /dren/index.html;
-    }
-
-    # Backend API proxy
-    location /dren/api/ {
-        rewrite ^/dren/api/(.*)$ /api/$1 break;
-        proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_cache_bypass $http_upgrade;
-        proxy_pass_request_headers on;
-    }
-
-    # Uploads route
-    location ^~ /uploads/ {
-        return 307 /dren/api$uri$is_args$args;
-    }
-}
-```
-
-
-
 
 ## Identity and session operations
 
@@ -208,9 +72,10 @@ credential, `sslmode=verify-full`, and exact root-owned CA path
 not group/world writable. The CLI also verifies `current_user`, role attributes and
 memberships, and an EXECUTE-only SECURITY DEFINER boundary with no direct table or
 sequence privileges.
-The target email is read from a no-echo prompt
-and must never be placed in argv, an environment variable, shell history, or process
-metadata. The operator identifier is intended audit data:
+
+The target email is read from a no-echo prompt and must never be placed in argv, an
+environment variable, shell history, or process metadata. The operator identifier is
+intended audit data:
 
 ```bash
 python -m manage_teacher_invitations create --expires-hours 24 --operator "$REVIEWED_OPERATOR"
@@ -238,50 +103,26 @@ token-safe application rollback procedure.
 Email identity is restricted to ASCII school addresses and is case-insensitive. New
 accounts remove U+0020 padding and store a lowercase address; every remaining space,
 ASCII control character (C0 plus DEL), and non-ASCII byte is rejected. PostgreSQL
-uses locale-independent ASCII `translate(btrim(email), ...)`, equivalent control checks, and a
-`COLLATE "C"` canonical index rather than locale-sensitive `lower()`, plus
-canonical uniqueness. The teacher/account association is the unique, non-null
+uses locale-independent ASCII `translate(btrim(email), ...)`, equivalent control checks,
+`COLLATE "C"` canonical comparisons, and a bytewise `varchar_pattern_ops` unique
+index rather than locale-sensitive `lower()`. The teacher/account association is the unique, non-null
 `teachers.user_id`; the denormalized teacher email is reconciled to the user row.
 Migration preflight must reconcile any invalid, unmappable, or duplicate legacy
 identities through a reviewed school process before the constraints and indexes are
-created. Password registration accepts only the
-configured school email domains in production and returns the same generic accepted
-response when an address is ineligible.
+created. Password registration accepts only the configured school email domains in
+production and returns the same generic accepted response when an address is ineligible.
 
-Generic acceptance prevents direct account enumeration, but password registration in
-this slice does not prove control of the submitted school mailbox. Production must keep
-password registration disabled in favor of verified school SSO, or add a reviewed
-pending-email/roster verification flow before activating password accounts.
+Generic acceptance prevents direct account enumeration, but password registration does
+not prove control of the submitted school mailbox. Production must keep password
+registration disabled in favor of verified school SSO, or add a reviewed pending-email
+or roster-verification flow before activating password accounts.
 
-## Environment Configuration
+## Environment configuration
 
-Push reminders (outside the app) require VAPID keys and related settings in your backend env.
-
-In `.env` (or your active environment file), set:
-
-```dotenv
-VAPID_PUBLIC_KEY=<your_public_key>
-VAPID_PRIVATE_KEY=<your_private_key>
-VAPID_SUBJECT=mailto:your-email@example.com
-PUSH_REMINDER_INTERVAL_SECONDS=300
-PUSH_ALLOWED_ENDPOINT_HOSTS=fcm.googleapis.com,updates.push.services.mozilla.com,web.push.apple.com,.notify.windows.com
-PUSH_DELIVERY_TIMEOUT_SECONDS=5
-```
-
-Generate keys with:
-
-```bash
-npx web-push generate-vapid-keys
-```
-
-Important notes:
-- Push notifications require HTTPS in production.
-- In development, localhost works for service workers and notification testing.
-- The server checks reminders on startup, then every `PUSH_REMINDER_INTERVAL_SECONDS`.
-- Push endpoints must match `PUSH_ALLOWED_ENDPOINT_HOSTS`; keep this list limited to
-  browser push providers approved by school IT. Enforce the same destinations at the
-  server egress firewall to prevent DNS rebinding, and keep
-  `PUSH_DELIVERY_TIMEOUT_SECONDS` at 10 seconds or less.
+Production push delivery remains disabled until its endpoint validation, redirect,
+timeout, and network-egress controls pass the deployment review. Do not enable it from
+the development example. The reviewed production runbook is the authority for runtime
+settings and secret custody.
 
 Password resets require a STARTTLS-capable SMTP relay in production. Configure
 `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USERNAME`, `EMAIL_PASSWORD`, `EMAIL_FROM`, and:
@@ -293,40 +134,27 @@ PASSWORD_RESET_WORKER_INTERVAL_SECONDS=5
 PASSWORD_RESET_CLAIM_TIMEOUT_SECONDS=120
 ```
 
-The public reset request only commits a concurrency-safe outbox row and returns the
-same `202` response for known and unknown addresses; it never waits for SMTP. A
-background worker claims each per-user row before delivery, and the token becomes
-usable only after a successful send. Reset links place the token in a URL fragment so
-reverse proxies do not receive it; the frontend removes the fragment from browser
-history immediately. Run one worker-enabled application instance during deployment
-smoke testing and monitor reset rows stuck in `PROCESSING` or ending in `FAILED`.
+The public reset request commits a concurrency-safe outbox row and returns the same
+`202` response for known and unknown addresses; it never waits for SMTP. A background
+worker claims each per-user row before delivery, and the token becomes usable only after
+a successful send. Reset links place the token in a URL fragment so reverse proxies do
+not receive it; the frontend removes the fragment from browser history immediately.
+Run one worker-enabled application instance during deployment smoke testing and monitor
+reset rows stuck in `PROCESSING` or ending in `FAILED`.
 
+## Production deployment
 
-## Maintenance Guide
+Do not deploy a Git branch, a developer checkout, or locally assembled files. Production releases must come from the reviewed, attested artifact produced by the `Build reviewed release artifact` GitHub Actions workflow.
 
-### Backend Maintenance
+- [Deployment layout and prerequisites](deploy/README.md)
+- [Production deployment, migration, backup, restore, rollback, and incident runbook](docs/operations/production-runbook.md)
 
-1. Check if the backend is running:
-```bash
-sudo systemctl status blog
-```
+The deployment design keeps private uploads outside the source tree, runs the API only on loopback behind TLS-terminating Nginx, applies schema changes through Alembic, installs hash-locked dependencies, and uses hardened systemd units. A release remains blocked until the runbook's backup/restore rehearsal, migration checks, legacy federated-identity mapping, security gates, and smoke tests all pass.
 
-2. Restart blog service:
-```bash
-sudo systemctl restart blog
-```
+## Security
 
-3. View logs of blog service:
-```bash
-sudo journalctl -xeu blog.service
-```
+Please report vulnerabilities privately using the process in [SECURITY.md](SECURITY.md). Never commit credentials, student data, production database copies, upload files, or environment files.
 
-4. Restart nginx:
-```bash
-sudo systemctl restart nginx
-```
+## Contribution workflow
 
-5. Check if nginx is running:
-```bash
-sudo systemctl status nginx
-```
+All changes go through short-lived branches and reviewed pull requests. See [CONTRIBUTING.md](CONTRIBUTING.md) for required checks and repository workflow.

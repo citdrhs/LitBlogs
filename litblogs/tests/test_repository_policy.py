@@ -1,4 +1,5 @@
 import ast
+import json
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
@@ -7,6 +8,7 @@ import pytest
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 VALIDATOR_PATH = REPOSITORY_ROOT / "scripts" / "validate-repository-policy.py"
 CI_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
+RELEASE_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "release.yml"
 BACKEND_ROOT = REPOSITORY_ROOT / "litblogs"
 MAIN_PATH = BACKEND_ROOT / "main.py"
 IDENTITY_MIGRATION_PATH = BACKEND_ROOT / "migrations" / "0003_add_identity_controls.sql"
@@ -64,6 +66,17 @@ def _validate_workflow(policy_validator, tmp_path, workflow):
     return policy_validator.failures
 
 
+def _validate_release_workflow(policy_validator, tmp_path, workflow):
+    workflow_path = tmp_path / ".github" / "workflows" / "release.yml"
+    workflow_path.parent.mkdir(parents=True)
+    workflow_path.write_text(workflow, encoding="utf-8")
+
+    policy_validator.ROOT = tmp_path
+    policy_validator.failures.clear()
+    policy_validator.validate_release()
+    return policy_validator.failures
+
+
 def test_policy_validator_accepts_guarded_postgresql_backend_pytest(
     policy_validator, tmp_path
 ):
@@ -85,6 +98,69 @@ def test_policy_validator_rejects_sqlite_backend_pytest(policy_validator, tmp_pa
     failures = _validate_workflow(policy_validator, tmp_path, sqlite_workflow)
 
     assert any("guarded synthetic PostgreSQL" in failure for failure in failures)
+
+
+def test_policy_validator_rejects_eol_node_major(policy_validator, tmp_path):
+    node_24_workflow = CI_PATH.read_text(encoding="utf-8").replace(
+        'node-version: "20"', 'node-version: "24"'
+    )
+    node_20_workflow = node_24_workflow.replace(
+        'node-version: "24"', 'node-version: "20"'
+    )
+
+    failures = _validate_workflow(policy_validator, tmp_path, node_20_workflow)
+
+    assert any("Node 24" in failure for failure in failures)
+
+
+def test_node_runtime_contract_pins_supported_major_24(policy_validator):
+    package = json.loads(
+        (BACKEND_ROOT / "package.json").read_text(encoding="utf-8")
+    )
+
+    assert package["engines"] == {"node": "24.x"}
+    assert (BACKEND_ROOT / ".nvmrc").read_text(encoding="utf-8") == "24\n"
+    assert (BACKEND_ROOT / ".node-version").read_text(encoding="utf-8") == "24\n"
+
+    policy_validator.failures.clear()
+    policy_validator.validate_node_runtime_contract()
+    assert policy_validator.failures == []
+
+
+def test_security_reporting_rejects_a_stale_repository_host(
+    policy_validator, tmp_path
+):
+    canonical = "https://github.com/citdrhs/LitBlogs/security/advisories/new"
+    stale = "https://github.com/Antigro09/LitBlog/security/advisories/new"
+    issue_config = tmp_path / ".github" / "ISSUE_TEMPLATE" / "config.yml"
+    issue_config.parent.mkdir(parents=True)
+    issue_config.write_text(
+        "blank_issues_enabled: false\n"
+        "contact_links:\n"
+        "  - name: Private security report\n"
+        f"    url: {canonical}\n"
+        "    about: Private advisory\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "SECURITY.md").write_text(
+        f"Report privately at {canonical}.\n", encoding="utf-8"
+    )
+    policy_validator.ROOT = tmp_path
+    policy_validator.failures.clear()
+    policy_validator.validate_security_reporting()
+    assert policy_validator.failures == []
+
+    issue_config.write_text(
+        issue_config.read_text(encoding="utf-8").replace(canonical, stale),
+        encoding="utf-8",
+    )
+    (tmp_path / "SECURITY.md").write_text(
+        f"Report privately at {stale}.\n", encoding="utf-8"
+    )
+    policy_validator.failures.clear()
+    policy_validator.validate_security_reporting()
+
+    assert any("canonical private advisory" in failure for failure in policy_validator.failures)
 
 
 def test_backend_entrypoint_does_not_mix_local_module_import_styles():
@@ -115,7 +191,7 @@ def test_identity_migration_is_additive_digest_only_and_indexed():
     assert "alter table users" in migration
     assert "add column if not exists disabled_at timestamptz" in migration
     assert "uq_users_email_normalized" in migration
-    assert 'on users (email collate "c")' in migration
+    assert "on users (email varchar_pattern_ops)" in migration
     assert "create table browser_sessions" in migration
     assert "create table teacher_invitations" in migration
     assert "create table operator_audit_events" in migration
@@ -230,6 +306,101 @@ def test_shared_teacher_code_and_public_invitation_contracts_are_absent():
     assert "accessCode" not in (BACKEND_ROOT / "src" / "Sign-up.jsx").read_text(
         encoding="utf-8"
     )
+
+
+def test_workflows_isolate_pytest_migrations_and_coupled_operator_recovery():
+    exact_owner_membership_grant = (
+        "GRANT litblog_identity_owner TO litblogs_migrator "
+        "WITH ADMIN FALSE, INHERIT TRUE, SET TRUE"
+    )
+    contracts = {
+        CI_PATH: (
+            "litblog_ci",
+            "litblog_test_migrations_ci",
+            "litblog_test_operator_ci",
+            "postgresql://litblogs_migrator:ci-only-migrator-password@"
+            "localhost:5432/litblog_test_migrations_ci",
+        ),
+        RELEASE_PATH: (
+            "litblog_test_release_ci",
+            "litblog_test_release_migrations_ci",
+            "litblog_test_release_operator_ci",
+            "postgresql://litblogs_migrator:release-ci-only-migrator-password@"
+            "localhost:5432/litblog_test_release_migrations_ci",
+        ),
+    }
+
+    for path, (
+        pytest_database,
+        migration_database,
+        operator_database,
+        migration_database_url,
+    ) in contracts.items():
+        workflow = path.read_text(encoding="utf-8")
+        assert f"/{pytest_database}" in workflow
+        assert f"/{migration_database}" in workflow
+        assert f"/{operator_database}" in workflow
+        assert f"CREATE DATABASE {migration_database} OWNER litblogs_migrator" in workflow
+        assert f"TEST_DATABASE_URL: {migration_database_url}" in workflow
+        assert f"LITBLOGS_MIGRATION_DATABASE_URL: {migration_database_url}" in workflow
+        assert (
+            f"CREATE DATABASE {operator_database} OWNER litblogs_migrator "
+            f"TEMPLATE {migration_database}" in workflow
+        )
+        for role_name in (
+            "litblogs_migrator",
+            "litblogs_runtime",
+            "litblog_identity_owner",
+            "litblog_account_operator",
+            "litblog_invitation_operator",
+        ):
+            assert f"CREATE ROLE {role_name}" in workflow
+        assert (
+            "CREATE ROLE litblogs_backup LOGIN INHERIT NOSUPERUSER NOCREATEDB "
+            "NOCREATEROLE NOREPLICATION NOBYPASSRLS" in workflow
+        )
+        assert "GRANT pg_read_all_data TO litblogs_backup" in workflow
+        assert "granted_role.rolname = 'pg_read_all_data'" in workflow
+        assert "WHERE member_role.rolname = 'litblogs_backup'" in workflow
+        assert "WHERE granted_role.rolname = 'litblogs_backup'" in workflow
+        assert f"GRANT CONNECT ON DATABASE {operator_database} TO litblogs_backup" in workflow
+        assert "REVOKE CONNECT, TEMPORARY ON DATABASE template1 FROM PUBLIC" in workflow
+        assert "REVOKE CONNECT, TEMPORARY ON DATABASE template0 FROM PUBLIC" in workflow
+        assert "has_database_privilege(" in workflow
+        assert "'litblogs_backup', datname, 'CONNECT'" in workflow
+        assert "'litblogs_backup', datname, 'CREATE'" in workflow
+        assert "'litblogs_backup', datname, 'TEMPORARY'" in workflow
+        assert "IS DISTINCT FROM (datname =" in workflow
+        assert "POSTGRES_OPERATOR_BACKUP_DATABASE_URL" in workflow
+        assert "POSTGRES_OPERATOR_RESTORE_DATABASE_URL" in workflow
+        assert exact_owner_membership_grant in workflow
+        assert "REVOKE litblog_identity_owner FROM litblogs_migrator" in workflow
+        assert workflow.count(exact_owner_membership_grant) == workflow.count(
+            "REVOKE litblog_identity_owner FROM litblogs_migrator"
+        )
+        assert "pg_auth_members" in workflow
+        assert workflow.index(f"/{pytest_database}") < workflow.index(
+            f"/{migration_database}"
+        )
+
+    browser_database_helper = (
+        BACKEND_ROOT / "e2e/support/database.py"
+    ).read_text(encoding="utf-8")
+    browser_database_tree = ast.parse(browser_database_helper)
+    assert exact_owner_membership_grant in {
+        node.value
+        for node in ast.walk(browser_database_tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+
+    for document_path in (
+        REPOSITORY_ROOT / "docs/operations/production-runbook.md",
+        BACKEND_ROOT / "migrations/README-identity-controls.md",
+    ):
+        document = document_path.read_text(encoding="utf-8")
+        assert exact_owner_membership_grant in document
+        assert "REASSIGN OWNED" in document
+        assert "does not" in document or "never" in document
 
 
 def test_identity_primitives_do_not_log_or_print_raw_values():
@@ -349,3 +520,185 @@ def test_account_operator_is_limited_to_reviewed_user_columns():
     assert handoff_start < handoff_revoke < handoff_commit
     assert "pg_catalog.aclexplode" in runbook
     assert "unexpected_function_grantee" in runbook
+
+
+def test_policy_validator_accepts_protected_immutable_release_workflow(policy_validator):
+    assert RELEASE_PATH.is_file()
+
+    policy_validator.failures.clear()
+    policy_validator.validate_release()
+
+    assert policy_validator.failures == []
+
+
+def test_gitignore_policy_blocks_private_uploads_and_local_databases(policy_validator):
+    policy_validator.failures.clear()
+    policy_validator.validate_privacy_ignores()
+
+    assert policy_validator.failures == []
+
+
+def test_ci_browser_gate_is_mandatory_and_uploads_only_sanitized_failures(
+    policy_validator,
+):
+    workflow, _ = policy_validator.load_yaml(".github/workflows/ci.yml")
+    browser_job = workflow["jobs"]["browser-journeys"]
+    commands = policy_validator.step_commands(browser_job)
+
+    assert browser_job["name"] == "Browser release journeys"
+    assert browser_job["services"]["postgres"]["env"] == {
+        "POSTGRES_USER": "litblogs_e2e_admin",
+        "POSTGRES_PASSWORD": "e2e-ci-only-postgres-password",
+        "POSTGRES_DB": "postgres",
+        "POSTGRES_INITDB_ARGS": (
+            "--auth-host=scram-sha-256 --auth-local=scram-sha-256"
+        ),
+    }
+    assert "npm ci" in commands
+    assert "npx playwright install --with-deps chromium" in commands
+    assert "npm run test:e2e" in commands
+    browser_steps = browser_job["steps"]
+    journey_step = next(step for step in browser_steps if step.get("name") == "Run seven browser journeys")
+    assert journey_step["env"] == {
+        "CI": "true",
+        "E2E_ADMIN_DATABASE_URL": (
+            "postgresql+psycopg2://litblogs_e2e_admin:"
+            "e2e-ci-only-postgres-password@127.0.0.1:5432/postgres"
+        ),
+        "E2E_DISPOSABLE_DATABASE_CONFIRMED": "litblogs-e2e-only",
+    }
+    upload_step = next(
+        step
+        for step in browser_steps
+        if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+    )
+    assert upload_step["if"] == "failure()"
+    assert upload_step["with"]["path"] == (
+        "litblogs/test-results/e2e/sanitized-failures/*.json"
+    )
+    assert upload_step["with"]["retention-days"] == 3
+
+
+def test_release_packaging_depends_on_unprivileged_browser_gate(policy_validator):
+    workflow, _ = policy_validator.load_yaml(".github/workflows/release.yml")
+    browser_job = workflow["jobs"]["browser-journeys"]
+
+    assert "environment" not in browser_job
+    assert browser_job["permissions"] == {"contents": "read"}
+    assert browser_job["if"] == "github.ref == 'refs/heads/main'"
+    assert workflow["jobs"]["build-release"]["needs"] == "browser-journeys"
+    protected_jobs = [
+        job_id
+        for job_id, job in workflow["jobs"].items()
+        if job.get("environment") == "production-release"
+    ]
+    assert protected_jobs == ["attest-release"]
+
+
+def test_policy_validator_rejects_protected_browser_execution(
+    policy_validator, tmp_path
+):
+    workflow = RELEASE_PATH.read_text(encoding="utf-8")
+    unprivileged_browser = """    permissions:
+      contents: read
+    services:
+"""
+    assert unprivileged_browser in workflow
+    protected_browser = """    environment: production-release
+    permissions:
+      contents: read
+    services:
+"""
+    weakened = workflow.replace(unprivileged_browser, protected_browser, 1)
+
+    failures = _validate_release_workflow(policy_validator, tmp_path, weakened)
+
+    assert any("must not enter" in failure for failure in failures)
+
+
+def test_policy_validator_rejects_weakened_browser_disposal_confirmation(
+    policy_validator, tmp_path
+):
+    workflow = CI_PATH.read_text(encoding="utf-8")
+    required = "E2E_DISPOSABLE_DATABASE_CONFIRMED: litblogs-e2e-only"
+    assert required in workflow
+    weakened = workflow.replace(
+        required,
+        "E2E_DISPOSABLE_DATABASE_CONFIRMED: acknowledged",
+        1,
+    )
+
+    failures = _validate_workflow(policy_validator, tmp_path, weakened)
+
+    assert any("disposable confirmation" in failure for failure in failures)
+
+
+def test_policy_validator_rejects_raw_browser_artifact_uploads(
+    policy_validator, tmp_path
+):
+    workflow = CI_PATH.read_text(encoding="utf-8")
+    sanitized_path = "litblogs/test-results/e2e/sanitized-failures/*.json"
+    assert sanitized_path in workflow
+    weakened = workflow.replace(
+        sanitized_path,
+        "litblogs/test-results/e2e/**",
+        1,
+    )
+
+    failures = _validate_workflow(policy_validator, tmp_path, weakened)
+
+    assert any("sanitized failure artifact" in failure for failure in failures)
+
+
+def test_browser_harness_forbids_raw_artifacts_and_proves_runtime_database_acl():
+    playwright_config = (BACKEND_ROOT / "playwright.config.js").read_text(
+        encoding="utf-8"
+    )
+    database_harness = (BACKEND_ROOT / "e2e" / "support" / "database.py").read_text(
+        encoding="utf-8"
+    )
+    reporter = (
+        BACKEND_ROOT / "e2e" / "support" / "sanitized-reporter.mjs"
+    ).read_text(encoding="utf-8")
+    reporter_test = (
+        BACKEND_ROOT / "e2e" / "support" / "sanitized-reporter.test.mjs"
+    ).read_text(encoding="utf-8")
+    spec_sources = [
+        path.read_text(encoding="utf-8")
+        for path in sorted((BACKEND_ROOT / "e2e" / "specs").glob("*.spec.js"))
+    ]
+    fixtures = (BACKEND_ROOT / "e2e" / "support" / "fixtures.js").read_text(
+        encoding="utf-8"
+    )
+    ignore_policy = (BACKEND_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+
+    for forbidden_capture in ("screenshot: 'off'", "trace: 'off'", "video: 'off'"):
+        assert forbidden_capture in playwright_config
+    assert "workers: 1" in playwright_config
+    assert "fullyParallel: false" in playwright_config
+    assert "retries: 0" in playwright_config
+    assert "['list']" not in playwright_config
+    assert "storageState" not in playwright_config
+    for ignored_output in ("test-results/", "playwright-report/", "blob-report/"):
+        assert ignored_output in ignore_policy
+    assert sum(source.count("test('") for source in spec_sources) == 7
+
+    assert "SHOW server_version_num" in database_harness
+    assert "170_000 <= version_number < 180_000" in database_harness
+    assert "SCRAM-SHA-256$%" in database_harness
+    assert "accepted an invalid runtime password" in database_harness
+    assert '("litblogs_runtime", "litblogs_runtime")' in database_harness
+    assert "E2E runtime database privileges are not exact" in database_harness
+
+    assert "attachment.name === 'sanitized-failure.json'" in reporter
+    assert "fs.rmSync(attachment.path, { force: true })" in reporter
+    assert "mode: 0o600" in reporter
+    assert "test-results/e2e/sanitized-failures" in reporter
+    for callback in ("printsToStdio()", "onStdOut()", "onStdErr()", "onError()"):
+        assert callback in reporter
+    assert "streamed-private-output-canary" in reporter_test
+    assert "errors: testInfo.errors.map" not in fixtures
+    assert "error_count: testInfo.errors.length" in fixtures
+    assert all("cookies: document.cookie" not in source for source in spec_sources)
+    for redaction_probe in ("password", "draftCanary", "stdout", "stderr"):
+        assert redaction_probe in reporter_test

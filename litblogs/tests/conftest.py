@@ -51,7 +51,6 @@ TEST_ENVIRONMENT = {
     "VAPID_PUBLIC_KEY": "",
     "VAPID_PRIVATE_KEY": "",
     "VAPID_SUBJECT": "mailto:tests@example.com",
-    "PUSH_REMINDER_INTERVAL_SECONDS": "3600",
     "EMAIL_HOST": "localhost",
     "EMAIL_PORT": "1025",
     "EMAIL_USERNAME": "test-email-user",
@@ -119,6 +118,7 @@ database = import_module("database")
 _assert_test_database_engine(database.engine)
 main = import_module("main")
 base = import_module("base")
+settings_config = import_module("config")
 
 
 DATABASE_EXISTED_AFTER_IMPORT = TEST_DATABASE_PATH.exists()
@@ -131,11 +131,24 @@ def cleanup_test_environment():
     TEST_TEMP_DIR.cleanup()
 
 
+@pytest.fixture(autouse=True)
+def synthetic_production_upload_root(monkeypatch):
+    from settings_test_support import TEST_PRODUCTION_UPLOAD_ROOT
+
+    monkeypatch.setattr(
+        settings_config,
+        "PRODUCTION_UPLOAD_ROOT",
+        TEST_PRODUCTION_UPLOAD_ROOT,
+    )
+
+
 @pytest.fixture
 def client():
     main.upload_admission.reset()
     _assert_test_database_engine(database.engine)
     base.Base.metadata.drop_all(bind=database.engine)
+    _assert_test_database_engine(database.engine)
+    base.Base.metadata.create_all(bind=database.engine)
 
     _assert_test_database_engine(database.engine)
     with TestClient(main.app) as test_client:

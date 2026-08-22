@@ -1,9 +1,10 @@
 # Authorization constraint migration runbook
 
-Apply `0002_add_authorization_constraints.sql` during a maintenance window after
-`0001_create_federated_identities.sql`. The script is transactional, but its unique
-indexes intentionally fail closed when legacy duplicate enrollments or submissions
-exist. Do not delete or merge student work automatically.
+Revision `d4e4539c0418` is the authoritative authorization migration in the reviewed
+single-head Alembic chain. `0002_add_authorization_constraints.sql` is retained only
+as a semantic reference: do not execute or ship it as a parallel migration path.
+The Alembic revision intentionally fails closed when legacy duplicate enrollments or
+submissions exist. Do not delete or merge student work automatically.
 
 ## Preflight
 
@@ -47,13 +48,16 @@ exist. Do not delete or merge student work automatically.
 
 ## Apply and validate
 
-Run the script with PostgreSQL configured to stop on the first error:
+Run only the reviewed Alembic chain through a live database connection. Offline SQL
+generation (`alembic upgrade head --sql`) is intentionally unsupported because the
+revisions require live, fail-closed data and role preflights:
 
 ```sh
-psql --set ON_ERROR_STOP=on "$DATABASE_URL" --file migrations/0002_add_authorization_constraints.sql
+alembic upgrade head
 ```
 
-Then verify the new column and indexes:
+Do not execute `0002_add_authorization_constraints.sql`. Then verify the new column,
+constraints, and indexes created by revision `d4e4539c0418`:
 
 ```sql
 SELECT column_name, data_type
@@ -63,9 +67,9 @@ WHERE table_name = 'class_enrollments' AND column_name = 'notes';
 SELECT indexname, indexdef
 FROM pg_indexes
 WHERE indexname IN (
-    'uq_class_enrollments_student_class',
-    'uq_assignment_submissions_assignment_student',
-    'uq_password_resets_user'
+    'unique_class_enrollment',
+    'unique_assignment_submission',
+    'ix_password_resets_user_id'
 )
 ORDER BY indexname;
 ```

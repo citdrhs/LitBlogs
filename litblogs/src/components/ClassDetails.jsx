@@ -550,7 +550,7 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
                       </label>
                       <div className="flex flex-col gap-2">
                         <label className="text-sm font-medium text-gray-600 dark:text-gray-300">
-                          Submission Visibility
+                          Assignment Audience
                         </label>
                         <div className="flex flex-wrap gap-3">
                           <button
@@ -564,7 +564,7 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
                                   : 'bg-gray-100 text-gray-700'
                             }`}
                           >
-                            Visible to Class
+                            Visible to Students
                           </button>
                           <button
                             type="button"
@@ -647,7 +647,7 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
                               ? 'bg-blue-500/10 text-blue-500'
                               : 'bg-purple-500/10 text-purple-500'
                           }`}>
-                            {assignment.visibility === 'class' ? 'Public Submissions' : 'Teacher/Admin Only'}
+                            {assignment.visibility === 'class' ? 'Visible to Students' : 'Teacher/Admin Only'}
                           </span>
                           <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${
                             assignment.allow_late

@@ -214,13 +214,17 @@ def _assert_safe_session(response, *, expected_role: str) -> None:
 def _production_settings_data(**overrides) -> dict:
     data = {
         "app_env": "production",
-        "database_url": "postgresql://litblog_app@database.internal/litblog",
+        "database_url": (
+            f"postgresql://litblog_app:{secrets.token_urlsafe(24)}@database.internal/litblog"
+            "?sslmode=verify-full&sslrootcert=/etc/litblogs/postgres-root-ca.pem"
+        ),
         "secret_key": secrets.token_urlsafe(48),
-        "jwt_issuer": "https://api.litblogs.school.example",
-        "jwt_audience": "litblogs.school.example",
-        "frontend_url": "https://litblogs.school.example",
-        "cors_allowed_origins": ("https://litblogs.school.example",),
-        "allowed_email_domains": (ALLOWED_DOMAIN,),
+        "jwt_issuer": "https://api.litblogs.school.edu",
+        "jwt_audience": "litblogs.school.edu",
+        "frontend_url": "https://litblogs.school.edu",
+        "cors_allowed_origins": ("https://litblogs.school.edu",),
+        "allowed_hosts": ("litblogs.school.edu",),
+        "allowed_email_domains": ("school.edu",),
         "google_client_id": SYNTHETIC_GOOGLE_AUDIENCE,
         "microsoft_client_id": SYNTHETIC_MICROSOFT_AUDIENCE,
         "microsoft_tenant_id": MICROSOFT_TENANT_ID,
@@ -231,10 +235,10 @@ def _production_settings_data(**overrides) -> dict:
         "teacher_invite_hmac_key": secrets.token_urlsafe(48),
         "admin_access_code": secrets.token_urlsafe(24),
         "admin_code": secrets.token_urlsafe(24),
-        "email_host": "smtp.school.example",
+        "email_host": "smtp.school.edu",
         "email_username": "litblog-reset",
         "email_password": secrets.token_urlsafe(24),
-        "email_from": "no-reply@school.example",
+        "email_from": "no-reply@school.edu",
         "password_reset_worker_enabled": True,
         "local_password_registration_enabled": False,
         **production_upload_settings(),

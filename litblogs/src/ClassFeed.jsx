@@ -1291,7 +1291,9 @@ const ClassFeed = () => {
     clearPrivateDraftMemory,
     hasRiskyDrafts,
   } = usePrivateDrafts();
-  const isStudent = (userInfo?.role || '').toString().toUpperCase() === 'STUDENT';
+  const normalizedRole = (userInfo?.role || '').toString().toUpperCase();
+  const isStudent = normalizedRole === 'STUDENT';
+  const canReviewSubmissions = ['TEACHER', 'ADMIN'].includes(normalizedRole);
   const activeAssignmentId = activeAssignment?.id;
   const assignmentDraftUserId = userInfo?.userId || userInfo?.id;
   const postDraftUserId = userInfo?.userId || userInfo?.id;
@@ -2888,7 +2890,7 @@ const ClassFeed = () => {
                   const isOverdue = new Date() > dueDate && !submission;
                   const isDueSoon = !isOverdue && !submission && (dueDate.getTime() - Date.now()) <= (24 * 60 * 60 * 1000);
                   const isClosed = new Date() > dueDate && !assignment.allow_late && !submission;
-                  const isPublicSubmission = assignment.visibility === 'class';
+                  const isClassVisibleAssignment = assignment.visibility === 'class';
 
                   return (
                     <div
@@ -2903,9 +2905,9 @@ const ClassFeed = () => {
                           </p>
                         </div>
                         <div className="flex flex-wrap gap-2">
-                          {isPublicSubmission && (
+                          {isClassVisibleAssignment && (
                             <span className="px-3 py-1 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-500">
-                              Public Submissions
+                              Visible to Students
                             </span>
                           )}
                           <span
@@ -2944,7 +2946,7 @@ const ClassFeed = () => {
                               {submission ? 'View Submission' : draft ? 'Resume Draft' : isClosed ? 'Closed' : isOverdue ? 'Submit Late' : 'Submit'}
                             </button>
                           )}
-                          {isPublicSubmission && (
+                          {canReviewSubmissions && (
                             <button
                               onClick={() => navigate(`/class/${classId}/assignment/${assignment.id}/submissions`)}
                               className="px-4 py-2 rounded-lg text-sm font-medium bg-gray-100 text-gray-700"

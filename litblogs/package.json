@@ -3,14 +3,19 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "server": "python -m uvicorn main:app --reload",
-    "test": "vitest",
-    "test:run": "vitest run",
+    "test": "vitest --exclude \"e2e/**\"",
+    "test:run": "vitest run --exclude \"e2e/**\"",
+    "test:e2e": "playwright test --project=chromium",
+    "test:e2e:install": "playwright install chromium",
     "audit:prod": "npm audit --omit=dev"
   },
   "dependencies": {
@@ -41,6 +46,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.19.0",
+    "@playwright/test": "^1.62.1",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.2",

@@ -76,8 +76,9 @@ class User(Base):
         ).ddl_if(dialect="postgresql"),
         Index(
             "uq_users_email_normalized",
-            email.collate("C"),
+            email,
             unique=True,
+            postgresql_ops={"email": "varchar_pattern_ops"},
         ).ddl_if(dialect="postgresql"),
     )
     # For students: the classes they're enrolled in

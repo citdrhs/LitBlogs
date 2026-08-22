@@ -237,7 +237,7 @@ class AssignmentUpdate(StrictRequest):
     description: str | None = Field(default=None, max_length=MAX_DESCRIPTION_LENGTH)
     due_date: datetime
     allow_late: bool | None = True
-    visibility: Literal["class", "private"] | None = "class"
+    visibility: Literal["class", "private"] | None = None
 
 class AssignmentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)

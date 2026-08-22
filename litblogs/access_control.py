@@ -8,6 +8,9 @@ import models
 PUBLIC_API_ROUTES = frozenset(
     {
         ("GET", "/api/"),
+        ("GET", "/api/health/live"),
+        ("GET", "/api/health/ready"),
+        ("GET", "/api/runtime-config"),
         ("POST", "/api/auth/forgot-password"),
         ("POST", "/api/auth/google-login"),
         ("POST", "/api/auth/google-signup"),
@@ -248,6 +251,11 @@ def require_assignment_for_class(
         .first()
     )
     if assignment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignment not found")
+    if (
+        _role_value(user) == models.UserRole.STUDENT.value
+        and assignment.visibility != "class"
+    ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignment not found")
     return db_class, assignment
 

@@ -5,7 +5,7 @@ import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.orm import Session
 
 import models
@@ -308,18 +308,33 @@ def record_operator_audit_event(
         raise ValueError("operator audit action is invalid")
     if outcome not in OPERATOR_AUDIT_OUTCOMES:
         raise ValueError("operator audit outcome is invalid")
-    db.add(
-        models.OperatorAuditEvent(
-            actor_identifier=actor,
-            action=action,
-            outcome=outcome,
-            resource_digest=operator_audit_resource_digest(
+    dialect_name = db.get_bind().dialect.name
+    if dialect_name == "postgresql":
+        audit_insert = text(
+            "INSERT INTO public.operator_audit_events "
+            "(actor_identifier, action, outcome, resource_digest) "
+            "VALUES (:actor_identifier, :action, :outcome, :resource_digest)"
+        )
+    elif dialect_name == "sqlite":
+        audit_insert = text(
+            "INSERT INTO operator_audit_events "
+            "(actor_identifier, action, outcome, resource_digest) "
+            "VALUES (:actor_identifier, :action, :outcome, :resource_digest)"
+        )
+    else:
+        raise RuntimeError("unsupported database dialect for operator auditing")
+    db.execute(
+        audit_insert,
+        {
+            "actor_identifier": actor,
+            "action": action,
+            "outcome": outcome,
+            "resource_digest": operator_audit_resource_digest(
                 resource_email,
                 settings=settings,
             ),
-        )
+        },
     )
-    db.flush()
 
 
 def create_teacher_invitation(

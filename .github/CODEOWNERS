@@ -10,5 +10,6 @@
 /litblogs/main.py @Antigro09
 /litblogs/database.py @Antigro09
 /litblogs/security_utils.py @Antigro09
+/litblogs/requirements*.in @Antigro09
 /litblogs/requirements*.txt @Antigro09
 /litblogs/package*.json @Antigro09

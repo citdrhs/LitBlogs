@@ -1,0 +1,42 @@
+[Unit]
+Description=Reconcile the LitBlogs upload registry and private object store once
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/systemd/system/litblogs-upload-reconciliation.service.d/egress.conf
+ConditionPathExists=/run/litblogs-maintenance-egress/upload-reconciliation.port-policy-ready
+
+[Service]
+Type=oneshot
+User=litblogs
+Group=litblogs
+WorkingDirectory=/opt/litblogs/current/litblogs
+EnvironmentFile=/etc/litblogs/litblogs.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/litblogs/current/.venv/bin/python -m upload_reconciliation_job
+RuntimeMaxSec=300
+TimeoutStartSec=300
+UMask=0077
+
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectHostname=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+RestrictAddressFamilies=AF_INET AF_INET6
+IPAddressDeny=any
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/litblogs/uploads

@@ -4,7 +4,13 @@ import { BrowserRouter } from 'react-router-dom'
 import { GoogleOAuthProvider } from '@react-oauth/google'
 import { MsalProvider } from "@azure/msal-react"
 import { PublicClientApplication } from "@azure/msal-browser"
-import { msalConfig, oauthProviderConfig } from './config/msalConfig'
+import {
+  applyPublicOAuthConfig,
+  msalConfig,
+  oauthProviderConfig,
+} from './config/msalConfig'
+import { loadPublicRuntimeConfig } from './config/runtimeConfig'
+import { applyPublicRegistrationConfig } from './config/registrationConfig'
 import App from './App'
 import './index.css'
 import axios from 'axios'
@@ -15,13 +21,8 @@ import {
   purgeLegacyPersistentAuth,
 } from './utils/auth'
 
-const msalInstance = oauthProviderConfig.microsoft.enabled
-  ? new PublicClientApplication(msalConfig)
-  : null;
-
 // Set base URL for all axios requests
 axios.defaults.baseURL = API_BASE_PATH;
-configureAuthHttpClient(axios, { apiBasePath: API_BASE_PATH });
 purgeLegacyPersistentAuth();
 
 axios.interceptors.response.use(
@@ -44,7 +45,7 @@ axios.interceptors.response.use(
   }
 );
 
-const renderApplication = () => {
+const renderApplication = (msalInstance) => {
   let application = (
     <BrowserRouter basename={ROUTER_BASENAME}>
       <App />
@@ -70,8 +71,27 @@ const renderApplication = () => {
   );
 };
 
-if (msalInstance) {
-  msalInstance.initialize().then(renderApplication);
-} else {
-  renderApplication();
-}
+const renderConfigurationFailure = () => {
+  const root = document.getElementById('root');
+  root.textContent = 'LitBlogs is temporarily unavailable. Please contact your school administrator.';
+};
+
+const initializeApplication = async () => {
+  const runtimeConfig = await loadPublicRuntimeConfig();
+  applyPublicOAuthConfig(runtimeConfig);
+  applyPublicRegistrationConfig(runtimeConfig);
+  configureAuthHttpClient(axios, {
+    apiBasePath: API_BASE_PATH,
+    csrfCookieName: runtimeConfig.csrfCookieName,
+  });
+
+  const msalInstance = oauthProviderConfig.microsoft.enabled
+    ? new PublicClientApplication(msalConfig)
+    : null;
+  if (msalInstance) {
+    await msalInstance.initialize();
+  }
+  renderApplication(msalInstance);
+};
+
+initializeApplication().catch(renderConfigurationFailure);

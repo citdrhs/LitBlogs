@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { localPasswordRegistrationEnabledFor } from "./registrationConfig";
+import {
+  applyPublicRegistrationConfig,
+  localPasswordRegistrationEnabledFor,
+} from "./registrationConfig";
 
 describe("local password registration configuration", () => {
   it.each(["development", "test"])("requires an explicit opt-in in %s", (mode) => {
@@ -26,5 +29,35 @@ describe("local password registration configuration", () => {
       PROD: false,
       VITE_LOCAL_PASSWORD_REGISTRATION_ENABLED: value,
     })).toBe(false);
+  });
+
+  it("requires both the trusted runtime flag and an eligible development build", () => {
+    expect(applyPublicRegistrationConfig(
+      { localPasswordRegistrationEnabled: true },
+      {
+        MODE: "test",
+        PROD: false,
+        VITE_LOCAL_PASSWORD_REGISTRATION_ENABLED: "true",
+      },
+    )).toBe(true);
+    expect(applyPublicRegistrationConfig(
+      { localPasswordRegistrationEnabled: false },
+      {
+        MODE: "test",
+        PROD: false,
+        VITE_LOCAL_PASSWORD_REGISTRATION_ENABLED: "true",
+      },
+    )).toBe(false);
+  });
+
+  it("cannot be enabled by runtime configuration in a production build", () => {
+    expect(applyPublicRegistrationConfig(
+      { localPasswordRegistrationEnabled: true },
+      {
+        MODE: "production",
+        PROD: true,
+        VITE_LOCAL_PASSWORD_REGISTRATION_ENABLED: "true",
+      },
+    )).toBe(false);
   });
 });

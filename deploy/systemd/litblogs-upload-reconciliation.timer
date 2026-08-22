@@ -1,0 +1,14 @@
+[Unit]
+Description=Reconcile LitBlogs private uploads every fifteen minutes
+ConditionPathExists=/etc/systemd/system/litblogs-upload-reconciliation.service.d/egress.conf
+ConditionPathExists=/run/litblogs-maintenance-egress/upload-reconciliation.port-policy-ready
+
+[Timer]
+OnCalendar=*-*-* *:00/15:00
+Persistent=true
+RandomizedDelaySec=30s
+AccuracySec=15s
+Unit=litblogs-upload-reconciliation.service
+
+[Install]
+WantedBy=timers.target

@@ -6,6 +6,8 @@ const doubles = vi.hoisted(() => ({
   clearStoredAuth: vi.fn(),
   fetchBrowserSession: vi.fn(),
   renderAdmin: vi.fn(),
+  renderClassFeed: vi.fn(),
+  renderLanding: vi.fn(),
   renderStudent: vi.fn(),
   renderSubmissions: vi.fn(),
   renderTeacher: vi.fn(),
@@ -18,6 +20,20 @@ vi.mock("./utils/auth", () => ({
 
 vi.mock("./context/PrivateDraftContext", () => ({
   PrivateDraftProvider: ({ children }) => children,
+}));
+
+vi.mock("./LitBlogs", () => ({
+  default: () => {
+    doubles.renderLanding();
+    return <p>Landing page data</p>;
+  },
+}));
+
+vi.mock("./ClassFeed", () => ({
+  default: () => {
+    doubles.renderClassFeed();
+    return <p>Class feed data</p>;
+  },
 }));
 
 vi.mock("./TeacherDashboard", () => ({
@@ -88,6 +104,7 @@ describe("role-aware route shells", () => {
 
   it.each([
     ["STUDENT", "/student-hub", doubles.renderStudent],
+    ["STUDENT", "/class-feed/2", doubles.renderClassFeed],
     ["TEACHER", "/teacher-dashboard", doubles.renderTeacher],
     ["TEACHER", "/class/2/assignment/3/submissions", doubles.renderSubmissions],
     ["ADMIN", "/admin-dashboard", doubles.renderAdmin],
@@ -99,5 +116,14 @@ describe("role-aware route shells", () => {
 
     await vi.waitFor(() => expect(renderPage).toHaveBeenCalledOnce());
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("redirects the legacy class-feed route before mounting a feed without a class id", async () => {
+    doubles.fetchBrowserSession.mockResolvedValue(session("STUDENT"));
+
+    renderPath("/class-feed");
+
+    expect(await screen.findByText("Landing page data")).toBeInTheDocument();
+    expect(doubles.renderClassFeed).not.toHaveBeenCalled();
   });
 });

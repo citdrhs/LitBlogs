@@ -1,6 +1,11 @@
 # Upload asset registry migration reference
 
-`0005_upload_asset_registry.sql` is a semantic reference. It is not an Alembic migration and must not be presented as production-ready migration evidence. Convert the DDL into the repository's future ordered Alembic chain, test both upgrade and rollback against a disposable PostgreSQL database, and obtain an independent review before applying it.
+Revision `b983b7aebe7b` is the authoritative upload-registry migration in the reviewed
+single-head Alembic chain. `0005_upload_asset_registry.sql` is retained only as a
+semantic reference. It is not an Alembic migration; do not execute or ship it as a
+parallel migration path. Exercise
+the Alembic upgrade and rollback against a disposable PostgreSQL database and retain
+the independent review evidence before applying it.
 
 Legacy files are intentionally unavailable at runtime until they have a registry row. Migration is a maintenance-window operation:
 
@@ -15,7 +20,7 @@ This reference deliberately does not provide a permissive best-effort importer. 
 
 Production startup never calls ORM `create_all`. It verifies the externally migrated registry shape and also requires all three operator assertions below. Leave them false until their named gate has completed; setting them does not substitute for the evidence:
 
-- `UPLOAD_REGISTRY_SCHEMA_READY=true` only after this semantic reference has been converted into the reviewed Alembic chain and exercised on disposable PostgreSQL.
+- `UPLOAD_REGISTRY_SCHEMA_READY=true` only after revision `b983b7aebe7b` and the final head have been exercised on disposable PostgreSQL.
 - `UPLOAD_LEGACY_IMPORT_COMPLETE=true` only after the fail-closed inventory/import and count/digest comparison succeeds, including the valid empty-inventory case.
 - `UPLOAD_BACKUP_RESTORE_VERIFIED=true` only after the coupled restore rehearsal described below succeeds.
 

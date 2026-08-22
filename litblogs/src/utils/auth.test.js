@@ -113,6 +113,14 @@ describe("browser session metadata", () => {
 });
 
 describe("Axios cookie and CSRF policy", () => {
+  it("requires the backend-derived CSRF cookie name", () => {
+    const client = axios.create({ adapter: responseAdapter });
+
+    expect(() => auth.configureAuthHttpClient(client, { apiBasePath: "/api" })).toThrow(
+      "Browser configuration is unavailable",
+    );
+  });
+
   it("loads safe session metadata from the server without reading a JWT", async () => {
     expect(typeof auth.fetchBrowserSession).toBe("function");
     if (typeof auth.fetchBrowserSession !== "function") return;

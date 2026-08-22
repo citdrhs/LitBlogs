@@ -1,18 +1,44 @@
 # database.py
 import re
+from pathlib import Path
 
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 
-from base import Base
-from config import get_settings
+from config import Settings, get_settings
+from runtime_database_identity import verify_runtime_database_identity
 
 settings = get_settings()
 DATABASE_URL = settings.database_url
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is required")
 
-engine = create_engine(DATABASE_URL)
+def engine_options(app_settings: Settings) -> dict:
+    if not app_settings.database_url:
+        raise RuntimeError("DATABASE_URL is required")
+
+    if app_settings.database_url.startswith("sqlite"):
+        return {"connect_args": {"check_same_thread": False}}
+
+    return {
+        "pool_pre_ping": True,
+        "pool_size": app_settings.db_pool_size,
+        "max_overflow": app_settings.db_max_overflow,
+        "pool_timeout": app_settings.db_pool_timeout_seconds,
+        "pool_recycle": app_settings.db_pool_recycle_seconds,
+        "connect_args": {
+            "connect_timeout": app_settings.db_connect_timeout_seconds,
+            "application_name": "litblogs-web",
+            "options": (
+                f"-c statement_timeout={app_settings.db_statement_timeout_ms} "
+                f"-c lock_timeout={app_settings.db_lock_timeout_ms}"
+            ),
+        },
+    }
+
+
+engine = create_engine(DATABASE_URL, **engine_options(settings))
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def get_db():
@@ -264,12 +290,13 @@ def _profile_index_predicate_is_exact(sqltext) -> bool:
     }
 
 
-def verify_database_schema():
+def verify_database_schema(candidate_engine: Engine | None = None):
     """Fail closed when the externally migrated production schema is absent."""
 
-    if engine.dialect.name != "postgresql":
+    candidate_engine = candidate_engine or engine
+    if candidate_engine.dialect.name != "postgresql":
         _schema_not_ready()
-    schema = inspect(engine)
+    schema = inspect(candidate_engine)
     if not schema.has_table("upload_assets"):
         _schema_not_ready()
     columns = {
@@ -280,7 +307,7 @@ def verify_database_schema():
     for name, (expected_type, expected_nullable) in UPLOAD_ASSET_COLUMN_SHAPE.items():
         column = columns[name]
         try:
-            reflected_type = column["type"].compile(dialect=engine.dialect).upper()
+            reflected_type = column["type"].compile(dialect=candidate_engine.dialect).upper()
         except (AttributeError, KeyError):
             _schema_not_ready()
         if reflected_type != expected_type or column.get("nullable") is not expected_nullable:
@@ -359,12 +386,24 @@ def verify_database_schema():
             _schema_not_ready()
 
 
-def initialize_database(*, allow_schema_create: bool):
-    if allow_schema_create:
-        Base.metadata.create_all(bind=engine)
-        return
-    verify_database_schema()
+def check_database_readiness(candidate_engine: Engine | None = None) -> None:
+    from alembic.config import Config
+    from alembic.runtime.migration import MigrationContext
+    from alembic.script import ScriptDirectory
 
-def reset_database():
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
+    candidate_engine = candidate_engine or engine
+    config = Config(str(Path(__file__).resolve().parent / "alembic.ini"))
+    scripts = ScriptDirectory.from_config(config)
+    expected_revision = scripts.get_current_head()
+    if not expected_revision:
+        raise RuntimeError("Database migration head is unavailable")
+
+    with candidate_engine.connect() as connection:
+        connection.execute(text("SELECT 1"))
+        current_revision = MigrationContext.configure(connection).get_current_revision()
+        if current_revision != expected_revision:
+            raise RuntimeError("Database migration revision is not current")
+        if candidate_engine.dialect.name == "postgresql":
+            verify_runtime_database_identity(connection)
+    if candidate_engine.dialect.name == "postgresql":
+        verify_database_schema(candidate_engine)

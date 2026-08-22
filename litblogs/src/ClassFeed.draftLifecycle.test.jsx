@@ -239,6 +239,22 @@ describe("ClassFeed private draft lifecycle", () => {
     vi.unstubAllGlobals();
   });
 
+  it("hides the submission review control from students", async () => {
+    renderFeed();
+    await flushPromises();
+
+    expect(screen.getByRole("button", { name: "Submit" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open Submissions" })).not.toBeInTheDocument();
+  });
+
+  it("labels assignment audience without promising peer-visible submissions", async () => {
+    renderFeed();
+    await flushPromises();
+
+    expect(screen.getByText("Visible to Students")).toBeInTheDocument();
+    expect(screen.queryByText("Public Submissions")).not.toBeInTheDocument();
+  });
+
   it("does not autosave a programmatic assignment load, then guards and debounces a user edit", async () => {
     renderFeed();
     await flushPromises();

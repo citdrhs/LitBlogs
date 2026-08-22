@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 15
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:17.11-alpine3.24@sha256:7456ef82e5f5bc43d997f4781bbd7c0d6389bff397564649a356e206ba473aee
         env:
           POSTGRES_USER: litblog_ci
           POSTGRES_PASSWORD: ci-only-postgres-password
@@ -44,11 +44,15 @@ jobs:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: |
+            litblogs/requirements.in
+            litblogs/requirements-dev.in
+            litblogs/requirements-lock.in
             litblogs/requirements.txt
             litblogs/requirements-dev.txt
+            litblogs/requirements-lock.txt
       - name: Install backend dependencies
         working-directory: litblogs
-        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+        run: "python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.txt"
       - name: Verify synthetic PostgreSQL service
         env:
           PGHOST: localhost
@@ -82,6 +86,211 @@ jobs:
           ALLOW_TEST_DATABASE_DDL: "true"
           RESET_DATABASE_ON_STARTUP: "false"
         run: python -m pytest -q
+      - name: Apply and verify PostgreSQL migrations
+        working-directory: litblogs
+        env:
+          APP_ENV: test
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGDATABASE: postgres
+          PGUSER: litblog_ci
+          PGPASSWORD: ci-only-postgres-password
+          TEST_DATABASE_URL: postgresql://litblogs_migrator:ci-only-migrator-password@localhost:5432/litblog_test_migrations_ci
+          LITBLOGS_MIGRATION_DATABASE_URL: postgresql://litblogs_migrator:ci-only-migrator-password@localhost:5432/litblog_test_migrations_ci
+        run: |
+          psql --set=ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE litblogs_migrator LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD 'ci-only-migrator-password';
+          CREATE ROLE litblogs_runtime LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE litblog_identity_owner NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE litblog_account_operator LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+          CREATE ROLE litblog_invitation_operator LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+          CREATE DATABASE litblog_test_migrations_ci OWNER litblogs_migrator;
+          GRANT litblog_identity_owner TO litblogs_migrator WITH ADMIN FALSE, INHERIT TRUE, SET TRUE;
+          SQL
+          psql --set=ON_ERROR_STOP=1 --dbname=litblog_test_migrations_ci --command="ALTER SCHEMA public OWNER TO litblogs_migrator"
+          python -m alembic upgrade head
+          psql --set=ON_ERROR_STOP=1 --command="REVOKE litblog_identity_owner FROM litblogs_migrator"
+          python -m alembic current --check-heads
+          psql --set=ON_ERROR_STOP=1 --command="GRANT litblog_identity_owner TO litblogs_migrator WITH ADMIN FALSE, INHERIT TRUE, SET TRUE"
+          python -m alembic downgrade 985a04df032a
+          psql --set=ON_ERROR_STOP=1 --command="REVOKE litblog_identity_owner FROM litblogs_migrator"
+          psql --set=ON_ERROR_STOP=1 --command="GRANT litblog_identity_owner TO litblogs_migrator WITH ADMIN FALSE, INHERIT TRUE, SET TRUE"
+          python -m alembic upgrade head
+          psql --set=ON_ERROR_STOP=1 --command="REVOKE litblog_identity_owner FROM litblogs_migrator"
+          psql --set=ON_ERROR_STOP=1 --command="GRANT litblog_identity_owner TO litblogs_migrator WITH ADMIN FALSE, INHERIT TRUE, SET TRUE"
+          python -m alembic downgrade base
+          psql --set=ON_ERROR_STOP=1 --command="REVOKE litblog_identity_owner FROM litblogs_migrator"
+          psql --set=ON_ERROR_STOP=1 --command="GRANT litblog_identity_owner TO litblogs_migrator WITH ADMIN FALSE, INHERIT TRUE, SET TRUE"
+          python -m alembic upgrade head
+          psql --set=ON_ERROR_STOP=1 --command="REVOKE litblog_identity_owner FROM litblogs_migrator"
+          python -m alembic current --check-heads
+          python -m alembic check
+          psql --set=ON_ERROR_STOP=1 <<'SQL'
+          DO $policy$
+          BEGIN
+            IF EXISTS (
+              SELECT 1
+              FROM pg_auth_members AS membership
+              JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
+              JOIN pg_roles AS member_role ON member_role.oid = membership.member
+              WHERE granted_role.rolname IN (
+                'litblogs_migrator', 'litblogs_runtime', 'litblog_identity_owner',
+                'litblog_account_operator', 'litblog_invitation_operator'
+              ) OR member_role.rolname IN (
+                'litblogs_migrator', 'litblogs_runtime', 'litblog_identity_owner',
+                'litblog_account_operator', 'litblog_invitation_operator'
+              )
+            ) THEN
+              RAISE EXCEPTION 'unexpected synthetic application role membership';
+            END IF;
+          END
+          $policy$;
+          ALTER ROLE litblogs_migrator NOLOGIN;
+          ALTER ROLE litblogs_runtime NOLOGIN;
+          ALTER ROLE litblog_account_operator NOLOGIN;
+          ALTER ROLE litblog_invitation_operator NOLOGIN;
+          CREATE DATABASE litblog_test_operator_ci OWNER litblogs_migrator TEMPLATE litblog_test_migrations_ci;
+          CREATE ROLE litblogs_backup LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD 'ci-only-backup-password';
+          GRANT pg_read_all_data TO litblogs_backup;
+          DO $backup_role$
+          BEGIN
+            IF NOT COALESCE((
+              SELECT role.rolcanlogin
+                AND role.rolinherit
+                AND NOT role.rolsuper
+                AND NOT role.rolcreatedb
+                AND NOT role.rolcreaterole
+                AND NOT role.rolreplication
+                AND NOT role.rolbypassrls
+              FROM pg_roles AS role
+              WHERE role.rolname = 'litblogs_backup'
+            ), FALSE) OR NOT COALESCE((
+              SELECT COUNT(*) = 1
+                AND BOOL_AND(
+                  granted_role.rolname = 'pg_read_all_data'
+                  AND NOT membership.admin_option
+                )
+              FROM pg_auth_members AS membership
+              JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
+              JOIN pg_roles AS member_role ON member_role.oid = membership.member
+              WHERE member_role.rolname = 'litblogs_backup'
+            ), FALSE) OR EXISTS (
+              SELECT 1
+              FROM pg_auth_members AS membership
+              JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
+              WHERE granted_role.rolname = 'litblogs_backup'
+            ) THEN
+              RAISE EXCEPTION 'backup role attributes or memberships are not exact';
+            END IF;
+          END
+          $backup_role$;
+          REVOKE CONNECT, TEMPORARY ON DATABASE postgres FROM PUBLIC;
+          REVOKE CONNECT, TEMPORARY ON DATABASE template0 FROM PUBLIC;
+          REVOKE CONNECT, TEMPORARY ON DATABASE template1 FROM PUBLIC;
+          REVOKE CONNECT, TEMPORARY ON DATABASE litblog_ci FROM PUBLIC;
+          REVOKE CONNECT, TEMPORARY ON DATABASE litblog_test_migrations_ci FROM PUBLIC;
+          REVOKE CONNECT, TEMPORARY ON DATABASE litblog_test_operator_ci FROM PUBLIC;
+          GRANT CONNECT ON DATABASE litblog_test_operator_ci TO litblogs_backup;
+          DO $backup_scope$
+          BEGIN
+            IF EXISTS (
+              SELECT 1
+              FROM pg_database
+              WHERE has_database_privilege(
+                  'litblogs_backup', datname, 'CREATE'
+                ) OR has_database_privilege(
+                  'litblogs_backup', datname, 'TEMPORARY'
+                ) OR has_database_privilege(
+                  'litblogs_backup', datname, 'CONNECT'
+                ) IS DISTINCT FROM (datname = 'litblog_test_operator_ci')
+            ) THEN
+              RAISE EXCEPTION 'backup role database scope is not exact';
+            END IF;
+          END
+          $backup_scope$;
+          SQL
+          if PGPASSWORD=ci-only-backup-password psql --host=localhost --username=litblogs_backup --dbname=postgres --command='SELECT 1' >/dev/null 2>&1; then
+            echo 'backup role unexpectedly reached a non-target database' >&2
+            exit 1
+          fi
+      - name: Exercise real PostgreSQL backup and restore tooling
+        working-directory: litblogs
+        env:
+          POSTGRES_OPERATOR_CONTAINER_ID: ${{ job.services.postgres.id }}
+          POSTGRES_OPERATOR_BACKUP_DATABASE_URL: "postgresql://litblogs_backup:ci-only-backup-password@127.0.0.1:5432/litblog_test_operator_ci?sslmode=verify-full&sslrootcert=/etc/litblogs/postgres-root-ca.pem"
+          POSTGRES_OPERATOR_RESTORE_DATABASE_URL: "postgresql://litblog_ci:ci-only-postgres-password@127.0.0.1:5432/litblog_test_operator_ci?sslmode=verify-full&sslrootcert=/etc/litblogs/postgres-root-ca.pem"
+        # The real integration test applies GRANT pg_write_all_data TO pg_read_all_data,
+        # requires backup-precheck rejection, and always runs
+        # REVOKE pg_write_all_data FROM pg_read_all_data before returning.
+        run: python -m pytest tests/test_postgres_operator_integration.py -q
+
+  browser-journeys:
+    name: Browser release journeys
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17.11-alpine3.24@sha256:7456ef82e5f5bc43d997f4781bbd7c0d6389bff397564649a356e206ba473aee
+        env:
+          POSTGRES_USER: litblogs_e2e_admin
+          POSTGRES_PASSWORD: e2e-ci-only-postgres-password
+          POSTGRES_DB: postgres
+          POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=scram-sha-256
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U litblogs_e2e_admin -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check out proposed tree
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: litblogs/requirements-dev.txt
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: litblogs/package-lock.json
+      - name: Install hash-locked backend dependencies
+        working-directory: litblogs
+        run: "python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.txt"
+      - name: Install frontend dependencies
+        working-directory: litblogs
+        run: npm ci
+      - name: Verify browser harness safety
+        working-directory: litblogs
+        run: |
+          python -m pytest -q e2e/support/test_database.py
+          node --test e2e/support/sanitized-reporter.test.mjs
+      - name: Install Chromium with system dependencies
+        working-directory: litblogs
+        run: npx playwright install --with-deps chromium
+      - name: Run seven browser journeys
+        working-directory: litblogs
+        env:
+          CI: "true"
+          E2E_ADMIN_DATABASE_URL: postgresql+psycopg2://litblogs_e2e_admin:e2e-ci-only-postgres-password@127.0.0.1:5432/postgres
+          E2E_DISPOSABLE_DATABASE_CONFIRMED: litblogs-e2e-only
+        run: npm run test:e2e
+      - name: Upload sanitized browser failure report
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-e2e-sanitized-${{ github.run_id }}-${{ github.run_attempt }}
+          path: litblogs/test-results/e2e/sanitized-failures/*.json
+          if-no-files-found: ignore
+          retention-days: 3
+          include-hidden-files: false
 
   frontend-tests:
     name: Frontend tests
@@ -96,7 +305,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: litblogs/package-lock.json
       - name: Install frontend dependencies
@@ -119,7 +328,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: litblogs/package-lock.json
       - name: Install frontend dependencies
@@ -142,7 +351,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: litblogs/package-lock.json
       - name: Install frontend dependencies
@@ -168,18 +377,31 @@ jobs:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: |
+            litblogs/requirements.in
+            litblogs/requirements-dev.in
+            litblogs/requirements-lock.in
             litblogs/requirements.txt
             litblogs/requirements-dev.txt
+            litblogs/requirements-lock.txt
+      - name: Verify reproducible Python dependency locks
+        working-directory: litblogs
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r requirements-lock.txt
+          python ../scripts/compile-python-locks.py
+          git diff --exit-code -- requirements.txt requirements-dev.txt requirements-lock.txt
       - name: Install backend audit tooling
         working-directory: litblogs
-        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+        run: "python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.txt"
       - name: Audit Python runtime dependencies
         working-directory: litblogs
         run: python -m pip_audit -r requirements.txt
+      - name: Audit installed Python build and test graph
+        working-directory: litblogs
+        run: python -m pip_audit -r requirements-dev.txt
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: litblogs/package-lock.json
       - name: Install frontend dependencies
@@ -188,6 +410,9 @@ jobs:
       - name: Audit frontend runtime dependencies
         working-directory: litblogs
         run: npm audit --omit=dev --audit-level=high
+      - name: Audit complete frontend build graph
+        working-directory: litblogs
+        run: npm audit --audit-level=high
 
   secret-scan:
     name: Secret scan
@@ -203,8 +428,9 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      - name: Install policy validator dependency
-        run: python -m pip install PyYAML==6.0.3
+      - name: Install hash-locked policy validator dependencies
+        working-directory: litblogs
+        run: "python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.txt"
       - name: Check tracked credential policy
         shell: pwsh
         run: ./scripts/check-no-tracked-secrets.ps1
@@ -234,13 +460,16 @@ jobs:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: |
+            litblogs/requirements.in
+            litblogs/requirements-dev.in
+            litblogs/requirements-lock.in
             litblogs/requirements.txt
             litblogs/requirements-dev.txt
+            litblogs/requirements-lock.txt
       - name: Install SAST tooling
         working-directory: litblogs
-        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+        run: "python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.txt"
       - name: Run Ruff
-        working-directory: litblogs
-        run: python -m ruff check .
+        run: python scripts/run-backend-ruff.py
       - name: Run Bandit medium/high scan
         run: python scripts/run-backend-bandit.py

@@ -1,4 +1,4 @@
-import { Routes, Route } from "react-router-dom";
+import { Navigate, Routes, Route } from "react-router-dom";
 import LitBlogs from "./LitBlogs";
 import Help from "./Help";
 import SignIn from "./Sign-in";
@@ -58,7 +58,7 @@ function App() {
         <Route path="/sign-in" element={<SignIn />} />
         <Route path="/sign-up" element={<SignUp />} />
         <Route path="/teacher-dashboard" element={<ProtectedRoute allowedRoles={["TEACHER"]}><TeacherDashboard /></ProtectedRoute>} />
-        <Route path="/class-feed" element={<ProtectedRoute><ClassFeed /></ProtectedRoute>} />
+        <Route path="/class-feed" element={<Navigate to="/" replace />} />
         <Route path="/class-feed/:classId" element={<ProtectedRoute><ClassFeed /></ProtectedRoute>} />
         <Route path="/class/:classId/assignment/:assignmentId/submissions" element={<ProtectedRoute allowedRoles={["TEACHER", "ADMIN"]}><AssignmentSubmissions /></ProtectedRoute>} />
         <Route path="/admin-dashboard" element={<ProtectedRoute allowedRoles={["ADMIN"]}><AdminDashboard /></ProtectedRoute>} />

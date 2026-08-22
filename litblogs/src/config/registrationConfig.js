@@ -7,6 +7,14 @@ export const localPasswordRegistrationEnabledFor = (env = {}) => {
   );
 };
 
-export const localPasswordRegistrationEnabled = localPasswordRegistrationEnabledFor(
+export let localPasswordRegistrationEnabled = localPasswordRegistrationEnabledFor(
   import.meta.env,
 );
+
+export const applyPublicRegistrationConfig = (runtimeConfig, env = import.meta.env) => {
+  localPasswordRegistrationEnabled = (
+    runtimeConfig?.localPasswordRegistrationEnabled === true
+    && localPasswordRegistrationEnabledFor(env)
+  );
+  return localPasswordRegistrationEnabled;
+};
