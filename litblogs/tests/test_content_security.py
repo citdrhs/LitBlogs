@@ -1,7 +1,8 @@
-import ast
 import asyncio
+import hashlib
 import inspect
-import textwrap
+import re
+from datetime import timedelta
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,10 +13,67 @@ from starlette.datastructures import Headers
 from starlette.routing import Mount
 
 import main
+import models
+from database import SessionLocal
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"safe-image-payload"
 PDF_BYTES = b"%PDF-1.7\n" + b"safe-pdf-payload"
 MP4_BYTES = b"\x00\x00\x00\x18ftypisom" + b"safe-video-payload"
+PNG_SIZE = len(PNG_BYTES)
+
+
+def _security_actor(user_id=42, role=models.UserRole.STUDENT):
+    return SimpleNamespace(id=user_id, role=role, disabled_at=None)
+
+
+def _security_user(db, user_id=42, role=models.UserRole.STUDENT):
+    user = models.User(
+        id=user_id,
+        username=f"content-security-{user_id}",
+        email=f"content-security-{user_id}@example.com",
+        password="not-a-real-password-hash",
+        first_name="Content",
+        last_name="Security",
+        role=role,
+    )
+    db.add(user)
+    db.flush()
+    return user
+
+
+def _registered_asset(
+    db,
+    *,
+    storage_key,
+    owner_id=42,
+    original_filename="safe.png",
+    media_type="image/png",
+    size_bytes=PNG_SIZE,
+    sha256_digest=None,
+    state="PENDING",
+    purpose="POST",
+):
+    now = main._utc_now_naive()
+    asset = models.UploadAsset(
+        storage_key=storage_key,
+        owner_user_id=owner_id,
+        purpose=purpose,
+        state=state,
+        original_filename=original_filename,
+        media_type=media_type,
+        size_bytes=size_bytes,
+        sha256_digest=sha256_digest
+        or hashlib.sha256(
+            PDF_BYTES if media_type == "application/pdf" else PNG_BYTES
+        ).hexdigest(),
+        created_at=now,
+        expires_at=now + timedelta(hours=24) if state == "PENDING" else None,
+        bound_at=now if state == "ACTIVE" else None,
+        scan_completed_at=now,
+    )
+    db.add(asset)
+    db.flush()
+    return asset
 
 
 def make_upload(filename, content_type, content):
@@ -67,13 +125,13 @@ def test_server_sanitizer_preserves_supported_rich_text_and_uploaded_media():
         </p>
         <figure class="video-container" contenteditable="false">
           <video controls preload="metadata" width="100%">
-            <source src="/uploads/videos/42/book-talk.mp4" type="video/mp4">
+            <source src="/api/uploads/objects/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp4" type="video/mp4">
           </video>
         </figure>
-        <video controls src="/api/uploads/videos/42/direct.mp4"></video>
+        <video controls src="/api/uploads/objects/bb/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.mp4"></video>
         <video controls src="https://tracker.example/direct.mp4"></video>
         <video controls src="data:video/mp4;base64,AAAA"></video>
-        <img src="/api/uploads/images/42/cover.png" alt="Book cover">
+        <img src="/api/uploads/objects/cc/cccccccccccccccccccccccccccccccc.png" alt="Book cover">
         """
     )
 
@@ -86,11 +144,11 @@ def test_server_sanitizer_preserves_supported_rich_text_and_uploaded_media():
     assert "position" not in sanitized
     assert '<figure class="video-container" contenteditable="false">' in sanitized
     assert "<video controls" in sanitized
-    assert '<source src="/uploads/videos/42/book-talk.mp4" type="video/mp4">' in sanitized
-    assert 'src="/api/uploads/videos/42/direct.mp4"' in sanitized
+    assert '<source src="/api/uploads/objects/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp4" type="video/mp4">' in sanitized
+    assert 'src="/api/uploads/objects/bb/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.mp4"' in sanitized
     assert "https://tracker.example/direct.mp4" not in sanitized
     assert "data:video/mp4" not in sanitized
-    assert '<img src="/api/uploads/images/42/cover.png" alt="Book cover">' in sanitized
+    assert '<img src="/api/uploads/objects/cc/cccccccccccccccccccccccccccccccc.png" alt="Book cover">' in sanitized
 
 
 def test_server_sanitizer_drops_pathological_layout_values():
@@ -140,7 +198,7 @@ def test_post_builder_does_not_append_active_markup_after_sanitization():
         ],
         media=[{"type": "image", "url": '"><script>window.__xss=true</script>'}],
         polls=[{"options": ["safe", "</div><script>alert(1)</script>"]}],
-        files=[{"name": "</div><img src=x onerror=alert(1)>", "url": "/uploads/files/42/x.pdf"}],
+        files=[{"name": "</div><img src=x onerror=alert(1)>", "url": "/api/uploads/objects/dd/dddddddddddddddddddddddddddddddd.pdf"}],
     )
 
     built = main._build_post_content(post)
@@ -150,84 +208,49 @@ def test_post_builder_does_not_append_active_markup_after_sanitization():
     assert "&lt;img" in built
 
 
-@pytest.mark.parametrize(
-    ("reference", "expected"),
-    [
-        ("/uploads/files/42/reading.pdf", "files/42/reading.pdf"),
-        ("/api/uploads/files/42/reading.pdf", "files/42/reading.pdf"),
-        ("/dren/api/uploads/files/42/reading.pdf", "files/42/reading.pdf"),
-        ("files/42/reading.pdf", "files/42/reading.pdf"),
-    ],
-)
-def test_upload_reference_parser_accepts_canonical_local_forms(reference, expected):
-    assert main._canonical_upload_relative_path(reference) == expected
-
-
-@pytest.mark.parametrize(
-    "reference",
-    [
-        "https://tracker.example/uploads/files/42/reading.pdf",
-        "//tracker.example/uploads/files/42/reading.pdf",
-        "/uploads.evil/files/42/reading.pdf",
-        "/api/uploads/../secrets.env",
-        "/api/uploads/%2e%2e/secrets.env",
-        "/api/uploads/files%2f..%2fsecrets.env",
-        "/api/uploads/files\\..\\secrets.env",
-        "/api/uploads/files/42/reading.pdf?token=secret",
-        "/api/uploads/files/42/reading.pdf#fragment",
-        "/api/uploads/files/42/read\x00ing.pdf",
-        "/api/uploads/files/42/reading.pdf::$DATA",
-        "/api/uploads/files/42/read%3Asecret.pdf",
-        "/api/uploads/files/42/read%ZZing.pdf",
-        "",
-    ],
-)
-def test_upload_reference_parser_rejects_malformed_or_escaping_paths(reference):
-    with pytest.raises(ValueError, match="upload"):
-        main._canonical_upload_relative_path(reference)
-
-
-def test_upload_reference_parser_rejects_very_long_input_without_a_regex():
-    oversized = "/uploads/" + ("uploads/a/" * 50_000) + "reading.pdf"
-
-    with pytest.raises(ValueError, match="upload"):
-        main._canonical_upload_relative_path(oversized)
-
-    parser_source = textwrap.dedent(
-        inspect.getsource(main._canonical_upload_relative_path)
-    )
-    tree = ast.parse(parser_source)
-    regex_calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr in {"match", "fullmatch", "search"}
-    ]
-    assert regex_calls == []
+def test_compatibility_upload_reference_parser_is_removed():
+    assert not hasattr(main, "_canonical_upload_relative_path")
 
 
 def test_upload_path_cannot_escape_upload_root(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path)
 
-    assert main._upload_path("files", "42", "reading.pdf") == (
-        tmp_path / "files" / "42" / "reading.pdf"
+    assert main._upload_path("objects", "aa", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pdf") == (
+        tmp_path / "objects" / "aa" / "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pdf"
     ).resolve()
 
     with pytest.raises(ValueError, match="upload"):
         main._upload_path("..", "secrets.env")
 
 
-def test_missing_upload_does_not_fall_back_to_another_users_same_filename(monkeypatch, tmp_path):
+def test_legacy_and_unmapped_uploads_are_never_served(client, monkeypatch, tmp_path):
     monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path)
     other_users_file = tmp_path / "files" / "99" / "private.pdf"
     other_users_file.parent.mkdir(parents=True)
     other_users_file.write_bytes(b"private")
 
-    with pytest.raises(HTTPException) as error:
+    with pytest.raises(HTTPException) as legacy_error:
         asyncio.run(main.get_uploaded_file("files/42/private.pdf"))
+    assert legacy_error.value.status_code == 400
+    assert legacy_error.value.detail == "Invalid upload path"
 
-    assert error.value.status_code == 404
+    rogue_key = "objects/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pdf"
+    rogue_path = tmp_path / rogue_key
+    rogue_path.parent.mkdir(parents=True)
+    rogue_path.write_bytes(PDF_BYTES)
+    with SessionLocal() as db:
+        _security_user(db)
+        db.commit()
+        with pytest.raises(HTTPException) as unmapped_error:
+            asyncio.run(
+                main.get_uploaded_file(
+                    rogue_key,
+                    db=db,
+                    current_user=_security_actor(),
+                )
+            )
+    assert unmapped_error.value.status_code == 404
+    assert unmapped_error.value.detail == "File not found"
 
 
 @pytest.mark.parametrize(
@@ -240,6 +263,7 @@ def test_missing_upload_does_not_fall_back_to_another_users_same_filename(monkey
     ],
 )
 def test_image_upload_rejects_active_or_mismatched_content(
+    client,
     monkeypatch,
     tmp_path,
     filename,
@@ -247,45 +271,54 @@ def test_image_upload_rejects_active_or_mismatched_content(
     content,
 ):
     monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path)
-
-    with pytest.raises(HTTPException) as error:
-        asyncio.run(
-            main.upload_image(
-                make_upload(filename, content_type, content),
-                current_user=SimpleNamespace(id=42),
+    with SessionLocal() as db:
+        _security_user(db)
+        db.commit()
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(
+                main.upload_image(
+                    make_upload(filename, content_type, content),
+                    db=db,
+                    current_user=_security_actor(),
+                )
             )
-        )
 
     assert error.value.status_code == 400
     assert [path for path in tmp_path.rglob("*") if path.is_file()] == []
 
 
-def test_validated_upload_is_bounded_opaque_and_cleans_partial_files(monkeypatch, tmp_path):
+def test_validated_upload_is_bounded_opaque_and_cleans_partial_files(client, monkeypatch, tmp_path):
     monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path)
     monkeypatch.setattr(main, "MAX_IMAGE_UPLOAD_BYTES", len(PNG_BYTES) - 1)
 
-    with pytest.raises(HTTPException) as error:
-        asyncio.run(
+    with SessionLocal() as db:
+        _security_user(db)
+        db.commit()
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(
+                main.upload_image(
+                    make_upload("student-private-name.png", "image/png", PNG_BYTES),
+                    db=db,
+                    current_user=_security_actor(),
+                )
+            )
+        assert error.value.status_code == 413
+        assert [path for path in tmp_path.rglob("*") if path.is_file()] == []
+
+        monkeypatch.setattr(main, "MAX_IMAGE_UPLOAD_BYTES", len(PNG_BYTES))
+        result = asyncio.run(
             main.upload_image(
                 make_upload("student-private-name.png", "image/png", PNG_BYTES),
-                current_user=SimpleNamespace(id=42),
+                db=db,
+                current_user=_security_actor(),
             )
         )
-
-    assert error.value.status_code == 413
-    assert [path for path in tmp_path.rglob("*") if path.is_file()] == []
-
-    monkeypatch.setattr(main, "MAX_IMAGE_UPLOAD_BYTES", len(PNG_BYTES))
-    result = asyncio.run(
-        main.upload_image(
-            make_upload("student-private-name.png", "image/png", PNG_BYTES),
-            current_user=SimpleNamespace(id=42),
-        )
-    )
-    stored_name = Path(result["url"]).name
-    assert stored_name.endswith(".png")
-    assert "student-private-name" not in stored_name
-    assert (tmp_path / "images" / "42" / stored_name).read_bytes() == PNG_BYTES
+        storage_key = result["url"].removeprefix("/api/uploads/")
+        assert re.fullmatch(r"objects/[0-9a-f]{2}/[0-9a-f]{32}\.png", storage_key)
+        assert storage_key.split("/")[1] == Path(storage_key).stem[:2]
+        assert "student-private-name" not in storage_key
+        assert (tmp_path / storage_key).read_bytes() == PNG_BYTES
+        assert db.query(models.UploadAsset).one().state == "PENDING"
 
 
 @pytest.mark.parametrize(
@@ -326,7 +359,10 @@ def test_upload_round_trip_uses_the_canonical_authenticated_api_route(
     tmp_path,
 ):
     monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path)
-    main.app.dependency_overrides[main.get_current_user] = lambda: SimpleNamespace(id=42)
+    with SessionLocal() as db:
+        _security_user(db)
+        db.commit()
+    main.app.dependency_overrides[main.get_current_user] = lambda: _security_actor()
     try:
         upload_response = client.post(
             "/api/upload/image",
@@ -335,7 +371,10 @@ def test_upload_round_trip_uses_the_canonical_authenticated_api_route(
         assert upload_response.status_code == 200
 
         upload_url = upload_response.json()["url"]
-        assert upload_url.startswith("/api/uploads/images/42/")
+        assert re.fullmatch(
+            r"/api/uploads/objects/[0-9a-f]{2}/[0-9a-f]{32}\.png",
+            upload_url,
+        )
 
         served_response = client.get(upload_url)
         assert served_response.status_code == 200
@@ -345,7 +384,10 @@ def test_upload_round_trip_uses_the_canonical_authenticated_api_route(
         upload_path = upload_url.removeprefix("/api/uploads/")
         delete_response = client.delete(f"/api/upload/{upload_path}")
         assert delete_response.status_code == 200
-        assert not any(path.is_file() for path in tmp_path.rglob("*"))
+        assert delete_response.json() == {"message": "File deletion queued"}
+        assert (tmp_path / upload_path).is_file()
+        with SessionLocal() as db:
+            assert db.query(models.UploadAsset).one().state == "DELETE_PENDING"
     finally:
         main.app.dependency_overrides.pop(main.get_current_user, None)
 
@@ -376,10 +418,12 @@ def test_all_upload_endpoints_use_the_bounded_validation_writer():
         main.upload_video,
         main.upload_file,
         main.upload_generic_file,
-        main.upload_profile_image,
-        main.upload_cover_image,
     ):
-        assert "_save_validated_upload" in inspect.getsource(endpoint)
+        assert "_register_pending_upload" in inspect.getsource(endpoint)
+    assert "_save_validated_upload" in inspect.getsource(main._register_pending_upload)
+    for endpoint in (main.upload_profile_image, main.upload_cover_image):
+        assert "_replace_profile_upload" in inspect.getsource(endpoint)
+    assert "_save_validated_upload" in inspect.getsource(main._replace_profile_upload)
 
 
 def test_uploads_are_not_exposed_through_the_public_static_mount():
@@ -391,21 +435,34 @@ def test_uploads_are_not_exposed_through_the_public_static_mount():
 
 def test_upload_route_requires_authentication_before_revealing_file(client, monkeypatch, tmp_path):
     monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path)
-    image_path = tmp_path / "images" / "42" / "safe.png"
+    storage_key = "objects/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png"
+    image_path = tmp_path / storage_key
     image_path.parent.mkdir(parents=True)
     image_path.write_bytes(PNG_BYTES)
+    with SessionLocal() as db:
+        _security_user(db)
+        _registered_asset(db, storage_key=storage_key)
+        db.commit()
 
-    unauthenticated = client.get("/api/uploads/images/42/safe.png")
+    upload_url = f"/api/uploads/{storage_key}"
+    unauthenticated = client.get(upload_url)
     assert unauthenticated.status_code == 401
 
-    main.app.dependency_overrides[main.get_current_user] = lambda: SimpleNamespace(id=42)
+    main.app.dependency_overrides[main.get_current_user] = lambda: _security_actor()
     try:
-        authenticated = client.get("/api/uploads/images/42/safe.png")
+        authenticated = client.get(upload_url)
+        main.app.dependency_overrides[main.get_current_user] = lambda: _security_actor(
+            99,
+            models.UserRole.ADMIN,
+        )
+        admin_read = client.get(upload_url)
     finally:
         main.app.dependency_overrides.pop(main.get_current_user, None)
 
     assert authenticated.status_code == 200
     assert authenticated.content == PNG_BYTES
+    assert admin_read.status_code == 200
+    assert admin_read.content == PNG_BYTES
 
 
 def test_upload_request_body_cap_runs_before_auth_and_multipart_parsing(client, monkeypatch):
@@ -461,13 +518,24 @@ def test_upload_request_body_cap_counts_chunked_bodies_without_content_length(mo
     assert downstream_completed is False
 
 
-def test_safe_upload_response_has_fixed_type_and_defensive_headers(monkeypatch, tmp_path):
+def test_safe_upload_response_has_fixed_type_and_defensive_headers(client, monkeypatch, tmp_path):
     monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path)
-    image_path = tmp_path / "images" / "42" / "safe.png"
+    storage_key = "objects/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png"
+    image_path = tmp_path / storage_key
     image_path.parent.mkdir(parents=True)
     image_path.write_bytes(PNG_BYTES)
 
-    response = asyncio.run(main.get_uploaded_file("images/42/safe.png"))
+    with SessionLocal() as db:
+        _security_user(db)
+        _registered_asset(db, storage_key=storage_key)
+        db.commit()
+        response = asyncio.run(
+            main.get_uploaded_file(
+                storage_key,
+                db=db,
+                current_user=_security_actor(),
+            )
+        )
 
     assert response.media_type == "image/png"
     assert response.headers["x-content-type-options"] == "nosniff"
@@ -477,31 +545,59 @@ def test_safe_upload_response_has_fixed_type_and_defensive_headers(monkeypatch, 
     assert response.headers["content-disposition"].startswith("inline;")
 
 
-def test_pdf_uploads_are_always_served_as_attachments(monkeypatch, tmp_path):
+def test_pdf_uploads_are_always_served_as_attachments(client, monkeypatch, tmp_path):
     monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path)
-    document_path = tmp_path / "files" / "42" / "safe.pdf"
+    storage_key = "objects/bb/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.pdf"
+    document_path = tmp_path / storage_key
     document_path.parent.mkdir(parents=True)
     document_path.write_bytes(PDF_BYTES)
 
-    response = asyncio.run(main.get_uploaded_file("files/42/safe.pdf"))
+    with SessionLocal() as db:
+        _security_user(db)
+        _registered_asset(
+            db,
+            storage_key=storage_key,
+            original_filename="safe.pdf",
+            media_type="application/pdf",
+            size_bytes=len(PDF_BYTES),
+        )
+        db.commit()
+        response = asyncio.run(
+            main.get_uploaded_file(
+                storage_key,
+                db=db,
+                current_user=_security_actor(),
+            )
+        )
 
     assert response.media_type == "application/pdf"
     assert response.headers["content-disposition"].startswith("attachment;")
 
 
-def test_download_uses_stored_type_and_sanitizes_requested_filename(monkeypatch, tmp_path):
+def test_registry_response_uses_stored_name_and_sanitizes_it(client, monkeypatch, tmp_path):
     monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path)
-    document_path = tmp_path / "files" / "42" / "safe.pdf"
+    storage_key = "objects/bb/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.pdf"
+    document_path = tmp_path / storage_key
     document_path.parent.mkdir(parents=True)
     document_path.write_bytes(PDF_BYTES)
 
-    response = asyncio.run(
-        main.download_file(
-            "/api/uploads/files/42/safe.pdf",
-            'report.html"\r\nX-Injected: true',
-            current_user=SimpleNamespace(id=42),
+    with SessionLocal() as db:
+        _security_user(db)
+        _registered_asset(
+            db,
+            storage_key=storage_key,
+            original_filename='report.html"\r\nX-Injected: true',
+            media_type="application/pdf",
+            size_bytes=len(PDF_BYTES),
         )
-    )
+        db.commit()
+        response = asyncio.run(
+            main.get_uploaded_file(
+                storage_key,
+                db=db,
+                current_user=_security_actor(),
+            )
+        )
 
     disposition = response.headers["content-disposition"]
     assert response.media_type == "application/pdf"
@@ -512,125 +608,210 @@ def test_download_uses_stored_type_and_sanitizes_requested_filename(monkeypatch,
     assert response.headers["x-content-type-options"] == "nosniff"
 
 
-def test_upload_and_download_errors_do_not_disclose_server_paths(
+def test_upload_and_delete_errors_do_not_disclose_server_paths(
+    client,
     monkeypatch,
     tmp_path,
     capsys,
 ):
     monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path)
-
-    with pytest.raises(HTTPException) as upload_error:
-        asyncio.run(main.get_uploaded_file("files/42/private-name.pdf"))
+    missing_key = "objects/bb/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.pdf"
+    with SessionLocal() as db:
+        _security_user(db)
+        db.commit()
+        with pytest.raises(HTTPException) as upload_error:
+            asyncio.run(
+                main.get_uploaded_file(
+                    missing_key,
+                    db=db,
+                    current_user=_security_actor(),
+                )
+            )
     assert upload_error.value.status_code == 404
     assert upload_error.value.detail == "File not found"
 
-    document_path = tmp_path / "files" / "42" / "safe.pdf"
-    document_path.parent.mkdir(parents=True)
-    document_path.write_bytes(PDF_BYTES)
-    monkeypatch.setattr(
-        main,
-        "_safe_upload_file_response",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            RuntimeError(str(tmp_path / "private" / "student-record.pdf"))
-        ),
-    )
+    class FailingDatabase:
+        def query(self, *_args, **_kwargs):
+            raise RuntimeError(str(tmp_path / "private" / "student-record.pdf"))
 
-    with pytest.raises(HTTPException) as download_error:
+        def rollback(self):
+            return None
+
+    with pytest.raises(HTTPException) as delete_error:
         asyncio.run(
-            main.download_file(
-                "/api/uploads/files/42/safe.pdf",
-                "reading.pdf",
-                current_user=SimpleNamespace(id=42),
+            main.delete_file(
+                missing_key,
+                db=FailingDatabase(),
+                current_user=_security_actor(),
             )
         )
-    assert download_error.value.status_code == 500
-    assert download_error.value.detail == "Failed to download file"
+    assert delete_error.value.status_code == 500
+    assert delete_error.value.detail == "Failed to delete file"
     assert capsys.readouterr().out == ""
 
 
-def test_existing_active_or_forged_uploads_are_not_served(monkeypatch, tmp_path):
+def test_unmapped_or_forged_uploads_are_not_served(client, monkeypatch, tmp_path):
     monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path)
-    active_svg = tmp_path / "images" / "42" / "active.svg"
-    forged_png = tmp_path / "images" / "42" / "forged.png"
-    active_svg.parent.mkdir(parents=True)
-    active_svg.write_bytes(b"<svg onload='alert(1)'></svg>")
-    forged_png.write_bytes(b"<script>alert(1)</script>")
+    unmapped_key = "objects/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png"
+    forged_key = "objects/bb/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png"
+    unmapped_png = tmp_path / unmapped_key
+    forged_png = tmp_path / forged_key
+    unmapped_png.parent.mkdir(parents=True)
+    unmapped_png.write_bytes(PNG_BYTES)
+    forged_png.parent.mkdir(parents=True)
+    forged_payload = b"<script>alert(1)</script>"
+    forged_png.write_bytes(forged_payload)
 
-    for reference in ("images/42/active.svg", "images/42/forged.png"):
-        with pytest.raises(HTTPException) as error:
-            asyncio.run(main.get_uploaded_file(reference))
-        assert error.value.status_code == 404
-
-
-def test_delete_upload_maps_malformed_paths_to_bad_request():
-    with pytest.raises(HTTPException) as error:
-        asyncio.run(
-            main.delete_file(
-                file_path="../secrets.env",
-                current_user=SimpleNamespace(id=42),
-            )
+    with SessionLocal() as db:
+        _security_user(db)
+        _registered_asset(
+            db,
+            storage_key=forged_key,
+            size_bytes=len(forged_payload),
+            sha256_digest=hashlib.sha256(forged_payload).hexdigest(),
         )
+        db.commit()
+        for reference in (unmapped_key, forged_key):
+            with pytest.raises(HTTPException) as error:
+                asyncio.run(
+                    main.get_uploaded_file(
+                        reference,
+                        db=db,
+                        current_user=_security_actor(),
+                    )
+                )
+            assert error.value.status_code == 404
+            assert error.value.detail == "File not found"
+
+
+def test_delete_upload_maps_malformed_paths_to_bad_request(client):
+    with SessionLocal() as db:
+        _security_user(db)
+        db.commit()
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(
+                main.delete_file(
+                    file_path="../secrets.env",
+                    db=db,
+                    current_user=_security_actor(),
+                )
+            )
 
     assert error.value.status_code == 400
     assert error.value.detail == "Invalid upload path"
 
 
-def test_delete_upload_does_not_accept_another_user_id_with_the_same_prefix():
-    with pytest.raises(HTTPException) as error:
-        asyncio.run(
-            main.delete_file(
-                file_path="files/420/reading.pdf",
-                current_user=SimpleNamespace(id=42),
-            )
+def test_delete_upload_hides_another_owners_registered_object(client):
+    storage_key = "objects/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pdf"
+    with SessionLocal() as db:
+        _security_user(db, 42)
+        _security_user(db, 420)
+        _registered_asset(
+            db,
+            storage_key=storage_key,
+            owner_id=420,
+            original_filename="reading.pdf",
+            media_type="application/pdf",
+            size_bytes=len(PDF_BYTES),
         )
-
-    assert error.value.status_code == 403
-
-
-def test_delete_upload_rejects_directories_without_disclosing_paths(
-    monkeypatch,
-    tmp_path,
-    capsys,
-):
-    monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path)
-    (tmp_path / "images" / "42").mkdir(parents=True)
-
-    with pytest.raises(HTTPException) as error:
-        asyncio.run(
-            main.delete_file(
-                file_path="images/42",
-                current_user=SimpleNamespace(id=42),
+        db.commit()
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(
+                main.delete_file(
+                    file_path=storage_key,
+                    db=db,
+                    current_user=_security_actor(42),
+                )
             )
-        )
 
     assert error.value.status_code == 404
     assert error.value.detail == "File not found"
-    assert capsys.readouterr().out == ""
 
 
-def test_delete_upload_io_failures_are_generic_and_not_printed(
+def test_delete_upload_rejects_direct_active_asset(client):
+    storage_key = "objects/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png"
+    with SessionLocal() as db:
+        _security_user(db)
+        _registered_asset(
+            db,
+            storage_key=storage_key,
+            state="ACTIVE",
+            purpose="PROFILE_IMAGE",
+        )
+        db.commit()
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(
+                main.delete_file(
+                    file_path=storage_key,
+                    db=db,
+                    current_user=_security_actor(),
+                )
+            )
+
+    assert error.value.status_code == 409
+    assert error.value.detail == "Active uploads must be removed from their resource"
+
+
+def test_delete_upload_rejects_directories_without_disclosing_paths(
+    client,
     monkeypatch,
     tmp_path,
     capsys,
 ):
     monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path)
-    stored_file = tmp_path / "images" / "42" / "safe.png"
+    (tmp_path / "objects" / "aa").mkdir(parents=True)
+
+    with SessionLocal() as db:
+        _security_user(db)
+        db.commit()
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(
+                main.delete_file(
+                    file_path="objects/aa",
+                    db=db,
+                    current_user=_security_actor(),
+                )
+            )
+
+    assert error.value.status_code == 400
+    assert error.value.detail == "Invalid upload path"
+    assert capsys.readouterr().out == ""
+
+
+def test_pending_delete_queues_without_synchronously_unlinking(
+    client,
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path)
+    storage_key = "objects/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png"
+    stored_file = tmp_path / storage_key
     stored_file.parent.mkdir(parents=True)
     stored_file.write_bytes(PNG_BYTES)
+    with SessionLocal() as db:
+        _security_user(db)
+        _registered_asset(db, storage_key=storage_key)
+        db.commit()
 
     def fail_unlink(_path):
         raise OSError(str(tmp_path / "private" / "student-record.png"))
 
     monkeypatch.setattr(Path, "unlink", fail_unlink)
 
-    with pytest.raises(HTTPException) as error:
-        asyncio.run(
+    with SessionLocal() as db:
+        result = asyncio.run(
             main.delete_file(
-                file_path="images/42/safe.png",
-                current_user=SimpleNamespace(id=42),
+                file_path=storage_key,
+                db=db,
+                current_user=_security_actor(),
             )
         )
 
-    assert error.value.status_code == 500
-    assert error.value.detail == "Failed to delete file"
+    assert result == {"message": "File deletion queued"}
+    assert stored_file.is_file()
+    with SessionLocal() as db:
+        asset = db.query(models.UploadAsset).one()
+        assert asset.state == "DELETE_PENDING"
+        assert asset.delete_after is not None
     assert capsys.readouterr().out == ""

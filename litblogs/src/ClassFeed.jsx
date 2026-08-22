@@ -222,6 +222,7 @@ const MediaPreview = ({ media, files, onRemove }) => {
               className="h-32 w-32 object-cover rounded-lg"
             />
             <button
+              type="button"
               onClick={() => onRemove('media', index)}
               className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
             >
@@ -245,6 +246,7 @@ const MediaPreview = ({ media, files, onRemove }) => {
                 <span>{file.name}</span>
               </div>
               <button
+                type="button"
                 onClick={() => onRemove('files', index)}
                 className="text-red-500 hover:text-red-600"
               >
@@ -791,11 +793,6 @@ const TINYMCE_CONFIG = {
       };
     });
     
-    // Register the deleteFileFromServer function with the editor
-    editor.addCommand('deleteFileFromServer', function(ui, url) {
-      deleteFileFromServer(url);
-    });
-    
     // This is critical for preserving image dimensions
     editor.on('ObjectResized', function(e) {
       if (e.target.nodeName === 'IMG') {
@@ -819,11 +816,14 @@ const TINYMCE_CONFIG = {
     // Listen for clicks on the editor content
     editor.on('click', function(e) {
       if (e.target.matches('.remove-btn, .video-delete-btn')) {
-        const fileUrl = e.target.dataset.fileUrl || e.target.dataset.videoUrl;
-        if (fileUrl) {
-          e.target.closest('.file-attachment, .video-container')?.remove();
-          deleteFileFromServer(fileUrl);
+        const attachment = e.target.closest('.file-attachment, .video-container');
+        if (!attachment) {
+          return;
         }
+        e.preventDefault();
+        editor.undoManager.transact(() => attachment.remove());
+        editor.nodeChanged();
+        editor.fire('change');
       }
     });
     
@@ -907,7 +907,7 @@ const TINYMCE_CONFIG = {
                     Your browser does not support the video tag.
                   </video>
                   <div class="video-delete-overlay editor-only-control">
-                    <button type="button" class="video-delete-btn" data-video-url="${videoUrl}" onclick="event.stopPropagation(); this.closest('.video-container').remove(); window.deleteVideoFromServer('${videoUrl}');">×</button>
+                    <button type="button" class="video-delete-btn" data-video-url="${videoUrl}">×</button>
                   </div>
                 </figure>
               `;
@@ -1202,85 +1202,6 @@ const truncateHTML = (htmlContent, maxLength = 200) => {
   tempDiv.appendChild(readMore);
   return serializeSanitizedRichText(tempDiv);
 };
-const getUploadRelativePath = (url = '') => {
-  const normalizedUrl = normalizeRichTextUrl(String(url || ''), 'attachment');
-  if (!normalizedUrl) {
-    throw new Error('Invalid upload URL');
-  }
-  const marker = '/api/uploads/';
-  const markerIndex = normalizedUrl.indexOf(marker);
-  return markerIndex >= 0
-    ? normalizedUrl.slice(markerIndex + marker.length)
-    : normalizedUrl.replace(/^\/+/, '');
-};
-
-// Add this function to handle file deletion
-async function deleteFileFromServer(url) {
-  try {
-    // Extract the file path from the URL
-    // The URL format is /uploads/user_id/filename
-    const filePath = getUploadRelativePath(url);
-    
-    await axios.delete(`/upload/${filePath}`);
-    
-  } catch {
-    toast.error('Failed to delete attachment from server');
-  }
-}
-
-// Make the deleteFileFromServer function available globally
-window.deleteFileFromServer = deleteFileFromServer;
-
-// Add a global function to delete the video from the server
-if (!window.deleteVideoFromServer) {
-  window.deleteVideoFromServer = function(videoUrl) {
-    if (!videoUrl) return;
-    
-    // Extract the file path from the URL
-    const filePath = getUploadRelativePath(videoUrl);
-    
-    // Delete the file from the server
-    axios.delete(`/upload/${filePath}`)
-    .then(() => {
-      toast.success('Video deleted successfully');
-    })
-    .catch(() => {
-      toast.error('Failed to delete video from server');
-    });
-  };
-}
-
-// Add this function at the top of your file, before any component definitions
-// Make sure it's outside of any component or function scope
-
-// Define the deleteVideoFromServer function globally
-function defineGlobalFunctions() {
-  // Add a global function to delete the video from the server
-  window.deleteVideoFromServer = function(videoUrl) {
-    if (!videoUrl) return;
-    
-    // Extract the file path from the URL
-    const filePath = getUploadRelativePath(videoUrl);
-    
-    // Delete the file from the server
-    axios.delete(`/upload/${filePath}`)
-    .then(() => {
-      toast.success('Video deleted successfully');
-    })
-    .catch(() => {
-      toast.error('Failed to delete video from server');
-    });
-  };
-  
-  // Make the deleteFileFromServer function available globally if it exists
-  if (typeof deleteFileFromServer === 'function') {
-    window.deleteFileFromServer = deleteFileFromServer;
-  }
-}
-
-// Call this function immediately to define the global functions
-defineGlobalFunctions();
-
 // Add this CSS variable definition near the top of your file with the other style variables
 
 const editorStyles = `
@@ -1411,14 +1332,6 @@ const ClassFeed = () => {
       content_style: nextContentStyle,
     };
   }, [editorFontSizePx]);
-
-  // Add this to your component's useEffect that runs on mount
-  useEffect(() => {
-    // Ensure global functions are defined
-    defineGlobalFunctions();
-    
-    // Rest of your existing useEffect code...
-  }, []);
 
   // Move all useEffect hooks together
   useEffect(() => {
@@ -2567,6 +2480,7 @@ const ClassFeed = () => {
       const postData = buildPostRequestPayload({
         title: postTitle,
         content,
+        postContent,
       });
       
       let response;
@@ -3621,6 +3535,7 @@ const ClassFeed = () => {
                           </span>
                         </div>
                         <button
+                          type="button"
                           onClick={() => {
                             setPostComposerDirty(true);
                             setPostContent(prev => ({
@@ -3665,6 +3580,7 @@ const ClassFeed = () => {
                         onClick={e => e.stopPropagation()}
                       />
                       <button
+                        type="button"
                         onClick={(e) => {
                           e.stopPropagation();
                           setPostComposerDirty(true);

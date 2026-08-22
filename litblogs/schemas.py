@@ -191,10 +191,30 @@ class ProfileUpdate(StrictRequest):
     bio: str | None = Field(default=None, max_length=500)
     first_name: str | None = Field(default=None, max_length=50)
     last_name: str | None = Field(default=None, max_length=50)
-    avatar_id: str | None = Field(default=None, max_length=50)
-    avatar_color: str | None = Field(default=None, max_length=50)
-    profile_image: str | None = Field(default=None, max_length=255)
-    cover_image: str | None = Field(default=None, max_length=255)
+    avatar_id: Literal[
+        "robot",
+        "alien",
+        "ghost",
+        "ninja",
+        "astronaut",
+        "wizard",
+    ] | None = None
+    avatar_color: Literal[
+        "bg-blue-500",
+        "bg-green-500",
+        "bg-purple-500",
+        "bg-red-500",
+        "bg-yellow-500",
+        "bg-pink-500",
+        "bg-indigo-500",
+        "bg-teal-500",
+    ] | None = None
+    cover_preset: Literal[
+        "classroom-1",
+        "classroom-2",
+        "classroom-3",
+        "classroom-4",
+    ] | None = None
 
 class ClassResponse(ClassBase):
     model_config = ConfigDict(from_attributes=True)

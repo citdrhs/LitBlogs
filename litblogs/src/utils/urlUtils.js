@@ -56,40 +56,7 @@ export const mediaPath = (path = "") => {
     return normalizedInput;
   }
 
-  const inferLegacyUploadPath = (value) => {
-    const normalizedValue = (value || "").trim();
-    if (!normalizedValue || normalizedValue.includes("/")) {
-      return "";
-    }
-
-    const hasFileExtension = /\.[a-z0-9]{2,6}$/i.test(normalizedValue);
-    if (!hasFileExtension) {
-      return "";
-    }
-
-    const extension = normalizedValue.split(".").pop()?.toLowerCase() || "";
-    const videoExtensions = new Set(["mp4", "webm", "ogg", "mov", "m4v", "avi", "mkv"]);
-    const imageExtensions = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "heic"]);
-
-    if (normalizedValue.startsWith("profile_") || normalizedValue.startsWith("cover_")) {
-      return `/uploads/profile_images/${normalizedValue}`;
-    }
-
-    if (videoExtensions.has(extension)) {
-      return `/uploads/videos/${normalizedValue}`;
-    }
-
-    if (imageExtensions.has(extension)) {
-      return `/uploads/images/${normalizedValue}`;
-    }
-
-    return `/uploads/files/${normalizedValue}`;
-  };
-
-  const inferredLegacyUploadPath = inferLegacyUploadPath(normalizedInput);
-  const normalizedInputPath = inferredLegacyUploadPath || normalizedInput;
-
-  const normalizedPath = normalizedInputPath.startsWith("/") ? normalizedInputPath : `/${normalizedInputPath}`;
+  const normalizedPath = normalizedInput.startsWith("/") ? normalizedInput : `/${normalizedInput}`;
 
   // Route uploaded media through the API namespace so it works behind
   // production proxies that only forward /api to the backend.
@@ -104,4 +71,14 @@ export const mediaPath = (path = "") => {
   }
 
   return normalizedPath;
+};
+
+const PROFILE_COVER_PRESET = /^\/Classroom[1-4]\.jpeg$/;
+
+export const profileCoverPath = (path = "") => {
+  const normalizedInput = trimString(path);
+  if (typeof normalizedInput === "string" && PROFILE_COVER_PRESET.test(normalizedInput)) {
+    return assetPath(normalizedInput);
+  }
+  return mediaPath(normalizedInput);
 };

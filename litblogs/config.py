@@ -1,7 +1,9 @@
 import hmac
 import os
 import re
+import stat
 from functools import lru_cache
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -37,6 +39,10 @@ _GOOGLE_CLIENT_ID_PATTERN = re.compile(
 _EMAIL_DOMAIN_PATTERN = re.compile(
     r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$"
 )
+_LOCAL_SCANNER_HOST_PATTERN = re.compile(
+    r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+)
+_POSIX_UPLOAD_CUSTODY = os.name == "posix"
 
 
 def _csv_tuple(value: Any, *, lowercase: bool = False, strip_slash: bool = False) -> tuple[str, ...]:
@@ -116,6 +122,15 @@ class Settings(BaseSettings):
     password_reset_worker_enabled: bool = True
     password_reset_worker_interval_seconds: int = Field(default=5, ge=1, le=60)
     password_reset_claim_timeout_seconds: int = Field(default=120, ge=60, le=600)
+    upload_root: Path | None = None
+    upload_scanner_required: bool = False
+    upload_scanner_host: str | None = None
+    upload_scanner_allowed_hosts: tuple[str, ...] = ()
+    upload_scanner_port: int = Field(default=3310, ge=1, le=65_535)
+    upload_scanner_timeout_seconds: float = Field(default=5.0, ge=0.5, le=30.0)
+    upload_registry_schema_ready: bool = False
+    upload_legacy_import_complete: bool = False
+    upload_backup_restore_verified: bool = False
 
     @field_validator("app_env", mode="before")
     @classmethod
@@ -148,6 +163,7 @@ class Settings(BaseSettings):
         "allowed_email_domains",
         "microsoft_allowed_tenant_ids",
         "push_allowed_endpoint_hosts",
+        "upload_scanner_allowed_hosts",
         mode="before",
     )
     @classmethod
@@ -168,6 +184,7 @@ class Settings(BaseSettings):
         "email_host",
         "email_username",
         "email_from",
+        "upload_scanner_host",
         mode="before",
     )
     @classmethod
@@ -179,8 +196,22 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_production_safety(self):
+        if self.upload_scanner_required and not self.upload_scanner_host:
+            raise ValueError("UPLOAD_SCANNER_HOST is required when upload scanning is required")
+        if self.upload_scanner_host:
+            normalized_scanner_host = self.upload_scanner_host.lower()
+            if not _is_local_or_private_scanner_host(normalized_scanner_host):
+                raise ValueError("UPLOAD_SCANNER_HOST must identify a local or private service")
+            if normalized_scanner_host not in self.upload_scanner_allowed_hosts:
+                raise ValueError(
+                    "UPLOAD_SCANNER_ALLOWED_HOSTS must include UPLOAD_SCANNER_HOST"
+                )
+
         if self.app_env != "production":
             return self
+
+        if self.reset_database_on_startup:
+            raise ValueError("RESET_DATABASE_ON_STARTUP must be false in production")
 
         secret = self.secret_key.get_secret_value() if self.secret_key else ""
         if len(secret.encode("utf-8")) < SECRET_KEY_MIN_BYTES:
@@ -210,10 +241,16 @@ class Settings(BaseSettings):
             "EMAIL_USERNAME": self.email_username,
             "EMAIL_PASSWORD": self.email_password,
             "EMAIL_FROM": self.email_from,
+            "UPLOAD_ROOT": self.upload_root,
+            "UPLOAD_SCANNER_HOST": self.upload_scanner_host,
+            "UPLOAD_SCANNER_ALLOWED_HOSTS": self.upload_scanner_allowed_hosts,
         }
         missing = [name for name, value in required.items() if not value]
         if missing:
             raise ValueError(f"Missing required production setting: {missing[0]}")
+        database_scheme = urlsplit(self.database_url or "").scheme.lower()
+        if database_scheme.split("+", 1)[0] != "postgresql":
+            raise ValueError("DATABASE_URL must use PostgreSQL in production")
 
         placeholder_checked = {
             "JWT_ISSUER": self.jwt_issuer,
@@ -296,6 +333,16 @@ class Settings(BaseSettings):
             raise ValueError(
                 "LOCAL_PASSWORD_REGISTRATION_ENABLED must be false in production"
             )
+        if not self.upload_scanner_required:
+            raise ValueError("UPLOAD_SCANNER_REQUIRED must be true in production")
+        if not _has_valid_upload_root_custody(self.upload_root):
+            raise ValueError("UPLOAD_ROOT custody validation failed")
+        if not self.upload_registry_schema_ready:
+            raise ValueError("UPLOAD_REGISTRY_SCHEMA_READY must be explicitly confirmed")
+        if not self.upload_legacy_import_complete:
+            raise ValueError("UPLOAD_LEGACY_IMPORT_COMPLETE must be explicitly confirmed")
+        if not self.upload_backup_restore_verified:
+            raise ValueError("UPLOAD_BACKUP_RESTORE_VERIFIED must be explicitly confirmed")
         return self
 
 
@@ -323,6 +370,49 @@ def _reveal_secret(value: SecretStr | None) -> str:
 def _is_https_origin(value: str) -> bool:
     parsed = urlsplit(value)
     return parsed.scheme == "https" and bool(parsed.netloc) and not parsed.path.rstrip("/")
+
+
+def _is_local_or_private_scanner_host(value: str) -> bool:
+    try:
+        address = ip_address(value)
+    except ValueError:
+        return value == "localhost" or bool(_LOCAL_SCANNER_HOST_PATTERN.fullmatch(value))
+    return bool(address.is_private or address.is_loopback or address.is_link_local)
+
+
+def _has_valid_upload_root_custody(upload_root: Path | None) -> bool:
+    if upload_root is None or not upload_root.is_absolute():
+        return False
+    try:
+        absolute_root = upload_root.absolute()
+        candidates = tuple(reversed(absolute_root.parents)) + (absolute_root,)
+        for candidate in candidates:
+            is_junction = getattr(candidate, "is_junction", lambda: False)
+            if candidate.is_symlink() or is_junction():
+                return False
+            if _POSIX_UPLOAD_CUSTODY and candidate.exists():
+                candidate_stat = candidate.stat()
+                if candidate_stat.st_uid not in {0, os.geteuid()}:
+                    return False
+                if candidate_stat.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+                    return False
+
+        if not absolute_root.exists() or not absolute_root.is_dir():
+            return False
+        resolved_root = absolute_root.resolve(strict=True)
+        if resolved_root.is_relative_to(BASE_DIR.resolve()):
+            return False
+
+        root_stat = resolved_root.stat()
+        if _POSIX_UPLOAD_CUSTODY:
+            if root_stat.st_uid != os.geteuid():
+                return False
+            access_mode = os.W_OK | os.X_OK
+        else:
+            access_mode = os.W_OK
+        return os.access(resolved_root, access_mode)
+    except OSError:
+        return False
 
 
 def _selected_app_env(base_dir: Path) -> str:

@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from jwt.algorithms import RSAAlgorithm
 from pydantic import ValidationError
+from settings_test_support import production_upload_settings
 from sqlalchemy import event
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as OrmSession
@@ -236,6 +237,7 @@ def _production_settings_data(**overrides) -> dict:
         "email_from": "no-reply@school.example",
         "password_reset_worker_enabled": True,
         "local_password_registration_enabled": False,
+        **production_upload_settings(),
     }
     data.update(overrides)
     return data
