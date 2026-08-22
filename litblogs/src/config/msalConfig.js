@@ -54,6 +54,22 @@ export const buildMsalConfig = (microsoft, redirectUri = FRONTEND_URL) => ({
 export const oauthProviderConfig = buildOAuthProviderConfig(import.meta.env);
 export const msalConfig = buildMsalConfig(oauthProviderConfig.microsoft);
 
+export const applyPublicOAuthConfig = (runtimeConfig) => {
+  const nextProviders = buildOAuthProviderConfig({
+    VITE_GOOGLE_CLIENT_ID: runtimeConfig?.googleClientId,
+    VITE_MICROSOFT_CLIENT_ID: runtimeConfig?.microsoftClientId,
+    VITE_MICROSOFT_TENANT_ID: runtimeConfig?.microsoftTenantId,
+  });
+  Object.assign(oauthProviderConfig.google, nextProviders.google);
+  Object.assign(oauthProviderConfig.microsoft, nextProviders.microsoft);
+
+  const nextMsalConfig = buildMsalConfig(oauthProviderConfig.microsoft);
+  Object.assign(msalConfig.auth, nextMsalConfig.auth);
+  Object.assign(msalConfig.cache, nextMsalConfig.cache);
+  Object.assign(msalConfig.system, nextMsalConfig.system);
+  return oauthProviderConfig;
+};
+
 export const loginRequest = {
   scopes: ["openid", "profile", "email"],
   prompt: "select_account",

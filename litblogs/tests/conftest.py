@@ -31,9 +31,7 @@ TEST_ENVIRONMENT = {
     "JWT_AUDIENCE": "litblog-test-clients",
     "ACCESS_TOKEN_EXPIRE_MINUTES": "30",
     "RESET_DATABASE_ON_STARTUP": "false",
-    "ADMIN_ACCESS_CODE": "test-only-admin-access-code",
     "TEACHER_ACCESS_CODE": "test-only-teacher-access-code",
-    "ADMIN_CODE": "test-only-admin-code",
     "FRONTEND_URL": "http://testserver",
     "BASE_URL": "http://testserver",
     "CORS_ALLOWED_ORIGINS": "http://testserver",
@@ -50,7 +48,6 @@ TEST_ENVIRONMENT = {
     "VAPID_PUBLIC_KEY": "",
     "VAPID_PRIVATE_KEY": "",
     "VAPID_SUBJECT": "mailto:tests@example.com",
-    "PUSH_REMINDER_INTERVAL_SECONDS": "3600",
     "EMAIL_HOST": "localhost",
     "EMAIL_PORT": "1025",
     "EMAIL_USERNAME": "test-email-user",
@@ -133,6 +130,8 @@ def cleanup_test_environment():
 def client():
     _assert_test_database_engine(database.engine)
     base.Base.metadata.drop_all(bind=database.engine)
+    _assert_test_database_engine(database.engine)
+    base.Base.metadata.create_all(bind=database.engine)
 
     _assert_test_database_engine(database.engine)
     with TestClient(main.app) as test_client:

@@ -173,7 +173,6 @@ def test_settings_validation_errors_do_not_echo_secret_values():
         "session_cookie_name",
         "csrf_cookie_name",
         "teacher_access_code",
-        "admin_access_code",
     ],
 )
 def test_production_requires_provider_and_session_settings(field):
@@ -193,7 +192,6 @@ def test_production_requires_provider_and_session_settings(field):
         ("session_cookie_name", "test-session-cookie"),
         ("csrf_cookie_name", "placeholder-csrf-cookie"),
         ("teacher_access_code", ""),
-        ("admin_access_code", "test-only-admin-access-code"),
     ],
 )
 def test_production_rejects_placeholder_or_blank_security_settings(field, value):
@@ -211,8 +209,6 @@ def test_production_rejects_placeholder_or_blank_security_settings(field, value)
         ("google_client_id", "replace-with-google-client-id"),
         ("microsoft_client_id", "replace-with-microsoft-client-id"),
         ("teacher_access_code", "replace-with-teacher-access-code"),
-        ("admin_access_code", "replace-with-admin-access-code"),
-        ("admin_code", "replace-with-admin-code"),
     ],
 )
 def test_production_rejects_every_shipped_security_sentinel(field, sentinel):
@@ -230,8 +226,6 @@ def test_production_rejects_every_shipped_security_sentinel(field, sentinel):
         "microsoft_client_id",
         "microsoft_tenant_id",
         "teacher_access_code",
-        "admin_access_code",
-        "admin_code",
     ],
 )
 def test_production_rejects_trivially_short_provider_and_provisioning_values(field):
@@ -596,7 +590,6 @@ def _test_settings_data(**overrides):
         "csrf_cookie_name": "test-litblog-csrf",
         "session_cookie_secure": False,
         "teacher_access_code": "test-only-teacher-access-code",
-        "admin_access_code": "test-only-admin-access-code",
     }
     data.update(overrides)
     return data
@@ -605,24 +598,30 @@ def _test_settings_data(**overrides):
 def _production_settings_data():
     return {
         "app_env": "production",
-        "database_url": "postgresql://litblog_app@database.internal/litblog",
+        "database_url": (
+            f"postgresql://litblog_app:{secrets.token_urlsafe(24)}@database.internal/litblog"
+            "?sslmode=verify-full&sslrootcert=/etc/litblogs/postgres-root-ca.pem"
+        ),
         "secret_key": secrets.token_urlsafe(48),
-        "jwt_issuer": "https://api.litblogs.school.example",
-        "jwt_audience": "litblogs.school.example",
+        "jwt_issuer": "https://api.litblogs.school.edu",
+        "jwt_audience": "litblogs.school.edu",
         "access_token_expire_minutes": 30,
-        "frontend_url": "https://litblogs.school.example",
-        "cors_allowed_origins": ("https://litblogs.school.example",),
+        "frontend_url": "https://litblogs.school.edu",
+        "cors_allowed_origins": ("https://litblogs.school.edu",),
+        "allowed_hosts": ("litblogs.school.edu",),
         "google_client_id": "987654321.apps.googleusercontent.com",
         "microsoft_client_id": "2f1c67a1-91e2-46a3-941f-b88e31763e51",
         "microsoft_tenant_id": "871bd3e0-2dc0-4a40-9b07-9d03068c2364",
         "microsoft_allowed_tenant_ids": ("871bd3e0-2dc0-4a40-9b07-9d03068c2364",),
-        "allowed_email_domains": ("school.example",),
+        "allowed_email_domains": ("school.edu",),
         "session_cookie_name": "__Host-litblog-session",
         "csrf_cookie_name": "__Host-litblog-csrf",
         "session_cookie_secure": True,
         "teacher_access_code": secrets.token_urlsafe(24),
-        "admin_access_code": secrets.token_urlsafe(24),
-        "admin_code": secrets.token_urlsafe(24),
+        "email_host": "smtp.school.edu",
+        "email_username": "litblogs-mailer",
+        "email_password": secrets.token_urlsafe(24),
+        "email_from": "no-reply@school.edu",
     }
 
 

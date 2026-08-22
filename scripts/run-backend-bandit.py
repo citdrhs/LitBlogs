@@ -7,10 +7,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-BACKEND_ROOT = Path(__file__).resolve().parents[1] / "litblogs"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 EXCLUDED_PATHS = (
-    "./tests/*",
-    "./.venv/*",
+    "litblogs/tests/*",
+    "litblogs/.venv/*",
     "*/__pycache__/*",
     "*/.pytest_cache/*",
     "*/.ruff_cache/*",
@@ -24,12 +24,13 @@ def main() -> int:
             "-m",
             "bandit",
             "-r",
-            ".",
+            "litblogs",
+            "deploy/scripts",
             "-x",
             ",".join(EXCLUDED_PATHS),
             "-ll",
         ],
-        cwd=BACKEND_ROOT,
+        cwd=REPOSITORY_ROOT,
         check=False,
     )
     return result.returncode

@@ -6,7 +6,7 @@ The latest LitBlog release and the current `main` branch receive security fixes.
 
 ## Report vulnerabilities privately
 
-Do not open a public issue. Submit a [private repository security advisory](https://github.com/Antigro09/LitBlog/security/advisories/new) so the maintainers can investigate without exposing students, teachers, systems, or credentials.
+Do not open a public issue. Submit a [private repository security advisory](https://github.com/citdrhs/LitBlogs/security/advisories/new) so the maintainers can investigate without exposing students, teachers, systems, or credentials.
 
 Include a concise description, affected feature, sanitized reproduction steps, likely impact, and the version or commit tested. Use synthetic accounts and values. Do not attach logs, database exports, screenshots, or requests containing personally identifiable information (PII). If a minimal redacted excerpt is essential, remove names, email addresses, school identifiers, tokens, cookies, hostnames, and other identifying values first.
 

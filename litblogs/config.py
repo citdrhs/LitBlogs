@@ -1,14 +1,16 @@
 import os
 import re
 from functools import lru_cache
-from pathlib import Path
+from ipaddress import ip_address
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import UUID
 
 from dotenv import dotenv_values
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import EmailStr, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 BASE_DIR = Path(__file__).resolve().parent
 VALID_APP_ENVIRONMENTS = frozenset({"development", "test", "production"})
@@ -30,6 +32,8 @@ _GOOGLE_CLIENT_ID_PATTERN = re.compile(
 _EMAIL_DOMAIN_PATTERN = re.compile(
     r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$"
 )
+_HOST_COOKIE_PATTERN = re.compile(r"^__Host-[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$")
+_RESERVED_DNS_SUFFIXES = frozenset({"example", "invalid", "localhost", "test"})
 
 
 def _csv_tuple(value: Any, *, lowercase: bool = False, strip_slash: bool = False) -> tuple[str, ...]:
@@ -65,7 +69,7 @@ class Settings(BaseSettings):
     )
 
     app_env: str = "development"
-    database_url: str | None = None
+    database_url: str | None = Field(default=None, repr=False)
     secret_key: SecretStr | None = None
     jwt_issuer: str | None = None
     jwt_audience: str | None = None
@@ -75,6 +79,7 @@ class Settings(BaseSettings):
     frontend_url: str | None = None
     base_url: str | None = None
     cors_allowed_origins: tuple[str, ...] = ()
+    allowed_hosts: tuple[str, ...] = ()
     allowed_email_domains: tuple[str, ...] = ()
     microsoft_allowed_tenant_ids: tuple[str, ...] = ()
 
@@ -87,21 +92,28 @@ class Settings(BaseSettings):
     session_cookie_name: str | None = None
     csrf_cookie_name: str | None = None
     session_cookie_secure: bool = False
+    api_docs_enabled: bool = False
+
+    db_pool_size: int = Field(default=5, ge=1, le=20)
+    db_max_overflow: int = Field(default=5, ge=0, le=20)
+    db_pool_timeout_seconds: int = Field(default=10, ge=1, le=30)
+    db_pool_recycle_seconds: int = Field(default=900, ge=60, le=3_600)
+    db_connect_timeout_seconds: int = Field(default=5, ge=1, le=10)
+    db_statement_timeout_ms: int = Field(default=15_000, ge=1_000, le=60_000)
+    db_lock_timeout_ms: int = Field(default=5_000, ge=500, le=30_000)
 
     teacher_access_code: SecretStr | None = None
-    admin_access_code: SecretStr | None = None
-    admin_code: SecretStr | None = None
 
     reset_database_on_startup: bool = False
+    push_notifications_enabled: bool = False
     vapid_public_key: str = ""
     vapid_private_key: SecretStr | None = None
     vapid_subject: str = "mailto:admin@litblogs.local"
-    push_reminder_interval_seconds: int = Field(default=300, ge=60, le=86_400)
     email_host: str | None = None
     email_port: int = Field(default=587, ge=1, le=65_535)
     email_username: str | None = None
     email_password: SecretStr | None = None
-    email_from: str | None = None
+    email_from: EmailStr | None = None
 
     @field_validator("app_env", mode="before")
     @classmethod
@@ -120,6 +132,11 @@ class Settings(BaseSettings):
     @field_validator("allowed_email_domains", "microsoft_allowed_tenant_ids", mode="before")
     @classmethod
     def normalize_lowercase_csv(cls, value: Any) -> tuple[str, ...]:
+        return _csv_tuple(value, lowercase=True)
+
+    @field_validator("allowed_hosts", mode="before")
+    @classmethod
+    def normalize_allowed_hosts(cls, value: Any) -> tuple[str, ...]:
         return _csv_tuple(value, lowercase=True)
 
     @field_validator(
@@ -165,6 +182,7 @@ class Settings(BaseSettings):
             "JWT_AUDIENCE": self.jwt_audience,
             "FRONTEND_URL": self.frontend_url,
             "CORS_ALLOWED_ORIGINS": self.cors_allowed_origins,
+            "ALLOWED_HOSTS": self.allowed_hosts,
             "ALLOWED_EMAIL_DOMAINS": self.allowed_email_domains,
             "GOOGLE_CLIENT_ID": self.google_client_id,
             "MICROSOFT_CLIENT_ID": self.microsoft_client_id,
@@ -173,7 +191,10 @@ class Settings(BaseSettings):
             "SESSION_COOKIE_NAME": self.session_cookie_name,
             "CSRF_COOKIE_NAME": self.csrf_cookie_name,
             "TEACHER_ACCESS_CODE": self.teacher_access_code,
-            "ADMIN_ACCESS_CODE": self.admin_access_code,
+            "EMAIL_HOST": self.email_host,
+            "EMAIL_USERNAME": self.email_username,
+            "EMAIL_PASSWORD": self.email_password,
+            "EMAIL_FROM": self.email_from,
         }
         missing = [name for name, value in required.items() if not value]
         if missing:
@@ -188,10 +209,8 @@ class Settings(BaseSettings):
             "SESSION_COOKIE_NAME": self.session_cookie_name,
             "CSRF_COOKIE_NAME": self.csrf_cookie_name,
             "TEACHER_ACCESS_CODE": _reveal_secret(self.teacher_access_code),
-            "ADMIN_ACCESS_CODE": _reveal_secret(self.admin_access_code),
+            "EMAIL_PASSWORD": _reveal_secret(self.email_password),
         }
-        if self.admin_code is not None:
-            placeholder_checked["ADMIN_CODE"] = _reveal_secret(self.admin_code)
         for name, value in placeholder_checked.items():
             if any(fragment in str(value).lower() for fragment in _PLACEHOLDER_FRAGMENTS):
                 raise ValueError(f"{name} must not be a placeholder in production")
@@ -201,10 +220,8 @@ class Settings(BaseSettings):
             "MICROSOFT_CLIENT_ID": (self.microsoft_client_id, 8),
             "MICROSOFT_TENANT_ID": (self.microsoft_tenant_id, 8),
             "TEACHER_ACCESS_CODE": (_reveal_secret(self.teacher_access_code), 16),
-            "ADMIN_ACCESS_CODE": (_reveal_secret(self.admin_access_code), 16),
+            "EMAIL_PASSWORD": (_reveal_secret(self.email_password), 16),
         }
-        if self.admin_code is not None:
-            minimum_lengths["ADMIN_CODE"] = (_reveal_secret(self.admin_code), 16)
         for name, (value, minimum_bytes) in minimum_lengths.items():
             if len(str(value).encode("utf-8")) < minimum_bytes:
                 raise ValueError(f"{name} must contain at least {minimum_bytes} bytes in production")
@@ -223,19 +240,111 @@ class Settings(BaseSettings):
             )
         if any(not _is_email_domain(domain) for domain in self.allowed_email_domains):
             raise ValueError("ALLOWED_EMAIL_DOMAINS must contain valid DNS domains in production")
+        if any(not _is_email_domain(host) for host in self.allowed_hosts):
+            raise ValueError("ALLOWED_HOSTS must contain exact DNS hostnames in production")
+        if not _is_network_host(self.email_host):
+            raise ValueError("EMAIL_HOST must be an exact DNS hostname or IP address in production")
+        email_from_domain = str(self.email_from or "").rsplit("@", 1)[-1]
+        if _is_reserved_dns_name(email_from_domain):
+            raise ValueError("EMAIL_FROM must not use a reserved example domain in production")
+        if not _HOST_COOKIE_PATTERN.fullmatch(self.session_cookie_name or ""):
+            raise ValueError("SESSION_COOKIE_NAME must use a valid __Host- prefix in production")
+        if not _HOST_COOKIE_PATTERN.fullmatch(self.csrf_cookie_name or ""):
+            raise ValueError("CSRF_COOKIE_NAME must use a valid __Host- prefix in production")
+        if self.session_cookie_name == self.csrf_cookie_name:
+            raise ValueError("Session and CSRF cookie names must be distinct in production")
+        if self.push_notifications_enabled:
+            raise ValueError(
+                "PUSH_NOTIFICATIONS_ENABLED must remain false until endpoint SSRF controls exist"
+            )
 
         if not self.session_cookie_secure:
             raise ValueError("SESSION_COOKIE_SECURE must be true in production")
-        if not _is_https_url(self.frontend_url):
-            raise ValueError("FRONTEND_URL must use HTTPS in production")
+        if self.reset_database_on_startup:
+            raise ValueError("RESET_DATABASE_ON_STARTUP must be false in production")
+        if self.api_docs_enabled:
+            raise ValueError("API_DOCS_ENABLED must be false in production")
+        if not _is_verified_postgresql_url(self.database_url):
+            raise ValueError(
+                "DATABASE_URL must use PostgreSQL with sslmode=verify-full and no target overrides"
+            )
+        if not _is_https_url(self.jwt_issuer):
+            raise ValueError("JWT_ISSUER must use an unambiguous HTTPS URL in production")
+        if _is_reserved_dns_name(self.jwt_audience or ""):
+            raise ValueError("JWT_AUDIENCE must not use a reserved example domain in production")
+        if (
+            not _is_https_url(self.frontend_url)
+            or urlsplit(self.frontend_url or "").path not in {"", "/"}
+        ):
+            raise ValueError(
+                "FRONTEND_URL must use the root HTTPS origin in production"
+            )
         if any(origin == "*" or not _is_https_origin(origin) for origin in self.cors_allowed_origins):
             raise ValueError("CORS_ALLOWED_ORIGINS must contain explicit HTTPS origins in production")
+        frontend_origin = _canonical_https_origin(self.frontend_url)
+        configured_origins = {
+            _canonical_https_origin(origin) for origin in self.cors_allowed_origins
+        }
+        if frontend_origin not in configured_origins:
+            raise ValueError("CORS_ALLOWED_ORIGINS must include the FRONTEND_URL origin")
+        frontend_host = urlsplit(self.frontend_url or "").hostname or ""
+        if frontend_host.lower() not in self.allowed_hosts:
+            raise ValueError("ALLOWED_HOSTS must include the FRONTEND_URL hostname")
         return self
 
 
 def _is_https_url(value: str | None) -> bool:
-    parsed = urlsplit(value or "")
-    return parsed.scheme == "https" and bool(parsed.netloc)
+    try:
+        parsed = urlsplit(value or "")
+        _ = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and bool(parsed.hostname)
+        and not _is_reserved_dns_name(parsed.hostname or "")
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
+def _is_verified_postgresql_url(value: str | None) -> bool:
+    try:
+        url = make_url(value or "")
+    except (TypeError, ValueError):
+        return False
+
+    if (
+        url.get_backend_name() != "postgresql"
+        or not _is_network_host(url.host)
+        or not url.username
+        or not url.database
+    ):
+        return False
+    password = url.password or ""
+    if len(password.encode("utf-8")) < 16 or any(
+        fragment in password.lower() for fragment in _PLACEHOLDER_FRAGMENTS
+    ):
+        return False
+    if set(url.query) != {"sslmode", "sslrootcert"}:
+        return False
+    if url.query.get("sslmode") != "verify-full":
+        return False
+
+    root_certificate = url.query.get("sslrootcert")
+    if not isinstance(root_certificate, str) or len(root_certificate) > 4_096:
+        return False
+    certificate_path = PurePosixPath(root_certificate)
+    trusted_certificate_directory = PurePosixPath("/etc/litblogs")
+    return (
+        certificate_path.is_absolute()
+        and certificate_path.is_relative_to(trusted_certificate_directory)
+        and certificate_path.name not in {"", ".", ".."}
+        and ".." not in certificate_path.parts
+        and str(certificate_path) == root_certificate
+    )
 
 
 def _is_uuid(value: str | None) -> bool:
@@ -247,7 +356,25 @@ def _is_uuid(value: str | None) -> bool:
 
 
 def _is_email_domain(value: str) -> bool:
-    return bool(_EMAIL_DOMAIN_PATTERN.fullmatch(value))
+    return bool(_EMAIL_DOMAIN_PATTERN.fullmatch(value)) and not _is_reserved_dns_name(value)
+
+
+def _is_reserved_dns_name(value: str) -> bool:
+    normalized = str(value or "").strip().lower().rstrip(".")
+    if not normalized:
+        return False
+    return normalized.rsplit(".", 1)[-1] in _RESERVED_DNS_SUFFIXES
+
+
+def _is_network_host(value: str | None) -> bool:
+    normalized = str(value or "").strip().lower()
+    if _is_email_domain(normalized):
+        return True
+    try:
+        ip_address(normalized)
+    except ValueError:
+        return False
+    return True
 
 
 def _reveal_secret(value: SecretStr | None) -> str:
@@ -255,8 +382,29 @@ def _reveal_secret(value: SecretStr | None) -> str:
 
 
 def _is_https_origin(value: str) -> bool:
-    parsed = urlsplit(value)
-    return parsed.scheme == "https" and bool(parsed.netloc) and not parsed.path.rstrip("/")
+    return _canonical_https_origin(value) is not None
+
+
+def _canonical_https_origin(value: str | None) -> str | None:
+    try:
+        parsed = urlsplit(value or "")
+        port = parsed.port
+    except ValueError:
+        return None
+    hostname = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme != "https"
+        or not hostname
+        or _is_reserved_dns_name(hostname)
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    port_suffix = "" if port in {None, 443} else f":{port}"
+    return f"https://{hostname}{port_suffix}"
 
 
 def _selected_app_env(base_dir: Path) -> str:

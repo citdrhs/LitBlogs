@@ -24,3 +24,8 @@ dist-ssr
 *.sln
 *.sw?
 *.env
+
+# Private runtime data and local development databases
+uploads/
+*.db
+*.sqlite*

@@ -84,4 +84,20 @@ describe("public OAuth environment configuration", () => {
     expect(providers.google.enabled).toBe(false);
     expect(providers.microsoft.enabled).toBe(false);
   });
+
+  it("applies backend-derived public settings before the app renders", () => {
+    const providers = oauthConfiguration.applyPublicOAuthConfig({
+      googleClientId: "987654321.apps.googleusercontent.com",
+      microsoftClientId: "2f1c67a1-91e2-46a3-941f-b88e31763e51",
+      microsoftTenantId: "871bd3e0-2dc0-4a40-9b07-9d03068c2364",
+    });
+
+    expect(providers.google.enabled).toBe(true);
+    expect(providers.microsoft.enabled).toBe(true);
+    expect(oauthConfiguration.msalConfig.auth).toMatchObject({
+      clientId: "2f1c67a1-91e2-46a3-941f-b88e31763e51",
+      authority:
+        "https://login.microsoftonline.com/871bd3e0-2dc0-4a40-9b07-9d03068c2364",
+    });
+  });
 });

@@ -1,0 +1,48 @@
+[Unit]
+Description=LitBlogs private school web application
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=litblogs
+Group=litblogs
+WorkingDirectory=/opt/litblogs/current/litblogs
+EnvironmentFile=/etc/litblogs/litblogs.env
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/opt/litblogs/current/.venv/bin/python -m deployment_check
+ExecStart=/opt/litblogs/current/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --workers 2 --proxy-headers --forwarded-allow-ips=127.0.0.1 --log-config /opt/litblogs/current/deploy/logging.json --no-access-log
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+UMask=0027
+
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectHostname=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/litblogs /var/log/litblogs
+RuntimeDirectory=litblogs
+RuntimeDirectoryMode=0750
+
+[Install]
+WantedBy=multi-user.target

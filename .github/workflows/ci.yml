@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 15
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:17.11-alpine3.24@sha256:7456ef82e5f5bc43d997f4781bbd7c0d6389bff397564649a356e206ba473aee
         env:
           POSTGRES_USER: litblog_ci
           POSTGRES_PASSWORD: ci-only-postgres-password
@@ -44,11 +44,15 @@ jobs:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: |
+            litblogs/requirements.in
+            litblogs/requirements-dev.in
+            litblogs/requirements-lock.in
             litblogs/requirements.txt
             litblogs/requirements-dev.txt
+            litblogs/requirements-lock.txt
       - name: Install backend dependencies
         working-directory: litblogs
-        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+        run: "python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.txt"
       - name: Verify synthetic PostgreSQL service
         env:
           PGHOST: localhost
@@ -82,6 +86,27 @@ jobs:
           ALLOW_TEST_DATABASE_DDL: "true"
           RESET_DATABASE_ON_STARTUP: "false"
         run: python -m pytest -q
+      - name: Apply and verify PostgreSQL migrations
+        working-directory: litblogs
+        env:
+          APP_ENV: test
+          TEST_DATABASE_URL: postgresql://litblog_ci:ci-only-postgres-password@localhost:5432/litblog_ci
+          LITBLOGS_MIGRATION_DATABASE_URL: postgresql://litblog_ci:ci-only-postgres-password@localhost:5432/litblog_ci
+        run: |
+          python -m alembic upgrade head
+          python -m alembic current --check-heads
+          python -m alembic downgrade 985a04df032a
+          python -m alembic upgrade head
+          python -m alembic downgrade base
+          python -m alembic upgrade head
+          python -m alembic current --check-heads
+          python -m alembic check
+      - name: Exercise real PostgreSQL backup and restore tooling
+        working-directory: litblogs
+        env:
+          POSTGRES_OPERATOR_CONTAINER_ID: ${{ job.services.postgres.id }}
+          POSTGRES_OPERATOR_DATABASE_URL: "postgresql://litblog_ci:ci-only-postgres-password@127.0.0.1:5432/litblog_ci?sslmode=verify-full&sslrootcert=/etc/litblogs/postgres-root-ca.pem"
+        run: python -m pytest tests/test_postgres_operator_integration.py -q
 
   frontend-tests:
     name: Frontend tests
@@ -96,7 +121,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: litblogs/package-lock.json
       - name: Install frontend dependencies
@@ -119,7 +144,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: litblogs/package-lock.json
       - name: Install frontend dependencies
@@ -142,7 +167,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: litblogs/package-lock.json
       - name: Install frontend dependencies
@@ -168,18 +193,31 @@ jobs:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: |
+            litblogs/requirements.in
+            litblogs/requirements-dev.in
+            litblogs/requirements-lock.in
             litblogs/requirements.txt
             litblogs/requirements-dev.txt
+            litblogs/requirements-lock.txt
+      - name: Verify reproducible Python dependency locks
+        working-directory: litblogs
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r requirements-lock.txt
+          python ../scripts/compile-python-locks.py
+          git diff --exit-code -- requirements.txt requirements-dev.txt requirements-lock.txt
       - name: Install backend audit tooling
         working-directory: litblogs
-        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+        run: "python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.txt"
       - name: Audit Python runtime dependencies
         working-directory: litblogs
         run: python -m pip_audit -r requirements.txt
+      - name: Audit installed Python build and test graph
+        working-directory: litblogs
+        run: python -m pip_audit -r requirements-dev.txt
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: litblogs/package-lock.json
       - name: Install frontend dependencies
@@ -188,6 +226,9 @@ jobs:
       - name: Audit frontend runtime dependencies
         working-directory: litblogs
         run: npm audit --omit=dev --audit-level=high
+      - name: Audit complete frontend build graph
+        working-directory: litblogs
+        run: npm audit --audit-level=high
 
   secret-scan:
     name: Secret scan
@@ -203,8 +244,9 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      - name: Install policy validator dependency
-        run: python -m pip install PyYAML==6.0.3
+      - name: Install hash-locked policy validator dependencies
+        working-directory: litblogs
+        run: "python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.txt"
       - name: Check tracked credential policy
         shell: pwsh
         run: ./scripts/check-no-tracked-secrets.ps1
@@ -234,13 +276,16 @@ jobs:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: |
+            litblogs/requirements.in
+            litblogs/requirements-dev.in
+            litblogs/requirements-lock.in
             litblogs/requirements.txt
             litblogs/requirements-dev.txt
+            litblogs/requirements-lock.txt
       - name: Install SAST tooling
         working-directory: litblogs
-        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+        run: "python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.txt"
       - name: Run Ruff
-        working-directory: litblogs
-        run: python -m ruff check .
+        run: python scripts/run-backend-ruff.py
       - name: Run Bandit medium/high scan
         run: python scripts/run-backend-bandit.py

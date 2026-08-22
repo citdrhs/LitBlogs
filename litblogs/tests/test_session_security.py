@@ -91,14 +91,18 @@ def _assert_no_jwt_fields(payload: dict) -> None:
 def _production_settings() -> Settings:
     return Settings(
         app_env="production",
-        database_url="postgresql://litblog_app@database.internal/litblog",
+        database_url=(
+            f"postgresql://litblog_app:{secrets.token_urlsafe(24)}@database.internal/litblog"
+            "?sslmode=verify-full&sslrootcert=/etc/litblogs/postgres-root-ca.pem"
+        ),
         secret_key=secrets.token_urlsafe(48),
-        jwt_issuer="https://api.litblogs.school.example",
-        jwt_audience="litblogs.school.example",
+        jwt_issuer="https://api.litblogs.school.edu",
+        jwt_audience="litblogs.school.edu",
         access_token_expire_minutes=30,
-        frontend_url="https://litblogs.school.example",
-        cors_allowed_origins=("https://litblogs.school.example",),
-        allowed_email_domains=("school.example",),
+        frontend_url="https://litblogs.school.edu",
+        cors_allowed_origins=("https://litblogs.school.edu",),
+        allowed_hosts=("litblogs.school.edu",),
+        allowed_email_domains=("school.edu",),
         google_client_id="987654321.apps.googleusercontent.com",
         microsoft_client_id="2f1c67a1-91e2-46a3-941f-b88e31763e51",
         microsoft_tenant_id="871bd3e0-2dc0-4a40-9b07-9d03068c2364",
@@ -107,8 +111,10 @@ def _production_settings() -> Settings:
         csrf_cookie_name="__Host-litblog-csrf",
         session_cookie_secure=True,
         teacher_access_code=secrets.token_urlsafe(24),
-        admin_access_code=secrets.token_urlsafe(24),
-        admin_code=secrets.token_urlsafe(24),
+        email_host="smtp.school.edu",
+        email_username="litblogs-mailer",
+        email_password=secrets.token_urlsafe(24),
+        email_from="no-reply@school.edu",
     )
 
 

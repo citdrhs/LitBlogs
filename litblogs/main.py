@@ -2,6 +2,7 @@
 # To run locally run:
 # uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
 import json
+import logging
 import os
 import random
 import re
@@ -9,7 +10,6 @@ import secrets
 import shutil
 import smtplib
 import string
-import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
@@ -31,8 +31,9 @@ from google.oauth2 import id_token
 from jwt.exceptions import InvalidTokenError
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy import text, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 import models
 import schemas
@@ -45,19 +46,19 @@ from auth_security import (
     verify_and_update_password,
 )
 from config import get_settings
-from database import SessionLocal, get_db, initialize_database, reset_database
+from database import SessionLocal, check_database_readiness, get_db
 from oauth_security import verify_google_id_token, verify_microsoft_id_token
+from observability import RequestObservabilityMiddleware
 
 settings = get_settings()
+security_logger = logging.getLogger("litblogs.security")
+readiness_logger = logging.getLogger("litblogs.readiness")
 
 try:
     from pywebpush import WebPushException, webpush
 except Exception:
     webpush = None
     WebPushException = Exception
-
-def _should_reset_database_on_startup() -> bool:
-    return settings.reset_database_on_startup
 
 def _secret_value(value) -> str | None:
     return value.get_secret_value() if value is not None else None
@@ -67,28 +68,23 @@ CORS_ALLOWED_ORIGINS = list(settings.cors_allowed_origins)
 VAPID_PUBLIC_KEY = settings.vapid_public_key
 VAPID_PRIVATE_KEY = settings.vapid_private_key.get_secret_value() if settings.vapid_private_key else ""
 VAPID_SUBJECT = settings.vapid_subject
-WEB_PUSH_ENABLED = bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY and webpush)
-PUSH_REMINDER_INTERVAL_SECONDS = settings.push_reminder_interval_seconds
-
-_push_scheduler_stop_event = threading.Event()
-_push_scheduler_thread: threading.Thread | None = None
+WEB_PUSH_ENABLED = bool(
+    settings.push_notifications_enabled and VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY and webpush
+)
 
 if "*" in CORS_ALLOWED_ORIGINS:
     raise RuntimeError("CORS_ALLOWED_ORIGINS must not contain a wildcard when credentials are enabled")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if _should_reset_database_on_startup():
-        reset_database()
-        print("RESET_DATABASE_ON_STARTUP is enabled. Database was reset on startup.")
-    else:
-        initialize_database()
-
-    _start_push_scheduler()
     yield
-    _stop_push_scheduler()
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    lifespan=lifespan,
+    docs_url="/api/docs" if settings.api_docs_enabled else None,
+    redoc_url="/api/redoc" if settings.api_docs_enabled else None,
+    openapi_url="/api/openapi.json" if settings.api_docs_enabled else None,
+)
 
 OAUTH_AUTH_PATHS = frozenset(
     {
@@ -115,9 +111,15 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Accept", "Authorization", "Content-Type", "X-CSRF-Token"],
 )
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=list(settings.allowed_hosts)
+    or ["testserver", "localhost", "127.0.0.1", "[::1]"],
+)
+app.add_middleware(RequestObservabilityMiddleware)
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
@@ -207,6 +209,13 @@ class SessionMetadataResponse(BaseModel):
     last_name: str | None = None
     role: str
     is_admin: bool
+
+
+class PublicRuntimeConfigResponse(BaseModel):
+    csrf_cookie_name: str
+    google_client_id: str
+    microsoft_client_id: str
+    microsoft_tenant_id: str
 
 
 class OAuthLoginRequest(BaseModel):
@@ -379,12 +388,32 @@ def _send_web_push(subscription: models.PushSubscription, payload: dict) -> bool
     except Exception:
         return False
 
-def _dispatch_assignment_push_reminders_once() -> None:
+REMINDER_DISPATCH_LOCK_ID = 4_979_842_103
+
+
+def _try_acquire_reminder_dispatch_lock(db: Session) -> bool:
+    bind = db.get_bind()
+    if bind.dialect.name == "postgresql":
+        return bool(
+            db.execute(
+                text("SELECT pg_try_advisory_xact_lock(:lock_id)"),
+                {"lock_id": REMINDER_DISPATCH_LOCK_ID},
+            ).scalar_one()
+        )
+    if settings.app_env == "test":
+        return True
+    raise RuntimeError("Reminder dispatch requires PostgreSQL outside tests")
+
+
+def _dispatch_assignment_push_reminders_once() -> bool:
     if not WEB_PUSH_ENABLED:
-        return
+        return True
 
     db = SessionLocal()
     try:
+        if not _try_acquire_reminder_dispatch_lock(db):
+            return True
+
         now_utc = datetime.utcnow()
         students = (
             db.query(models.User)
@@ -467,32 +496,14 @@ def _dispatch_assignment_push_reminders_once() -> None:
                         )
                     )
 
-            db.commit()
-    except Exception as exc:
-        print(f"Push reminder dispatcher error: {exc}")
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        security_logger.error("push_reminder_dispatch_failed")
+        return False
     finally:
         db.close()
-
-def _push_scheduler_loop() -> None:
-    while not _push_scheduler_stop_event.is_set():
-        _dispatch_assignment_push_reminders_once()
-        _push_scheduler_stop_event.wait(PUSH_REMINDER_INTERVAL_SECONDS)
-
-def _start_push_scheduler() -> None:
-    global _push_scheduler_thread
-    if _push_scheduler_thread and _push_scheduler_thread.is_alive():
-        return
-
-    _push_scheduler_stop_event.clear()
-    _push_scheduler_thread = threading.Thread(target=_push_scheduler_loop, name="push-reminder-scheduler", daemon=True)
-    _push_scheduler_thread.start()
-
-def _stop_push_scheduler() -> None:
-    global _push_scheduler_thread
-    _push_scheduler_stop_event.set()
-    if _push_scheduler_thread and _push_scheduler_thread.is_alive():
-        _push_scheduler_thread.join(timeout=2)
-    _push_scheduler_thread = None
 
 # ---------- Authentication Endpoints ----------
 
@@ -1087,14 +1098,51 @@ def delete_blog(
 def home():
     return {"message": "Welcome to LitBlogs Backend"}
 
-@app.get("/api/test-db")
-def test_db(db: Session = Depends(get_db)):
+@app.get("/api/health/live", include_in_schema=False)
+def liveness():
+    return {"status": "ok"}
+
+
+@app.get(
+    "/api/runtime-config",
+    response_model=PublicRuntimeConfigResponse,
+    include_in_schema=False,
+)
+def public_runtime_config():
+    return PublicRuntimeConfigResponse(
+        csrf_cookie_name=settings.csrf_cookie_name or "",
+        google_client_id=settings.google_client_id or "",
+        microsoft_client_id=settings.microsoft_client_id or "",
+        microsoft_tenant_id=settings.microsoft_tenant_id or "",
+    )
+
+
+@app.get("/api/health/ready", include_in_schema=False)
+def readiness(request: Request):
     try:
-        # Execute a simple query
-        db.execute(text("SELECT 1"))
-        return {"message": "Successfully connected to the database!"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database connection failed: {str(e)}") from e
+        check_database_readiness()
+    except Exception as exc:
+        reason = (
+            "database_unreachable"
+            if isinstance(exc, (ConnectionError, OSError, TimeoutError, SQLAlchemyError))
+            else "migration_mismatch"
+        )
+        readiness_logger.error(
+            json.dumps(
+                {
+                    "event": "readiness_failed",
+                    "reason": reason,
+                    "request_id": getattr(request.state, "request_id", "unavailable"),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service not ready",
+        ) from None
+    return {"status": "ready"}
 
 @app.post("/api/verify-class-code")
 def verify_class_code(code_data: dict, db: Session = Depends(get_db)):
