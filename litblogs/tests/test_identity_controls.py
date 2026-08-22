@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 from psycopg2 import DatabaseError as PsycopgDatabaseError
 from pydantic import ValidationError
+from settings_test_support import production_upload_settings
 from sqlalchemy import create_engine, event, select, update
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -64,6 +65,7 @@ def _production_settings_data() -> dict:
         "email_password": secrets.token_urlsafe(24),
         "email_from": "no-reply@school.example",
         "password_reset_worker_enabled": True,
+        **production_upload_settings(),
     }
 
 

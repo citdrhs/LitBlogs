@@ -4,6 +4,7 @@ import time
 
 import pytest
 from pydantic import BaseModel
+from settings_test_support import production_upload_settings
 
 import auth_security
 import main
@@ -140,6 +141,7 @@ def _production_settings() -> Settings:
         email_password=secrets.token_urlsafe(24),
         email_from="no-reply@school.example",
         password_reset_worker_enabled=True,
+        **production_upload_settings(),
     )
 
 

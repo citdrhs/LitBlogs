@@ -10,6 +10,7 @@ from pathlib import Path
 import jwt
 import pytest
 from pydantic import ValidationError
+from settings_test_support import production_upload_settings
 
 import auth_security
 from auth_security import (
@@ -653,6 +654,7 @@ def _production_settings_data():
         "email_password": secrets.token_urlsafe(24),
         "email_from": "no-reply@school.example",
         "password_reset_worker_enabled": True,
+        **production_upload_settings(),
     }
 
 

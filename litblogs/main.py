@@ -3,22 +3,27 @@
 # uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
 import hashlib
 import json
+import os
 import re
 import secrets
 import smtplib
 import ssl
+import stat
 import string
 import threading
+import time
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from html import escape
+from http.cookies import CookieError, SimpleCookie
 from ipaddress import ip_address
 from pathlib import Path
 from typing import List, Literal
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 
 import bleach
 import tinycss2
@@ -37,6 +42,7 @@ from sqlalchemy import and_, or_, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import MutableHeaders
 
 import models
 import schemas
@@ -116,6 +122,37 @@ from identity_controls import (
     revoke_session,
 )
 from oauth_security import verify_google_id_token, verify_microsoft_id_token
+from upload_assets import (
+    add_active_profile_asset,
+    add_pending_asset,
+    bind_post_assets,
+    canonical_object_key,
+    configure_upload_transaction,
+    enforce_quota,
+    enforce_rate_limit,
+    object_matches_registration,
+    open_verified_registered_object,
+    post_asset_keys,
+    queue_assets,
+    queue_blog_assets,
+    queue_owner_assets,
+    validate_structured_upload_references,
+)
+from upload_assets import (
+    lock_blog as _lock_upload_blog,
+)
+from upload_assets import (
+    lock_owner as _lock_upload_owner,
+)
+from upload_assets import (
+    reconcile as _reconcile_upload_assets,
+)
+from upload_scanner import (
+    ClamdUploadScanner,
+    NoopUploadScanner,
+    UploadRejected,
+    UploadScannerUnavailable,
+)
 
 settings = get_settings()
 _DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(32))
@@ -124,6 +161,11 @@ _DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(32))
 def _utc_now_naive() -> datetime:
     """Return UTC as a naive datetime for the app's existing database columns."""
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _utc_now_aware() -> datetime:
+    """Return aware UTC for TIMESTAMPTZ-backed upload lifecycle columns."""
+    return datetime.now(UTC)
 
 try:
     from pywebpush import WebPushException, webpush
@@ -154,6 +196,9 @@ _push_scheduler_stop_event = threading.Event()
 _push_scheduler_thread: threading.Thread | None = None
 _password_reset_worker_stop_event = threading.Event()
 _password_reset_worker_thread: threading.Thread | None = None
+_upload_cleanup_stop_event = threading.Event()
+_upload_cleanup_thread: threading.Thread | None = None
+UPLOAD_CLEANUP_INTERVAL_SECONDS = 300
 
 if "*" in CORS_ALLOWED_ORIGINS:
     raise RuntimeError("CORS_ALLOWED_ORIGINS must not contain a wildcard when credentials are enabled")
@@ -164,13 +209,18 @@ async def lifespan(app: FastAPI):
         reset_database()
         print("RESET_DATABASE_ON_STARTUP is enabled. Database was reset on startup.")
     else:
-        initialize_database()
+        initialize_database(allow_schema_create=settings.app_env != "production")
+
+    if settings.upload_scanner_required:
+        await run_in_threadpool(upload_scanner.preflight)
 
     _start_push_scheduler()
     _start_password_reset_worker()
+    _start_upload_cleanup_worker()
     try:
         yield
     finally:
+        _stop_upload_cleanup_worker()
         _stop_password_reset_worker()
         _stop_push_scheduler()
 
@@ -226,8 +276,28 @@ app.add_middleware(
 )
 
 BASE_DIR = Path(__file__).resolve().parent
-UPLOAD_DIR = BASE_DIR / "uploads"
-MAX_UPLOAD_REFERENCE_LENGTH = 4096
+UPLOAD_DIR = (
+    settings.upload_root.resolve()
+    if settings.upload_root is not None
+    else BASE_DIR / "uploads"
+)
+if settings.app_env == "production" and UPLOAD_DIR.is_relative_to(BASE_DIR):
+    raise RuntimeError("UPLOAD_ROOT must be outside the application source tree")
+
+
+def _build_upload_scanner(configured_settings):
+    if configured_settings.upload_scanner_required and not configured_settings.upload_scanner_host:
+        raise RuntimeError("Required upload scanner is unavailable")
+    if configured_settings.upload_scanner_host:
+        return ClamdUploadScanner(
+            configured_settings.upload_scanner_host,
+            configured_settings.upload_scanner_port,
+            configured_settings.upload_scanner_timeout_seconds,
+        )
+    return NoopUploadScanner()
+
+
+upload_scanner = _build_upload_scanner(settings)
 UPLOAD_CHUNK_SIZE = 1024 * 1024
 UPLOAD_HEADER_BYTES = 512
 MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -244,9 +314,89 @@ ASSIGNMENT_PRIVATE_CACHE_HEADERS = {
     "Pragma": "no-cache",
     "Expires": "0",
 }
-SAFE_UPLOAD_PATH_CHARACTERS = frozenset(
-    string.ascii_letters + string.digits + "._-"
-)
+
+
+class UploadAdmissionController:
+    """Bound upload attempts and concurrent body/scanner work per process."""
+
+    def __init__(self, *, attempt_limit: int = 20, window_seconds: int = 300, max_inflight: int = 4):
+        self.attempt_limit = attempt_limit
+        self.window_seconds = window_seconds
+        self.max_inflight = max_inflight
+        self._lock = threading.Lock()
+        self._attempts = defaultdict(deque)
+        self._inflight = 0
+
+    def acquire(self, identity: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            attempts = self._attempts[identity]
+            cutoff = now - self.window_seconds
+            while attempts and attempts[0] <= cutoff:
+                attempts.popleft()
+            if len(attempts) >= self.attempt_limit:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Upload attempt rate limit exceeded",
+                )
+            if self._inflight >= self.max_inflight:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Upload capacity is temporarily unavailable",
+                )
+            attempts.append(now)
+            self._inflight += 1
+
+    def release(self) -> None:
+        with self._lock:
+            self._inflight = max(0, self._inflight - 1)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._attempts.clear()
+            self._inflight = 0
+
+
+upload_admission = UploadAdmissionController()
+
+
+def _scope_header(scope: dict, name: bytes) -> str | None:
+    for header_name, header_value in scope.get("headers", []):
+        if header_name.lower() == name:
+            try:
+                return header_value.decode("latin-1")
+            except UnicodeDecodeError:
+                return None
+    return None
+
+
+def _upload_admission_identity(scope: dict) -> str:
+    authorization = _scope_header(scope, b"authorization")
+    bearer_token = None
+    if authorization and authorization.lower().startswith("bearer "):
+        bearer_token = authorization[7:].strip()
+
+    cookie_token = None
+    raw_cookie = _scope_header(scope, b"cookie")
+    if raw_cookie:
+        try:
+            cookies = SimpleCookie()
+            cookies.load(raw_cookie)
+            morsel = cookies.get(_session_cookie_name())
+            cookie_token = morsel.value if morsel else None
+        except CookieError:
+            cookie_token = None
+
+    tokens = [token for token in (bearer_token, cookie_token) if token]
+    if len(tokens) == 1:
+        try:
+            payload = decode_access_token(tokens[0], settings=settings)
+            return f"user:{int(payload['sub'])}"
+        except (InvalidTokenError, KeyError, TypeError, ValueError):
+            pass
+
+    client = scope.get("client") or ("unknown", 0)
+    return f"ip:{client[0]}"
 
 
 class _UploadRequestTooLarge(Exception):
@@ -301,16 +451,52 @@ class UploadRequestBodyLimitMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
+        upload_limit = _upload_request_body_limit(scope)
         assignment_limit = _private_assignment_request_body_limit(scope)
         request_limit = (
             assignment_limit
             if assignment_limit is not None
-            else _upload_request_body_limit(scope)
+            else upload_limit
         )
         if request_limit is None:
             await self.app(scope, receive, send)
             return
-        is_private_assignment = assignment_limit is not None
+
+        admitted = False
+        if upload_limit is not None:
+            try:
+                upload_admission.acquire(_upload_admission_identity(scope))
+                admitted = True
+            except HTTPException as exc:
+                response = JSONResponse(
+                    status_code=exc.status_code,
+                    content={"detail": exc.detail},
+                    headers={"Cache-Control": "no-store"},
+                )
+                await response(scope, receive, send)
+                return
+
+        try:
+            await self._call_with_limit(
+                scope,
+                receive,
+                send,
+                request_limit=request_limit,
+                private_assignment=assignment_limit is not None,
+            )
+        finally:
+            if admitted:
+                upload_admission.release()
+
+    async def _call_with_limit(
+        self,
+        scope,
+        receive,
+        send,
+        *,
+        request_limit: int,
+        private_assignment: bool,
+    ):
 
         for header_name, header_value in scope.get("headers", []):
             if header_name.lower() != b"content-length":
@@ -324,7 +510,7 @@ class UploadRequestBodyLimitMiddleware:
                     scope,
                     receive,
                     send,
-                    private_assignment=is_private_assignment,
+                    private_assignment=private_assignment,
                 )
                 return
             break
@@ -356,7 +542,7 @@ class UploadRequestBodyLimitMiddleware:
                 scope,
                 receive,
                 send,
-                private_assignment=is_private_assignment,
+                private_assignment=private_assignment,
             )
 
     @staticmethod
@@ -409,79 +595,6 @@ def _upload_path(*parts: str) -> Path:
         raise ValueError("Invalid upload path") from exc
     return candidate
 
-
-def _has_valid_percent_encoding(value: str) -> bool:
-    index = 0
-    while index < len(value):
-        if value[index] != "%":
-            index += 1
-            continue
-        if (
-            index + 2 >= len(value)
-            or value[index + 1] not in string.hexdigits
-            or value[index + 2] not in string.hexdigits
-        ):
-            return False
-        index += 3
-    return True
-
-
-def _canonical_upload_relative_path(reference: str) -> str:
-    """Return a bounded, traversal-free path beneath ``UPLOAD_DIR``.
-
-    Accepted references are raw relative upload paths or same-origin URL paths
-    ending in ``/uploads/...`` or ``/api/uploads/...``. Absolute/network URLs,
-    query strings, fragments, control characters, and ambiguous path segments
-    are rejected before filesystem access.
-    """
-
-    if not isinstance(reference, str) or not reference or len(reference) > MAX_UPLOAD_REFERENCE_LENGTH:
-        raise ValueError("Invalid upload reference")
-    if reference != reference.strip() or "\\" in reference:
-        raise ValueError("Invalid upload reference")
-    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in reference):
-        raise ValueError("Invalid upload reference")
-    if not _has_valid_percent_encoding(reference):
-        raise ValueError("Invalid upload reference")
-
-    parsed = urlsplit(reference)
-    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
-        raise ValueError("Invalid upload reference")
-
-    decoded_path = unquote(parsed.path, errors="strict")
-    if "\\" in decoded_path or any(
-        ord(character) < 0x20 or ord(character) == 0x7F
-        for character in decoded_path
-    ):
-        raise ValueError("Invalid upload reference")
-
-    if decoded_path.startswith("/uploads/"):
-        relative_path = decoded_path.removeprefix("/uploads/")
-    elif "/api/uploads/" in decoded_path:
-        prefix, relative_path = decoded_path.split("/api/uploads/", 1)
-        if prefix and not prefix.startswith("/"):
-            raise ValueError("Invalid upload reference")
-        prefix_parts = prefix.split("/")[1:]
-        if any(not part or part in {".", ".."} for part in prefix_parts):
-            raise ValueError("Invalid upload reference")
-    elif decoded_path.startswith("/"):
-        raise ValueError("Invalid upload reference")
-    else:
-        relative_path = decoded_path
-
-    path_parts = relative_path.split("/")
-    if any(
-        not part
-        or part in {".", ".."}
-        or len(part) > 255
-        or any(character not in SAFE_UPLOAD_PATH_CHARACTERS for character in part)
-        for part in path_parts
-    ):
-        raise ValueError("Invalid upload reference")
-
-    canonical_path = "/".join(path_parts)
-    _upload_path(*path_parts)
-    return canonical_path
 
 def _upload_url(*parts: str) -> str:
     normalized_parts = [str(part).replace("\\", "/").strip("/") for part in parts if str(part).strip("/")]
@@ -577,18 +690,127 @@ class StoredUpload:
     original_filename: str
     size: int
     spec: UploadTypeSpec
+    storage_key: str
+    sha256_digest: str
+
+
+@dataclass(frozen=True)
+class PreparedUpload:
+    staging_path: Path
+    destination_path: Path
+    url: str
+    filename: str
+    original_filename: str
+    size: int
+    spec: UploadTypeSpec
+    storage_key: str
+    sha256_digest: str
+
+
+def _write_upload_chunk(buffer, chunk: bytes) -> None:
+    buffer.write(chunk)
+
+
+def _open_private_upload(path: Path):
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        if os.name == "posix":
+            os.fchmod(descriptor, 0o600)
+            opened = os.fstat(descriptor)
+            if opened.st_uid != os.geteuid() or stat.S_IMODE(opened.st_mode) != 0o600:
+                raise OSError("Upload staging custody is invalid")
+        return os.fdopen(descriptor, "wb")
+    except Exception:
+        os.close(descriptor)
+        path.unlink(missing_ok=True)
+        raise
+
+
+def _flush_upload(buffer) -> None:
+    buffer.flush()
+    os.fsync(buffer.fileno())
+
+
+def _fsync_upload_directory(path: Path) -> None:
+    if os.name != "posix":
+        return
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _remove_upload_candidate(prepared: PreparedUpload | None) -> None:
+    if prepared is None:
+        return
+    prepared.staging_path.unlink(missing_ok=True)
+
+
+def _finalize_prepared_upload(prepared: PreparedUpload) -> StoredUpload:
+    objects_root = prepared.destination_path.parents[1]
+    if not objects_root.is_dir():
+        raise OSError("Upload object storage is unavailable")
+    shard = prepared.destination_path.parent
+    if shard.is_symlink() or getattr(shard, "is_junction", lambda: False)():
+        raise OSError("Upload object storage is unavailable")
+    shard_created = False
+    try:
+        shard.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    else:
+        shard_created = True
+    if shard.resolve(strict=True).parent != objects_root.resolve(strict=True):
+        raise OSError("Upload object storage is unavailable")
+    if os.name == "posix":
+        shard_stat = shard.stat()
+        if settings.app_env != "production" and shard_stat.st_uid == os.geteuid():
+            shard.chmod(0o700)
+            shard_stat = shard.stat()
+        if shard_stat.st_uid != os.geteuid() or stat.S_IMODE(shard_stat.st_mode) != 0o700:
+            raise OSError("Upload object storage is unavailable")
+    if shard_created:
+        _fsync_upload_directory(objects_root)
+    if prepared.destination_path.exists():
+        raise OSError("Upload object storage is unavailable")
+    prepared.staging_path.replace(prepared.destination_path)
+    if os.name == "posix":
+        prepared.destination_path.chmod(0o600)
+    os.utime(prepared.destination_path, None)
+    _fsync_upload_directory(shard)
+    return StoredUpload(
+        path=prepared.destination_path,
+        url=prepared.url,
+        filename=prepared.filename,
+        original_filename=prepared.original_filename,
+        size=prepared.size,
+        spec=prepared.spec,
+        storage_key=prepared.storage_key,
+        sha256_digest=prepared.sha256_digest,
+    )
 
 
 async def _save_validated_upload(
     file: UploadFile,
     *,
     allowed_kinds: set[str],
-    bucket_override: str | None = None,
-    user_id: int | None = None,
-    filename_prefix: str | None = None,
-) -> StoredUpload:
-    file_path = None
+) -> PreparedUpload:
+    destination_path = None
+    staging_path = None
     try:
+        await run_in_threadpool(
+            _initialize_upload_layout,
+            UPLOAD_DIR,
+            production=settings.app_env == "production",
+        )
         header = await file.read(UPLOAD_HEADER_BYTES)
         spec = _validated_upload_spec(file, allowed_kinds, header)
         max_bytes = {
@@ -596,17 +818,17 @@ async def _save_validated_upload(
             "video": MAX_VIDEO_UPLOAD_BYTES,
             "pdf": MAX_PDF_UPLOAD_BYTES,
         }[spec.kind]
-        bucket = bucket_override or spec.bucket
-        directory_parts = [bucket]
-        if user_id is not None:
-            directory_parts.append(str(user_id))
-        upload_dir = _upload_path(*directory_parts)
-        upload_dir.mkdir(parents=True, exist_ok=True)
-
-        filename = _build_unique_filename(file.filename, filename_prefix)
-        file_path = _upload_path(*directory_parts, filename)
+        object_id = secrets.token_hex(16)
+        storage_key = f"objects/{object_id[:2]}/{object_id}{spec.extension}"
+        filename = f"{object_id}{spec.extension}"
+        destination_path = _upload_path(storage_key)
+        incoming_dir = _upload_path(".incoming")
+        await run_in_threadpool(incoming_dir.mkdir, mode=0o700, exist_ok=True)
+        staging_path = _upload_path(".incoming", f"{object_id}.part")
         size = 0
-        with file_path.open("xb") as buffer:
+        digest = hashlib.sha256()
+        buffer = await run_in_threadpool(_open_private_upload, staging_path)
+        try:
             chunk = header
             while chunk:
                 size += len(chunk)
@@ -615,20 +837,40 @@ async def _save_validated_upload(
                         status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                         detail="Upload exceeds the allowed size",
                     )
-                buffer.write(chunk)
+                await run_in_threadpool(_write_upload_chunk, buffer, chunk)
+                digest.update(chunk)
                 chunk = await file.read(UPLOAD_CHUNK_SIZE)
+        finally:
+            await run_in_threadpool(_flush_upload, buffer)
+            await run_in_threadpool(buffer.close)
 
-        return StoredUpload(
-            path=file_path,
-            url=_upload_url(*directory_parts, filename),
+        try:
+            await run_in_threadpool(upload_scanner.scan, staging_path)
+        except UploadScannerUnavailable as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Upload scanning unavailable",
+            ) from exc
+        except UploadRejected as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Upload rejected by security scanner",
+            ) from exc
+
+        return PreparedUpload(
+            staging_path=staging_path,
+            destination_path=destination_path,
+            url=_upload_url(storage_key),
             filename=filename,
             original_filename=_sanitize_filename(file.filename),
             size=size,
             spec=spec,
+            storage_key=storage_key,
+            sha256_digest=digest.hexdigest(),
         )
     except Exception:
-        if file_path is not None:
-            file_path.unlink(missing_ok=True)
+        if staging_path is not None:
+            await run_in_threadpool(staging_path.unlink, missing_ok=True)
         raise
     finally:
         await file.close()
@@ -640,7 +882,157 @@ def _safe_download_filename(requested_name: str | None, actual_extension: str) -
     return f"{safe_stem}{actual_extension}"
 
 
+class _OpenedUploadFileResponse(FileResponse):
+    """FileResponse semantics backed by the descriptor verified for this request."""
+
+    def __init__(self, opened_object, path: Path, **kwargs):
+        self._opened_object = opened_object
+        super().__init__(path=path, stat_result=opened_object.stat_result, **kwargs)
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._opened_object.close()
+
+    async def _seek(self, offset: int) -> None:
+        await run_in_threadpool(
+            os.lseek,
+            self._opened_object.descriptor,
+            offset,
+            os.SEEK_SET,
+        )
+
+    async def _read(self, size: int) -> bytes:
+        return await run_in_threadpool(
+            os.read,
+            self._opened_object.descriptor,
+            size,
+        )
+
+    async def _handle_simple(self, send, send_header_only: bool, send_pathsend: bool) -> None:
+        await send(
+            {
+                "type": "http.response.start",
+                "status": self.status_code,
+                "headers": self.raw_headers,
+            }
+        )
+        if send_header_only:
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+            return
+        await self._seek(0)
+        more_body = True
+        while more_body:
+            chunk = await self._read(self.chunk_size)
+            more_body = len(chunk) == self.chunk_size
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": chunk,
+                    "more_body": more_body,
+                }
+            )
+
+    async def _handle_single_range(
+        self,
+        send,
+        start: int,
+        end: int,
+        file_size: int,
+        send_header_only: bool,
+    ) -> None:
+        headers = MutableHeaders(raw=list(self.raw_headers))
+        headers["content-range"] = f"bytes {start}-{end - 1}/{file_size}"
+        headers["content-length"] = str(end - start)
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 206,
+                "headers": headers.raw,
+            }
+        )
+        if send_header_only:
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+            return
+        await self._seek(start)
+        more_body = True
+        while more_body:
+            chunk = await self._read(min(self.chunk_size, end - start))
+            start += len(chunk)
+            more_body = len(chunk) == self.chunk_size and start < end
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": chunk,
+                    "more_body": more_body,
+                }
+            )
+
+    async def _handle_multiple_ranges(
+        self,
+        send,
+        ranges,
+        file_size: int,
+        send_header_only: bool,
+    ) -> None:
+        boundary = secrets.token_hex(13)
+        content_length, header_generator = self.generate_multipart(
+            ranges,
+            boundary,
+            file_size,
+            self.headers["content-type"],
+        )
+        headers = MutableHeaders(raw=list(self.raw_headers))
+        headers["content-type"] = f"multipart/byteranges; boundary={boundary}"
+        headers["content-length"] = str(content_length)
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 206,
+                "headers": headers.raw,
+            }
+        )
+        if send_header_only:
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+            return
+        for start, end in ranges:
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": header_generator(start, end),
+                    "more_body": True,
+                }
+            )
+            await self._seek(start)
+            while start < end:
+                chunk = await self._read(min(self.chunk_size, end - start))
+                start += len(chunk)
+                await send(
+                    {
+                        "type": "http.response.body",
+                        "body": chunk,
+                        "more_body": True,
+                    }
+                )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": b"\r\n",
+                    "more_body": True,
+                }
+            )
+        await send(
+            {
+                "type": "http.response.body",
+                "body": f"--{boundary}--".encode("latin-1"),
+                "more_body": False,
+            }
+        )
+
+
 def _safe_upload_file_response(
+    opened_object,
     file_path: Path,
     *,
     requested_filename: str | None = None,
@@ -648,13 +1040,17 @@ def _safe_upload_file_response(
 ) -> FileResponse:
     spec = UPLOAD_TYPE_SPECS.get(file_path.suffix.lower())
     if spec is None:
+        opened_object.close()
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     try:
-        with file_path.open("rb") as stored_file:
-            header = stored_file.read(UPLOAD_HEADER_BYTES)
+        os.lseek(opened_object.descriptor, 0, os.SEEK_SET)
+        header = os.read(opened_object.descriptor, UPLOAD_HEADER_BYTES)
+        os.lseek(opened_object.descriptor, 0, os.SEEK_SET)
     except OSError as exc:
+        opened_object.close()
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found") from exc
     if not _matches_upload_signature(spec, header):
+        opened_object.close()
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
     response_filename = _safe_download_filename(
@@ -666,7 +1062,8 @@ def _safe_upload_file_response(
         if disposition == "inline" and spec.kind in {"image", "video"}
         else "attachment"
     )
-    return FileResponse(
+    return _OpenedUploadFileResponse(
+        opened_object,
         path=file_path,
         media_type=spec.media_type,
         filename=response_filename,
@@ -1999,15 +2396,8 @@ def _is_safe_rich_text_url(value: str, *, media_kind: str) -> bool:
     if media_kind == "link":
         return True
 
-    is_upload_route = (
-        parsed.path.startswith("/uploads/")
-        or "/api/uploads/" in parsed.path
-    )
-    if not is_upload_route:
-        return False
-
     try:
-        _canonical_upload_relative_path(value)
+        canonical_object_key(value)
     except ValueError:
         return False
     return True
@@ -2073,10 +2463,11 @@ def _build_post_content(post: schemas.BlogCreate) -> str:
     if post.media:
         for media in post.media:
             media_url = escape(str(media.url), quote=True)
-            if media.type == 'gif':
-                content += f"\n[GIF:{media_url}]\n"
-            elif media.type == 'image':
-                content += f"\n[IMAGE:{media_url}]\n"
+            media_alt = escape(str(media.alt or "Uploaded image"), quote=True)
+            if media.type in {'gif', 'image'}:
+                content += f'\n<img src="{media_url}" alt="{media_alt}">\n'
+            elif media.type == 'video':
+                content += f'\n<video controls src="{media_url}"></video>\n'
 
     if post.polls:
         for poll in post.polls:
@@ -2090,7 +2481,10 @@ def _build_post_content(post: schemas.BlogCreate) -> str:
         for file in post.files:
             file_name = escape(str(file.name), quote=True)
             file_url = escape(str(file.url), quote=True)
-            content += f"\n[FILE:{file_name}|{file_url}]\n"
+            content += (
+                f'\n<a class="file-attachment" href="{file_url}">'
+                f'{file_name}</a>\n'
+            )
 
     return sanitize_html(content)
 
@@ -2116,21 +2510,34 @@ async def create_class_post(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    db_class = _ensure_active_class_access(db, current_user, class_id)
-    
-    content = _build_post_content(post)
-    
-    # Create new post with processed content
-    new_post = models.Blog(
-        title=post.title,
-        content=content,
-        owner_id=current_user.id,
-        class_id=class_id
-    )
-    
-    db.add(new_post)
-    db.commit()
-    db.refresh(new_post)
+    try:
+        _lock_upload_owner(db, current_user.id)
+        db_class = _ensure_active_class_access(db, current_user, class_id)
+        validate_structured_upload_references(post)
+        content = _build_post_content(post)
+        asset_keys = post_asset_keys(content)
+
+        new_post = models.Blog(
+            title=post.title,
+            content=content,
+            owner_id=current_user.id,
+            class_id=class_id,
+        )
+        db.add(new_post)
+        db.flush()
+        bind_post_assets(
+            db,
+            blog=new_post,
+            actor_user_id=current_user.id,
+            storage_keys=asset_keys,
+            upload_root=UPLOAD_DIR,
+            now=_utc_now_aware(),
+        )
+        db.commit()
+        db.refresh(new_post)
+    except Exception:
+        db.rollback()
+        raise
     
     result = {
         "id": new_post.id,
@@ -2260,55 +2667,283 @@ async def get_classes(
     
     return result
 
-# Create upload directories if they don't exist
-UPLOAD_DIR.mkdir(exist_ok=True)
-(UPLOAD_DIR / "images").mkdir(exist_ok=True)
-(UPLOAD_DIR / "videos").mkdir(exist_ok=True)
-(UPLOAD_DIR / "files").mkdir(exist_ok=True)
-(UPLOAD_DIR / "profile_images").mkdir(exist_ok=True)
-(UPLOAD_DIR / "cover_images").mkdir(exist_ok=True)
+def _initialize_upload_layout(upload_root: Path, *, production: bool) -> None:
+    """Create only private child directories beneath a trusted upload root."""
+
+    is_root_junction = getattr(upload_root, "is_junction", lambda: False)
+    if upload_root.is_symlink() or is_root_junction():
+        raise RuntimeError("Upload storage is unavailable")
+    try:
+        if production:
+            if not upload_root.is_dir():
+                raise RuntimeError("Upload storage is unavailable")
+        else:
+            upload_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+        resolved_root = upload_root.resolve(strict=True)
+        for child_name in ("objects", ".incoming"):
+            child = upload_root / child_name
+            is_child_junction = getattr(child, "is_junction", lambda: False)
+            if child.is_symlink() or is_child_junction():
+                raise RuntimeError("Upload storage is unavailable")
+            child.mkdir(mode=0o700, exist_ok=True)
+            if (
+                not child.is_dir()
+                or child.is_symlink()
+                or getattr(child, "is_junction", lambda: False)()
+                or child.resolve(strict=True).parent != resolved_root
+            ):
+                raise RuntimeError("Upload storage is unavailable")
+            if os.name == "posix":
+                child_stat = child.stat()
+                if not production and child_stat.st_uid == os.geteuid():
+                    child.chmod(0o700)
+                    child_stat = child.stat()
+                if (
+                    child_stat.st_uid != os.geteuid()
+                    or stat.S_IMODE(child_stat.st_mode) != 0o700
+                ):
+                    raise RuntimeError("Upload storage is unavailable")
+            if not os.access(child, os.W_OK | os.X_OK):
+                raise RuntimeError("Upload storage is unavailable")
+    except OSError as exc:
+        raise RuntimeError("Upload storage is unavailable") from exc
+
+
+# Production root custody is validated before import. The application creates
+# private children, but never the configured production root or its ancestors.
+_initialize_upload_layout(
+    UPLOAD_DIR,
+    production=settings.app_env == "production",
+)
+
+
+def reconcile_upload_assets(
+    db: Session,
+    *,
+    now: datetime | None = None,
+) -> dict[str, int]:
+    return _reconcile_upload_assets(
+        db,
+        upload_root=UPLOAD_DIR,
+        now=now or _utc_now_aware(),
+    )
+
+
+def _reconcile_upload_assets_once() -> None:
+    db = SessionLocal()
+    try:
+        reconcile_upload_assets(db)
+        db.commit()
+    except Exception:
+        db.rollback()
+        print("Upload cleanup reconciliation failed")
+    finally:
+        db.close()
+
+
+def _upload_cleanup_loop() -> None:
+    while not _upload_cleanup_stop_event.is_set():
+        _reconcile_upload_assets_once()
+        _upload_cleanup_stop_event.wait(UPLOAD_CLEANUP_INTERVAL_SECONDS)
+
+
+def _start_upload_cleanup_worker() -> None:
+    global _upload_cleanup_thread
+    if _upload_cleanup_thread and _upload_cleanup_thread.is_alive():
+        return
+    _upload_cleanup_stop_event.clear()
+    _upload_cleanup_thread = threading.Thread(
+        target=_upload_cleanup_loop,
+        name="upload-cleanup-worker",
+        daemon=True,
+    )
+    _upload_cleanup_thread.start()
+
+
+def _stop_upload_cleanup_worker() -> None:
+    global _upload_cleanup_thread
+    _upload_cleanup_stop_event.set()
+    if _upload_cleanup_thread and _upload_cleanup_thread.is_alive():
+        _upload_cleanup_thread.join(timeout=2)
+    _upload_cleanup_thread = None
+
+
+def _rollback_upload_session(db: Session) -> None:
+    try:
+        db.rollback()
+    except Exception:
+        # Resolve an ambiguous COMMIT only through a new independent session.
+        pass
+
+
+def _pending_upload_commit_is_visible(stored: StoredUpload, owner_user_id: int) -> bool:
+    try:
+        with SessionLocal() as verification_db:
+            asset = (
+                verification_db.query(models.UploadAsset)
+                .filter(models.UploadAsset.storage_key == stored.storage_key)
+                .one_or_none()
+            )
+            return bool(
+                asset is not None
+                and asset.owner_user_id == owner_user_id
+                and asset.purpose == "POST"
+                and asset.state in {"PENDING", "ACTIVE"}
+                and asset.media_type == stored.spec.media_type
+                and asset.size_bytes == stored.size
+                and asset.sha256_digest == stored.sha256_digest
+                and object_matches_registration(
+                    UPLOAD_DIR,
+                    storage_key=stored.storage_key,
+                    size_bytes=stored.size,
+                    sha256_digest=stored.sha256_digest,
+                )
+            )
+    except Exception:
+        return False
+
+
+def _profile_upload_commit_is_visible(
+    stored: StoredUpload,
+    *,
+    owner_user_id: int,
+    purpose: str,
+    profile_field: str,
+) -> bool:
+    try:
+        with SessionLocal() as verification_db:
+            active = (
+                verification_db.query(models.UploadAsset)
+                .filter(
+                    models.UploadAsset.owner_user_id == owner_user_id,
+                    models.UploadAsset.purpose == purpose,
+                    models.UploadAsset.state == "ACTIVE",
+                )
+                .all()
+            )
+            user = verification_db.get(models.User, owner_user_id)
+            return bool(
+                len(active) == 1
+                and active[0].storage_key == stored.storage_key
+                and active[0].media_type == stored.spec.media_type
+                and active[0].size_bytes == stored.size
+                and active[0].sha256_digest == stored.sha256_digest
+                and user is not None
+                and getattr(user, profile_field) == stored.url
+                and object_matches_registration(
+                    UPLOAD_DIR,
+                    storage_key=stored.storage_key,
+                    size_bytes=stored.size,
+                    sha256_digest=stored.sha256_digest,
+                )
+            )
+    except Exception:
+        return False
+
+
+def _upload_reconciliation_error() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Upload finalization is being reconciled; refresh before retrying",
+    )
+
+
+async def _register_pending_upload(
+    file: UploadFile,
+    *,
+    allowed_kinds: set[str],
+    db: Session,
+    current_user: models.User,
+) -> StoredUpload:
+    prepared = None
+    stored = None
+    try:
+        prepared = await _save_validated_upload(file, allowed_kinds=allowed_kinds)
+        now = _utc_now_aware()
+        configure_upload_transaction(db)
+        _lock_upload_owner(db, current_user.id)
+        enforce_rate_limit(db, current_user.id, now=now)
+        enforce_quota(db, current_user.id, prepared.size)
+        stored = await run_in_threadpool(_finalize_prepared_upload, prepared)
+        add_pending_asset(
+            db,
+            owner_user_id=current_user.id,
+            stored=stored,
+            now=now,
+        )
+        db.commit()
+        return stored
+    except Exception as exc:
+        _rollback_upload_session(db)
+        await run_in_threadpool(_remove_upload_candidate, prepared)
+        if stored is not None and await run_in_threadpool(
+            _pending_upload_commit_is_visible,
+            stored,
+            current_user.id,
+        ):
+            return stored
+        if stored is not None or (
+            prepared is not None and prepared.destination_path.is_file()
+        ):
+            raise _upload_reconciliation_error() from exc
+        raise
 
 # Add these new endpoints
 @app.post("/api/upload/image")
-async def upload_image(file: UploadFile = File(...), current_user: models.User = Depends(get_current_user)):
-    stored = await _save_validated_upload(
+async def upload_image(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    stored = await _register_pending_upload(
         file,
         allowed_kinds={"image"},
-        user_id=current_user.id,
-        filename_prefix="image",
+        db=db,
+        current_user=current_user,
     )
     return {"url": stored.url}
 
 @app.post("/api/upload/video")
-async def upload_video(file: UploadFile = File(...), current_user: models.User = Depends(get_current_user)):
-    stored = await _save_validated_upload(
+async def upload_video(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    stored = await _register_pending_upload(
         file,
         allowed_kinds={"video"},
-        user_id=current_user.id,
-        filename_prefix="video",
+        db=db,
+        current_user=current_user,
     )
     return {"url": stored.url}
 
 @app.post("/api/upload/file")
-async def upload_file(file: UploadFile = File(...), current_user: models.User = Depends(get_current_user)):
-    stored = await _save_validated_upload(
+async def upload_file(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    stored = await _register_pending_upload(
         file,
         allowed_kinds={"pdf"},
-        user_id=current_user.id,
-        filename_prefix="file",
+        db=db,
+        current_user=current_user,
     )
     return {"url": stored.url}
 
 @app.post("/api/upload")
 async def upload_generic_file(
     file: UploadFile = File(...),
-    current_user: models.User = Depends(get_current_user)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
 ):
     """Upload a file and return its URL"""
-    stored = await _save_validated_upload(
+    stored = await _register_pending_upload(
         file,
         allowed_kinds={"image", "pdf", "video"},
-        user_id=current_user.id,
+        db=db,
+        current_user=current_user,
     )
     return {
         "url": stored.url,
@@ -3225,18 +3860,32 @@ async def update_class_post(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    db_class, db_post = _ensure_post_access(db, current_user, class_id, post_id)
-    _ensure_class_is_active(db_class)
-    if not _can_moderate_post(db, current_user, db_class, db_post):
-        raise HTTPException(status_code=403, detail="Not authorized to edit this post")
-    
-    # Update the post - make sure title and content are both updated
-    db_post.title = post.title
-    db_post.content = _build_post_content(post)
-    db_post.updated_at = _utc_now_naive()
-    
-    db.commit()
-    db.refresh(db_post)
+    try:
+        db_class, db_post = _ensure_post_access(db, current_user, class_id, post_id)
+        _ensure_class_is_active(db_class)
+        if not _can_moderate_post(db, current_user, db_class, db_post):
+            raise HTTPException(status_code=403, detail="Not authorized to edit this post")
+
+        _lock_upload_owner(db, db_post.owner_id)
+        validate_structured_upload_references(post)
+        content = _build_post_content(post)
+        asset_keys = post_asset_keys(content)
+        bind_post_assets(
+            db,
+            blog=db_post,
+            actor_user_id=current_user.id,
+            storage_keys=asset_keys,
+            upload_root=UPLOAD_DIR,
+            now=_utc_now_aware(),
+        )
+        db_post.title = post.title
+        db_post.content = content
+        db_post.updated_at = _utc_now_naive()
+        db.commit()
+        db.refresh(db_post)
+    except Exception:
+        db.rollback()
+        raise
     
     # Return updated post
     result = {
@@ -3261,14 +3910,18 @@ async def delete_class_post(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    db_class, post = _ensure_post_access(db, current_user, class_id, post_id)
-    _ensure_class_is_active(db_class)
-    if not _can_moderate_post(db, current_user, db_class, post):
-        raise HTTPException(status_code=403, detail="Not authorized to delete this post")
-    
-    # Delete the post
-    db.delete(post)
-    db.commit()
+    try:
+        db_class, post = _ensure_post_access(db, current_user, class_id, post_id)
+        _ensure_class_is_active(db_class)
+        if not _can_moderate_post(db, current_user, db_class, post):
+            raise HTTPException(status_code=403, detail="Not authorized to delete this post")
+        _lock_upload_owner(db, post.owner_id)
+        _lock_upload_blog(db, post.id)
+        _delete_blogs_with_dependencies(db, [post.id])
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     
     return {"message": "Post deleted successfully"}
 
@@ -3393,12 +4046,31 @@ async def update_profile(
 ):
     """Update user profile information"""
     try:
-        # Get the user from database
-        user = db.query(models.User).filter(models.User.id == current_user.id).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        for field_name, value in profile_data.model_dump(exclude_unset=True).items():
+        user = _lock_upload_owner(db, current_user.id)
+        update_values = profile_data.model_dump(exclude_unset=True)
+        cover_preset = update_values.pop("cover_preset", None)
+        if cover_preset is not None:
+            preset_urls = {
+                "classroom-1": "/Classroom1.jpeg",
+                "classroom-2": "/Classroom2.jpeg",
+                "classroom-3": "/Classroom3.jpeg",
+                "classroom-4": "/Classroom4.jpeg",
+            }
+            active_cover_assets = (
+                db.query(models.UploadAsset)
+                .filter(
+                    models.UploadAsset.owner_user_id == user.id,
+                    models.UploadAsset.purpose == "COVER_IMAGE",
+                    models.UploadAsset.state == "ACTIVE",
+                )
+                .order_by(models.UploadAsset.storage_key)
+                .with_for_update(of=models.UploadAsset)
+                .all()
+            )
+            queue_assets(active_cover_assets, now=_utc_now_aware())
+            user.cover_image = preset_urls[cover_preset]
+
+        for field_name, value in update_values.items():
             setattr(user, field_name, value)
             
         db.commit()
@@ -3421,9 +4093,58 @@ async def update_profile(
                 "created_at": user.created_at
             }
         }
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail="Failed to update profile") from e
+
+
+async def _replace_profile_upload(
+    file: UploadFile,
+    *,
+    purpose: str,
+    profile_field: str,
+    db: Session,
+    current_user: models.User,
+) -> str:
+    prepared = None
+    stored = None
+    try:
+        prepared = await _save_validated_upload(file, allowed_kinds={"image"})
+        now = _utc_now_aware()
+        configure_upload_transaction(db)
+        user = _lock_upload_owner(db, current_user.id)
+        enforce_rate_limit(db, current_user.id, now=now)
+        enforce_quota(db, current_user.id, prepared.size)
+        stored = await run_in_threadpool(_finalize_prepared_upload, prepared)
+        add_active_profile_asset(
+            db,
+            owner_user_id=user.id,
+            purpose=purpose,
+            stored=stored,
+            now=now,
+        )
+        setattr(user, profile_field, stored.url)
+        db.commit()
+        return stored.url
+    except Exception as exc:
+        _rollback_upload_session(db)
+        await run_in_threadpool(_remove_upload_candidate, prepared)
+        if stored is not None and await run_in_threadpool(
+            _profile_upload_commit_is_visible,
+            stored,
+            owner_user_id=current_user.id,
+            purpose=purpose,
+            profile_field=profile_field,
+        ):
+            return stored.url
+        if stored is not None or (
+            prepared is not None and prepared.destination_path.is_file()
+        ):
+            raise _upload_reconciliation_error() from exc
+        raise
 
 @app.post("/api/user/upload-profile-image")
 async def upload_profile_image(
@@ -3432,28 +4153,18 @@ async def upload_profile_image(
     current_user: models.User = Depends(get_current_user)
 ):
     """Upload profile image"""
-    stored = None
     try:
-        stored = await _save_validated_upload(
+        image_url = await _replace_profile_upload(
             file,
-            allowed_kinds={"image"},
-            bucket_override="profile_images",
-            filename_prefix=f"profile_{current_user.id}",
+            purpose="PROFILE_IMAGE",
+            profile_field="profile_image",
+            db=db,
+            current_user=current_user,
         )
-        
-        # Update user record in database
-        user = db.query(models.User).filter(models.User.id == current_user.id).first()
-        user.profile_image = stored.url
-        db.commit()
-        db.refresh(user)
-        
-        return {"image_url": user.profile_image}
+        return {"image_url": image_url}
     except HTTPException:
         raise
     except Exception as e:
-        db.rollback()
-        if stored is not None:
-            stored.path.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail="Failed to upload image") from e
 
 @app.post("/api/user/upload-cover-image")
@@ -3463,28 +4174,18 @@ async def upload_cover_image(
     current_user: models.User = Depends(get_current_user)
 ):
     """Upload cover image"""
-    stored = None
     try:
-        stored = await _save_validated_upload(
+        image_url = await _replace_profile_upload(
             file,
-            allowed_kinds={"image"},
-            bucket_override="cover_images",
-            filename_prefix=f"cover_{current_user.id}",
+            purpose="COVER_IMAGE",
+            profile_field="cover_image",
+            db=db,
+            current_user=current_user,
         )
-        
-        # Update user record in database
-        user = db.query(models.User).filter(models.User.id == current_user.id).first()
-        user.cover_image = stored.url
-        db.commit()
-        db.refresh(user)
-        
-        return {"image_url": user.cover_image}
+        return {"image_url": image_url}
     except HTTPException:
         raise
     except Exception as e:
-        db.rollback()
-        if stored is not None:
-            stored.path.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail="Failed to upload image") from e
 
 def _collect_ids(query) -> List[int]:
@@ -3493,6 +4194,15 @@ def _collect_ids(query) -> List[int]:
 def _delete_blogs_with_dependencies(db: Session, blog_ids: List[int]) -> None:
     if not blog_ids:
         return
+
+    (
+        db.query(models.Blog)
+        .filter(models.Blog.id.in_(sorted(blog_ids)))
+        .order_by(models.Blog.id)
+        .with_for_update(of=models.Blog)
+        .all()
+    )
+    queue_blog_assets(db, blog_ids, now=_utc_now_aware())
 
     comment_ids = _collect_ids(
         db.query(models.Comment.id).filter(models.Comment.blog_id.in_(blog_ids))
@@ -3644,6 +4354,12 @@ def _delete_user_dependencies(db: Session, user: models.User) -> None:
     db.query(models.PasswordReset).filter(
         models.PasswordReset.user_id == user.id
     ).delete(synchronize_session=False)
+
+    queue_owner_assets(db, user.id, now=_utc_now_aware())
+    db.flush()
+    db.query(models.UploadAsset).filter(
+        models.UploadAsset.owner_user_id == user.id
+    ).update({models.UploadAsset.owner_user_id: None}, synchronize_session=False)
 
 def _get_class_student_count(db: Session, class_id: int) -> int:
     return db.query(models.ClassEnrollment).filter(
@@ -4419,137 +5135,123 @@ async def get_class_students(
 @app.get("/api/uploads/{file_path:path}")
 async def get_uploaded_file(
     file_path: str,
+    db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """Serve uploaded files with compatibility for both legacy and bucketed paths."""
+    """Serve only registered objects after a database-derived ACL decision."""
     try:
-        normalized_path = _canonical_upload_relative_path(file_path)
+        storage_key = canonical_object_key(f"/api/uploads/{file_path}")
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid upload path",
         ) from exc
 
-    # 1) Exact path hit (works for /api/uploads/images/<user>/<file> and legacy /api/uploads/<user>/<file>)
-    direct_path = _upload_path(normalized_path)
-    if direct_path.exists() and direct_path.is_file():
-        return _safe_upload_file_response(direct_path)
-
-    parts = [part for part in normalized_path.split("/") if part]
-
-    # 2) Legacy URL fallback: /api/uploads/<user>/<file> -> search bucketed locations
-    if len(parts) >= 2 and parts[0].isdigit():
-        user_id = parts[0]
-        trailing_parts = parts[1:]
-        for bucket in ("images", "videos", "files"):
-            candidate = _upload_path(bucket, user_id, *trailing_parts)
-            if candidate.exists() and candidate.is_file():
-                return _safe_upload_file_response(candidate)
-
-    # 3) Bucketed URL fallback: /api/uploads/<bucket>/<user>/<file> -> legacy location
-    if len(parts) >= 3 and parts[0] in {"images", "videos", "files"} and parts[1].isdigit():
-        user_id = parts[1]
-        trailing_parts = parts[2:]
-        legacy_candidate = _upload_path(user_id, *trailing_parts)
-        if legacy_candidate.exists() and legacy_candidate.is_file():
-            return _safe_upload_file_response(legacy_candidate)
-
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail="File not found",
+    asset = (
+        db.query(models.UploadAsset)
+        .filter(models.UploadAsset.storage_key == storage_key)
+        .first()
     )
+    if asset is None or not _can_read_upload_asset(db, current_user, asset):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    opened_object = await run_in_threadpool(
+        open_verified_registered_object,
+        UPLOAD_DIR,
+        storage_key=storage_key,
+        size_bytes=asset.size_bytes,
+        sha256_digest=asset.sha256_digest,
+    )
+    if opened_object is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    return _safe_upload_file_response(
+        opened_object,
+        Path(storage_key),
+        requested_filename=asset.original_filename,
+    )
+
+
+def _can_read_upload_asset(
+    db: Session,
+    current_user: models.User,
+    asset: models.UploadAsset,
+) -> bool:
+    if _is_admin_role(current_user.role):
+        return asset.state in {"PENDING", "ACTIVE"}
+    if asset.owner_user_id == current_user.id:
+        return asset.state in {"PENDING", "ACTIVE"}
+    if asset.state != "ACTIVE":
+        return False
+    if asset.purpose == "POST":
+        blog = db.query(models.Blog).filter(models.Blog.id == asset.blog_id).first()
+        if blog is None:
+            return False
+        db_class = db.query(models.Class).filter(models.Class.id == blog.class_id).first()
+        return db_class is not None and _can_access_class(db, current_user, db_class)
+    if asset.purpose not in {"PROFILE_IMAGE", "COVER_IMAGE"}:
+        return False
+    owner = db.query(models.User).filter(models.User.id == asset.owner_user_id).first()
+    if owner is None:
+        return False
+    try:
+        _ensure_profile_access(db, current_user, owner)
+    except HTTPException:
+        return False
+    if asset.purpose == "PROFILE_IMAGE":
+        return True
+    role_value = str(getattr(owner.role, "value", owner.role)).upper()
+    if role_value != models.UserRole.STUDENT.value:
+        return False
+    owner_settings = (
+        db.query(models.UserSettings)
+        .filter(models.UserSettings.user_id == owner.id)
+        .first()
+    )
+    return owner_settings is None or owner_settings.show_profile_to_classmates
 
 @app.delete("/api/upload/{file_path:path}")
 async def delete_file(
     file_path: str,
-    current_user: models.User = Depends(get_current_user)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
 ):
-    """Delete an uploaded file"""
+    """Queue an unbound upload; active resources must be removed via their parent."""
     try:
-        # Ensure the file belongs to the current user.
-        # Supports both legacy uploads/<user_id>/... and new uploads/<bucket>/<user_id>/... layouts.
-        user_dir = f"{current_user.id}"
         try:
-            normalized_path = _canonical_upload_relative_path(file_path)
+            storage_key = canonical_object_key(f"/api/uploads/{file_path}")
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid upload path",
             ) from exc
-        normalized_parts = normalized_path.split("/")
-        belongs_to_user = (
-            normalized_parts[0] == user_dir
-            or (
-                len(normalized_parts) >= 2
-                and normalized_parts[0] in {"images", "videos", "files"}
-                and normalized_parts[1] == user_dir
-            )
+        _lock_upload_owner(db, current_user.id)
+        asset = (
+            db.query(models.UploadAsset)
+            .filter(models.UploadAsset.storage_key == storage_key)
+            .with_for_update(of=models.UploadAsset)
+            .first()
         )
-        if not belongs_to_user:
+        if asset is None or asset.owner_user_id != current_user.id:
+            raise HTTPException(status_code=404, detail="File not found")
+        if asset.state == "ACTIVE":
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You don't have permission to delete this file"
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Active uploads must be removed from their resource",
             )
-        
-        # Construct the full file path
-        full_path = _upload_path(normalized_path)
-        
-        # Check if file exists
-        if not full_path.is_file():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="File not found"
-            )
-        
-        # Delete the file
-        full_path.unlink()
-        
-        return {"message": "File deleted successfully"}
+        if asset.state != "PENDING":
+            raise HTTPException(status_code=404, detail="File not found")
+        asset.state = "DELETE_PENDING"
+        asset.expires_at = None
+        asset.delete_after = _utc_now_aware()
+        db.commit()
+        return {"message": "File deletion queued"}
     except Exception as e:
+        db.rollback()
         if isinstance(e, HTTPException):
             raise
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete file",
-        ) from e
-
-@app.get("/api/download")
-async def download_file(
-    url: str,
-    filename: str,
-    current_user: models.User = Depends(get_current_user)
-):
-    """Force download a file with the specified filename"""
-    try:        
-        try:
-            file_path = _canonical_upload_relative_path(url)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid file URL",
-            ) from exc
-        
-        # Construct the full path
-        full_path = _upload_path(file_path)
-        
-        # Check if file exists
-        if not full_path.exists():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="File not found",
-            )
-        
-        return _safe_upload_file_response(
-            full_path,
-            requested_filename=filename,
-            disposition="attachment",
-        )
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to download file",
         ) from e
 
 # Add new endpoints for archiving and deleting classes
@@ -4591,8 +5293,9 @@ async def delete_class(
     current_user: models.User = Depends(get_current_user)
 ):
     """Delete a class (for teachers)"""
-    _ensure_class_owner(db, current_user, class_id)
     try:
+        _lock_upload_owner(db, current_user.id)
+        _ensure_class_owner(db, current_user, class_id)
         _delete_classes_with_dependencies(db, [class_id])
         db.commit()
     except Exception:

@@ -132,6 +132,7 @@ def cleanup_test_environment():
 
 @pytest.fixture
 def client():
+    main.upload_admission.reset()
     _assert_test_database_engine(database.engine)
     base.Base.metadata.drop_all(bind=database.engine)
 
@@ -141,6 +142,7 @@ def client():
 
     _assert_test_database_engine(database.engine)
     base.Base.metadata.drop_all(bind=database.engine)
+    main.upload_admission.reset()
 
 
 @pytest.fixture(scope="session")

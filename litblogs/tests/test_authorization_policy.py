@@ -48,7 +48,6 @@ EXPECTED_API_ROUTES = frozenset(
         ("GET", "/api/classes/{class_id}/students/{student_id}"),
         ("GET", "/api/classes/{class_id}/students/{student_id}/posts"),
         ("GET", "/api/comments/{comment_id}/replies"),
-        ("GET", "/api/download"),
         ("GET", "/api/push/public-key"),
         ("GET", "/api/push/subscription"),
         ("GET", "/api/student/classes"),
