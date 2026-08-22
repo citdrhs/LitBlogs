@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import axios from 'axios';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
-import { logoutBrowserSession } from './utils/auth';
+import { getStoredSessionMetadata, logoutBrowserSession } from './utils/auth';
 
 const AdminDashboard = () => {
   const navigate = useNavigate();
@@ -15,9 +15,13 @@ const AdminDashboard = () => {
   const [classes, setClasses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [userInfo, setUserInfo] = useState(null);
+  const [userInfo, setUserInfo] = useState(() => getStoredSessionMetadata());
   const [lastUpdated, setLastUpdated] = useState(null);
   const [userQuery, setUserQuery] = useState('');
+  const [pendingStatusUser, setPendingStatusUser] = useState(null);
+  const [statusUpdating, setStatusUpdating] = useState(false);
+  const [statusMessage, setStatusMessage] = useState('');
+  const [statusError, setStatusError] = useState('');
 
   useEffect(() => {
     const fetchData = async () => {
@@ -32,20 +36,13 @@ const AdminDashboard = () => {
         setClasses(classesResponse.data);
         setLastUpdated(new Date());
         setLoading(false);
-      } catch (error) {
-        setError(error.response?.data?.detail || 'Failed to load dashboard data');
+      } catch {
+        setError('Failed to load dashboard data');
         setLoading(false);
       }
     };
 
     fetchData();
-  }, []);
-
-  useEffect(() => {
-    const storedUserInfo = sessionStorage.getItem('user_info');
-    if (storedUserInfo) {
-      setUserInfo(JSON.parse(storedUserInfo));
-    }
   }, []);
 
   const handleSignOut = async () => {
@@ -55,6 +52,45 @@ const AdminDashboard = () => {
       navigate('/');
     } catch {
       window.alert('Unable to sign out. Please try again.');
+    }
+  };
+
+  const requestStatusChange = (user) => {
+    setStatusMessage('');
+    setStatusError('');
+    setPendingStatusUser(user);
+  };
+
+  const confirmStatusChange = async () => {
+    if (!pendingStatusUser || statusUpdating) return;
+
+    const targetDisabled = !pendingStatusUser.disabled;
+    setStatusUpdating(true);
+    setStatusMessage('');
+    setStatusError('');
+    try {
+      const statusResponse = await axios.put(`/users/${pendingStatusUser.id}/status`, {
+        disabled: targetDisabled,
+      });
+      try {
+        const usersResponse = await axios.get('/users');
+        setUsers(usersResponse.data);
+      } catch {
+        setUsers((currentUsers) => currentUsers.map((user) => (
+          user.id === pendingStatusUser.id
+            ? { ...user, disabled: Boolean(statusResponse.data.disabled) }
+            : user
+        )));
+      }
+      setLastUpdated(new Date());
+      setStatusMessage(
+        `${pendingStatusUser.username} has been ${targetDisabled ? 'disabled' : 'enabled'}.`,
+      );
+      setPendingStatusUser(null);
+    } catch {
+      setStatusError('Account status could not be updated. Try again.');
+    } finally {
+      setStatusUpdating(false);
     }
   };
 
@@ -245,24 +281,61 @@ const AdminDashboard = () => {
               />
             </div>
           </div>
+          {statusMessage && (
+            <p role="status" aria-live="polite" className="mb-4 rounded-lg bg-emerald-100 px-4 py-3 text-sm text-emerald-900">
+              {statusMessage}
+            </p>
+          )}
+          {statusError && (
+            <p role="alert" className="mb-4 rounded-lg bg-red-100 px-4 py-3 text-sm text-red-900">
+              {statusError}
+            </p>
+          )}
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {filteredUsers.map((user) => (
-              <motion.div
-                key={user.id}
-                whileHover={{ scale: 1.02 }}
-                className={`p-4 rounded-lg shadow-md ${
-                  darkMode ? 'bg-gray-800' : 'bg-white'
-                }`}
-              >
-                <h3 className="font-semibold">{user.username}</h3>
-                <p className="text-sm text-gray-500 dark:text-gray-400">
-                  {user.email}
-                </p>
-                <p className="text-sm text-gray-500 dark:text-gray-400">
-                  Role: {user.role}
-                </p>
-              </motion.div>
-            ))}
+            {filteredUsers.map((user) => {
+              const isCurrentAdmin = Number(userInfo?.userId) === Number(user.id);
+              const selfDisableBlocked = isCurrentAdmin && !user.disabled;
+              return (
+                <motion.div
+                  key={user.id}
+                  whileHover={{ scale: 1.02 }}
+                  className={`p-4 rounded-lg shadow-md ${
+                    darkMode ? 'bg-gray-800' : 'bg-white'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <h3 className="font-semibold">{user.username}</h3>
+                    <span className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                      user.disabled
+                        ? 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200'
+                        : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200'
+                    }`}>
+                      {user.disabled ? 'Disabled' : 'Active'}
+                    </span>
+                  </div>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                    {user.email}
+                  </p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                    Role: {user.role}
+                  </p>
+                  <button
+                    type="button"
+                    aria-label={`${user.disabled ? 'Enable' : 'Disable'} ${user.username}`}
+                    disabled={selfDisableBlocked || statusUpdating}
+                    title={selfDisableBlocked ? 'You cannot disable your current administrator account' : undefined}
+                    onClick={() => requestStatusChange(user)}
+                    className={`mt-4 w-full rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${
+                      user.disabled
+                        ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                        : 'bg-red-600 text-white hover:bg-red-700'
+                    } disabled:cursor-not-allowed disabled:opacity-50`}
+                  >
+                    {user.disabled ? 'Enable account' : 'Disable account'}
+                  </button>
+                </motion.div>
+              );
+            })}
             {filteredUsers.length === 0 && (
               <div className="text-sm text-gray-500 dark:text-gray-400">No users match this search.</div>
             )}
@@ -293,6 +366,49 @@ const AdminDashboard = () => {
           </div>
         </section>
       </div>
+      {pendingStatusUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="account-status-dialog-title"
+            className={`w-full max-w-md rounded-2xl p-6 shadow-xl ${
+              darkMode ? 'bg-gray-800 text-gray-100' : 'bg-white text-gray-900'
+            }`}
+          >
+            <h2 id="account-status-dialog-title" className="text-xl font-semibold">
+              {pendingStatusUser.disabled ? 'Enable' : 'Disable'} {pendingStatusUser.username}?
+            </h2>
+            <p className="mt-3 text-sm text-gray-600 dark:text-gray-300">
+              {pendingStatusUser.disabled
+                ? 'This restores sign-in access. Existing revoked sessions remain revoked.'
+                : 'This immediately revokes active sessions and blocks new sign-ins.'}
+            </p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                disabled={statusUpdating}
+                onClick={() => setPendingStatusUser(null)}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={statusUpdating}
+                onClick={confirmStatusChange}
+                className={`rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-50 ${
+                  pendingStatusUser.disabled ? 'bg-emerald-600' : 'bg-red-600'
+                }`}
+              >
+                {statusUpdating
+                  ? 'Updating…'
+                  : `Confirm ${pendingStatusUser.disabled ? 'enable' : 'disable'}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <Footer darkMode={darkMode} />
     </div>
   );

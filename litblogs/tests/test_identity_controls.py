@@ -64,6 +64,7 @@ def _production_settings_data() -> dict:
         "email_password": secrets.token_urlsafe(24),
         "email_from": "no-reply@school.example",
         "password_reset_worker_enabled": True,
+        "local_password_registration_enabled": False,
     }
 
 
@@ -1488,6 +1489,31 @@ def test_password_registration_success_and_duplicates_share_generic_202(client):
 
     client.cookies.clear()
     assert client.get("/api/auth/session").status_code == 401
+
+
+def test_disabled_password_registration_is_generic_and_creates_no_account(
+    client,
+    monkeypatch,
+):
+    disabled_settings = main.settings.model_copy(
+        update={"local_password_registration_enabled": False}
+    )
+    monkeypatch.setattr(main, "settings", disabled_settings)
+
+    def password_hashing_must_not_run(_password):
+        raise AssertionError("disabled registration must not hash submitted passwords")
+
+    monkeypatch.setattr(main, "hash_password", password_hashing_must_not_run)
+    response = client.post(
+        "/api/auth/register",
+        json=_registration_payload("disabled-in-production"),
+    )
+
+    assert response.status_code == 202
+    assert response.json() == REGISTRATION_ACCEPTED
+    assert response.headers.get_list("set-cookie") == []
+    with SessionLocal() as db:
+        assert db.query(models.User).count() == 0
 
 
 def test_password_registration_and_login_use_one_normalized_email_identity(client):

@@ -34,6 +34,7 @@ TEST_ENVIRONMENT = {
     "RESET_DATABASE_ON_STARTUP": "false",
     "ADMIN_ACCESS_CODE": "test-only-admin-access-code",
     "ADMIN_CODE": "test-only-admin-code",
+    "LOCAL_PASSWORD_REGISTRATION_ENABLED": "true",
     "FRONTEND_URL": "http://testserver",
     "BASE_URL": "http://testserver",
     "CORS_ALLOWED_ORIGINS": "http://testserver",

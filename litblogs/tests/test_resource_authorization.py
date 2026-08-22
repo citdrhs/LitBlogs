@@ -416,12 +416,30 @@ def test_class_access_codes_use_cryptographic_randomness(
 
 def test_admin_user_listing_uses_safe_fields_only(client, authorization_scenario):
     scenario = authorization_scenario
+    with SessionLocal() as db:
+        disabled_user = db.get(models.User, scenario["student_b"])
+        disabled_user.disabled_at = datetime.now(UTC)
+        db.commit()
+
     response = client.get("/api/users", headers=scenario["admin_headers"])
 
     assert response.status_code == 200
     assert response.json()
-    forbidden_fields = {"password", "hashed_password", "federated_identities"}
-    assert all(forbidden_fields.isdisjoint(user) for user in response.json())
+    safe_fields = {
+        "id",
+        "username",
+        "email",
+        "first_name",
+        "last_name",
+        "role",
+        "is_admin",
+        "created_at",
+        "disabled",
+    }
+    assert all(set(user) == safe_fields for user in response.json())
+    by_id = {user["id"]: user for user in response.json()}
+    assert by_id[scenario["student_b"]]["disabled"] is True
+    assert by_id[scenario["student_a"]]["disabled"] is False
 
 
 def test_legacy_admin_flag_never_grants_role_privileges(client, authorization_scenario):

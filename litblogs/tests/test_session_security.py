@@ -140,6 +140,7 @@ def _production_settings() -> Settings:
         email_password=secrets.token_urlsafe(24),
         email_from="no-reply@school.example",
         password_reset_worker_enabled=True,
+        local_password_registration_enabled=False,
     )
 
 
