@@ -24,6 +24,13 @@ import { mediaPath } from './utils/urlUtils';
 import { logoutBrowserSession } from './utils/auth';
 import { openPdfViewerModal } from './components/PdfViewerModal';
 import {
+  clonePrivatePostContent,
+  loadAssignmentDraft,
+  saveAssignmentDraft,
+  submitAssignment,
+} from './utils/privateDrafts';
+import { usePrivateDrafts } from './context/PrivateDraftContext';
+import {
   createSanitizedRichTextContainer,
   normalizeRichTextUrl,
   sanitizeRichText,
@@ -35,7 +42,6 @@ import {
   getLocalUserSettings,
   normalizeUserSettings,
   saveLocalUserSettings,
-  shouldRememberDrafts,
 } from './utils/userSettings';
 
 const SelfHostedEditor = lazy(() => import('./components/SelfHostedEditor'));
@@ -190,75 +196,6 @@ const richTextStyles = `
 // Add this after your imports
 Prism.manual = true;
 
-const getAssignmentDraftKey = ({ classId, assignmentId, userId }) => {
-  if (!classId || !assignmentId || !userId) {
-    return null;
-  }
-
-  return `assignmentDraft:${userId}:${classId}:${assignmentId}`;
-};
-
-const readAssignmentDraft = ({ classId, assignmentId, userId }) => {
-  if (!shouldRememberDrafts()) {
-    return { hasDraft: false, content: '', savedAt: null };
-  }
-
-  const key = getAssignmentDraftKey({ classId, assignmentId, userId });
-  if (!key) {
-    return { hasDraft: false, content: '', savedAt: null };
-  }
-
-  try {
-    const storedValue = localStorage.getItem(key);
-    if (!storedValue) {
-      return { hasDraft: false, content: '', savedAt: null };
-    }
-
-    const parsedValue = JSON.parse(storedValue);
-    if (typeof parsedValue === 'string') {
-      return { hasDraft: true, content: parsedValue, savedAt: null };
-    }
-
-    return {
-      hasDraft: true,
-      content: parsedValue?.content || '',
-      savedAt: parsedValue?.savedAt || null,
-    };
-  } catch (error) {
-    console.error('Failed to read assignment draft:', error);
-    return { hasDraft: false, content: '', savedAt: null };
-  }
-};
-
-const writeAssignmentDraft = ({ classId, assignmentId, userId, content, savedAt }) => {
-  if (!shouldRememberDrafts()) {
-    return null;
-  }
-
-  const key = getAssignmentDraftKey({ classId, assignmentId, userId });
-  if (!key) {
-    return null;
-  }
-
-  if (content === '') {
-    localStorage.removeItem(key);
-    return null;
-  }
-
-  const nextSavedAt = savedAt || new Date().toISOString();
-  localStorage.setItem(key, JSON.stringify({ content, savedAt: nextSavedAt }));
-  return nextSavedAt;
-};
-
-const clearAssignmentDraft = ({ classId, assignmentId, userId }) => {
-  const key = getAssignmentDraftKey({ classId, assignmentId, userId });
-  if (!key) {
-    return;
-  }
-
-  localStorage.removeItem(key);
-};
-
 const createEmptyPostContent = () => ({
   text: "",
   media: [],
@@ -267,142 +204,8 @@ const createEmptyPostContent = () => ({
   files: []
 });
 
-const clonePostContent = (value) => {
-  if (!value) {
-    return createEmptyPostContent();
-  }
-
-  try {
-    return JSON.parse(JSON.stringify(value));
-  } catch {
-    return createEmptyPostContent();
-  }
-};
-
-const getPostDraftKey = ({ classId, userId, editingPostId }) => {
-  if (!classId || !userId) {
-    return null;
-  }
-
-  const composerScope = editingPostId ? `edit:${editingPostId}` : 'new';
-  return `postDraft:${userId}:${classId}:${composerScope}`;
-};
-
-const readPostDraft = ({ classId, userId, editingPostId }) => {
-  const key = getPostDraftKey({ classId, userId, editingPostId });
-  if (!key) {
-    return { hasDraft: false, savedAt: null, payload: null };
-  }
-
-  try {
-    const storedValue = localStorage.getItem(key);
-    if (!storedValue) {
-      return { hasDraft: false, savedAt: null, payload: null };
-    }
-
-    const parsedValue = JSON.parse(storedValue);
-    return {
-      hasDraft: true,
-      savedAt: parsedValue?.savedAt || null,
-      payload: {
-        postTitle: parsedValue?.postTitle || '',
-        content: parsedValue?.content || '',
-        postContent: clonePostContent(parsedValue?.postContent),
-      },
-    };
-  } catch (error) {
-    console.error('Failed to read post draft:', error);
-    return { hasDraft: false, savedAt: null, payload: null };
-  }
-};
-
-const writePostDraft = ({ classId, userId, editingPostId, payload, savedAt }) => {
-  const key = getPostDraftKey({ classId, userId, editingPostId });
-  if (!key) {
-    return null;
-  }
-
-  const hasMeaningfulContent = Boolean(
-    payload?.postTitle?.trim() ||
-    payload?.content?.trim() ||
-    (payload?.postContent?.media?.length || 0) > 0 ||
-    (payload?.postContent?.files?.length || 0) > 0 ||
-    (payload?.postContent?.expandableLists?.length || 0) > 0 ||
-    (payload?.postContent?.codeSnippets?.length || 0) > 0
-  );
-
-  if (!hasMeaningfulContent) {
-    localStorage.removeItem(key);
-    return null;
-  }
-
-  const nextSavedAt = savedAt || new Date().toISOString();
-  localStorage.setItem(
-    key,
-    JSON.stringify({
-      postTitle: payload.postTitle || '',
-      content: payload.content || '',
-      postContent: clonePostContent(payload.postContent),
-      savedAt: nextSavedAt,
-    })
-  );
-  return nextSavedAt;
-};
-
-const clearPostDraft = ({ classId, userId, editingPostId }) => {
-  const key = getPostDraftKey({ classId, userId, editingPostId });
-  if (!key) {
-    return;
-  }
-
-  localStorage.removeItem(key);
-};
-
 const normalizePostContentForEditor = (content = '') => {
   return sanitizeRichText(content, { mode: 'editor' });
-};
-
-const listPostDrafts = ({ classId, userId }) => {
-  if (!classId || !userId) {
-    return [];
-  }
-
-  const prefix = `postDraft:${userId}:${classId}:`;
-  const drafts = [];
-
-  for (let i = 0; i < localStorage.length; i += 1) {
-    const key = localStorage.key(i);
-    if (!key || !key.startsWith(prefix)) {
-      continue;
-    }
-
-    const scope = key.slice(prefix.length);
-    try {
-      const raw = localStorage.getItem(key);
-      if (!raw) {
-        continue;
-      }
-
-      const parsed = JSON.parse(raw);
-      drafts.push({
-        key,
-        scope,
-        editingPostId: scope.startsWith('edit:') ? Number(scope.split(':')[1]) : null,
-        postTitle: parsed?.postTitle || '',
-        content: parsed?.content || '',
-        postContent: clonePostContent(parsed?.postContent),
-        savedAt: parsed?.savedAt || null,
-      });
-    } catch (error) {
-      console.error('Failed to parse post draft:', error);
-    }
-  }
-
-  return drafts.sort((a, b) => {
-    const aTs = a.savedAt ? new Date(a.savedAt).getTime() : 0;
-    const bTs = b.savedAt ? new Date(b.savedAt).getTime() : 0;
-    return bTs - aTs;
-  });
 };
 
 const MediaPreview = ({ media, files, onRemove }) => {
@@ -820,8 +623,7 @@ const TINYMCE_CONFIG = {
               }
               
               api.close();
-            } catch (error) {
-              console.error('Error handling image:', error);
+            } catch {
               editor.notificationManager.open({
                 text: 'Failed to process image. Please try again.',
                 type: 'error'
@@ -898,8 +700,7 @@ const TINYMCE_CONFIG = {
               // Insert the file attachment at the cursor position
               editor.insertContent(sanitizeRichText(fileHtml, { mode: 'editor' }));
               
-            } catch (error) {
-              console.error('Error uploading file:', error);
+            } catch {
               toast.error('Failed to upload file. Please try again.');
             }
           }
@@ -1068,9 +869,6 @@ const TINYMCE_CONFIG = {
                 }
               });
               
-              // Get the uploaded file URL and log for debugging
-              console.log("Video upload response:", response.data);
-              
               // Check if the response contains the expected data
               // Handle both url and file_url formats
               let videoUrl = null;
@@ -1079,18 +877,13 @@ const TINYMCE_CONFIG = {
               } else if (response.data && response.data.file_url) {
                 videoUrl = response.data.file_url;
               } else {
-                console.error("Invalid response format:", response.data);
                 toast.error('Server returned an invalid response. Please try again.');
                 toast.dismiss(loadingToast);
                 return;
               }
               
-              console.log("Video URL:", videoUrl);
-              
               // Ensure the URL is properly formatted
               const fullVideoUrl = mediaPath(videoUrl);
-                  
-              console.log("Full video URL:", fullVideoUrl);
               
               // Create a cleaner HTML for the video with a delete button overlay
               const fallbackType = (() => {
@@ -1124,8 +917,7 @@ const TINYMCE_CONFIG = {
               // Dismiss loading toast and show success
               toast.dismiss(loadingToast);
               toast.success('Video uploaded successfully!');
-            } catch (error) {
-              console.error('Error uploading video:', error);
+            } catch {
               toast.error('Failed to upload video. Please try again.');
             }
           }
@@ -1430,9 +1222,8 @@ async function deleteFileFromServer(url) {
     
     await axios.delete(`/upload/${filePath}`);
     
-    console.log('File deleted successfully from server');
-  } catch (error) {
-    console.error('Error deleting file from server:', error);
+  } catch {
+    toast.error('Failed to delete attachment from server');
   }
 }
 
@@ -1449,12 +1240,10 @@ if (!window.deleteVideoFromServer) {
     
     // Delete the file from the server
     axios.delete(`/upload/${filePath}`)
-    .then(response => {
-      console.log('Video deleted successfully:', response.data);
+    .then(() => {
       toast.success('Video deleted successfully');
     })
-    .catch(error => {
-      console.error('Error deleting video:', error);
+    .catch(() => {
       toast.error('Failed to delete video from server');
     });
   };
@@ -1474,12 +1263,10 @@ function defineGlobalFunctions() {
     
     // Delete the file from the server
     axios.delete(`/upload/${filePath}`)
-    .then(response => {
-      console.log('Video deleted successfully:', response.data);
+    .then(() => {
       toast.success('Video deleted successfully');
     })
-    .catch(error => {
-      console.error('Error deleting video:', error);
+    .catch(() => {
       toast.error('Failed to delete video from server');
     });
   };
@@ -1557,16 +1344,62 @@ const ClassFeed = () => {
   const [assignmentSubmission, setAssignmentSubmission] = useState('');
   const [assignmentDraftSavedAt, setAssignmentDraftSavedAt] = useState(null);
   const [assignmentDraftReady, setAssignmentDraftReady] = useState(false);
+  const [assignmentDraftStatus, setAssignmentDraftStatus] = useState('idle');
+  const [assignmentDraftDirty, setAssignmentDraftDirty] = useState(false);
+  const [assignmentDraftRevision, setAssignmentDraftRevision] = useState(0);
+  const [assignmentDraftClosing, setAssignmentDraftClosing] = useState(false);
   const [assignmentSubmitting, setAssignmentSubmitting] = useState(false);
   const [postDraftSavedAt, setPostDraftSavedAt] = useState(null);
-  const [postDrafts, setPostDrafts] = useState([]);
-  const suppressPostDraftAutosaveRef = useRef(false);
+  const [postComposerDirty, setPostComposerDirty] = useState(false);
+  const assignmentDraftRequestRef = useRef(0);
+  const assignmentDraftAbortRef = useRef(null);
+  const assignmentDraftStatusRef = useRef('idle');
+  const latestAssignmentContextRef = useRef(null);
+  const previousDraftContextRef = useRef(null);
+  const latestPostComposerRef = useRef(null);
   const [userSettings, setUserSettings] = useState(() => getLocalUserSettings());
+  const {
+    postDrafts,
+    savePostDraft: savePostDraftMemory,
+    getPostDraft,
+    removePostDraft: removePostDraftMemory,
+    saveAssignmentMemory,
+    getAssignmentMemory,
+    removeAssignmentMemory,
+    clearPrivateDraftMemory,
+    hasRiskyDrafts,
+  } = usePrivateDrafts();
   const isStudent = (userInfo?.role || '').toString().toUpperCase() === 'STUDENT';
+  const activeAssignmentId = activeAssignment?.id;
   const assignmentDraftUserId = userInfo?.userId || userInfo?.id;
   const postDraftUserId = userInfo?.userId || userInfo?.id;
+  const activeAssignmentMemoryContext = activeAssignmentId && assignmentDraftUserId
+    ? {
+        userId: assignmentDraftUserId,
+        classId,
+        assignmentId: activeAssignmentId,
+      }
+    : null;
   const rememberDraftsEnabled = userSettings.rememberDrafts !== false;
   const editorFontSizePx = getEditorFontSizePx(userSettings.editorFontSize);
+  assignmentDraftStatusRef.current = assignmentDraftStatus;
+  latestPostComposerRef.current = {
+    showNewPostForm,
+    postComposerDirty,
+    classId,
+    userId: postDraftUserId,
+    editingPostId,
+    postTitle,
+    content,
+    postContent,
+  };
+  latestAssignmentContextRef.current = {
+    classId: String(classId ?? ''),
+    userId: String(assignmentDraftUserId ?? ''),
+    assignmentId: activeAssignmentId === null || activeAssignmentId === undefined
+      ? null
+      : String(activeAssignmentId),
+  };
   const tinyMceConfig = useMemo(() => {
     const nextContentStyle = TINYMCE_CONFIG.content_style.replace(
       /font-size:\s*\d+px;/,
@@ -1642,62 +1475,173 @@ const ClassFeed = () => {
   }, [classId, navigate]);
 
   useEffect(() => {
-    if (!isStudent || !activeAssignment || !assignmentDraftUserId || !assignmentDraftReady || !rememberDraftsEnabled) {
+    if (
+      !isStudent
+      || !activeAssignmentId
+      || !assignmentDraftUserId
+      || !assignmentDraftReady
+      || !assignmentDraftDirty
+      || !rememberDraftsEnabled
+      || assignmentSubmitting
+      || assignmentDraftClosing
+      || assignmentDraftStatusRef.current === 'error'
+    ) {
       return;
     }
 
+    const requestVersion = ++assignmentDraftRequestRef.current;
+    const expectedRevision = assignmentDraftRevision;
+    const abortController = new AbortController();
+    assignmentDraftAbortRef.current?.abort();
+    assignmentDraftAbortRef.current = abortController;
+    setAssignmentDraftStatus('pending');
+    saveAssignmentMemory(
+      {
+        userId: assignmentDraftUserId,
+        classId,
+        assignmentId: activeAssignmentId,
+      },
+      {
+        content: assignmentSubmission,
+        revision: expectedRevision,
+        savedAt: assignmentDraftSavedAt,
+        dirty: true,
+        status: 'pending',
+      },
+    );
+
     const autosaveTimer = setTimeout(() => {
       const syncDraft = async () => {
+        setAssignmentDraftStatus('saving');
+        saveAssignmentMemory(
+          {
+            userId: assignmentDraftUserId,
+            classId,
+            assignmentId: activeAssignmentId,
+          },
+          {
+            content: assignmentSubmission,
+            revision: expectedRevision,
+            savedAt: assignmentDraftSavedAt,
+            dirty: true,
+            status: 'saving',
+          },
+        );
         try {
-          const response = await axios.put(
-            `/assignments/${activeAssignment.id}/draft`,
-            { content: assignmentSubmission }
+          const serverDraft = await saveAssignmentDraft(
+            axios,
+            activeAssignmentId,
+            assignmentSubmission,
+            expectedRevision,
+            { signal: abortController.signal },
           );
 
-          if (response.data?.has_draft) {
-            const savedAt = writeAssignmentDraft({
-              classId,
-              assignmentId: activeAssignment.id,
+          if (requestVersion !== assignmentDraftRequestRef.current) return;
+
+          setAssignmentDraftSavedAt(serverDraft.savedAt);
+          setAssignmentDraftRevision(serverDraft.revision);
+          setAssignmentDraftStatus('saved');
+          setAssignmentDraftDirty(false);
+          saveAssignmentMemory(
+            {
               userId: assignmentDraftUserId,
-              content: response.data.content || assignmentSubmission,
-              savedAt: response.data.saved_at,
-            });
-            setAssignmentDraftSavedAt(savedAt);
-            updateAssignmentDraftState(activeAssignment.id, {
-              content: response.data.content || assignmentSubmission,
-              updated_at: response.data.saved_at,
-            });
-          } else {
-            clearAssignmentDraft({
               classId,
-              assignmentId: activeAssignment.id,
-              userId: assignmentDraftUserId,
-            });
-            setAssignmentDraftSavedAt(null);
-            updateAssignmentDraftState(activeAssignment.id, null);
-          }
+              assignmentId: activeAssignmentId,
+            },
+            {
+              content: serverDraft.content,
+              revision: serverDraft.revision,
+              savedAt: serverDraft.savedAt,
+              dirty: false,
+              status: 'saved',
+            },
+          );
+          const nextDraft = serverDraft.hasDraft
+            ? {
+                content: serverDraft.content,
+                updated_at: serverDraft.savedAt,
+                revision: serverDraft.revision,
+              }
+            : null;
+          setAssignments((prev) => prev.map((assignment) => (
+            assignment.id === activeAssignmentId
+              ? {
+                  ...assignment,
+                  my_draft: nextDraft,
+                  my_draft_revision: serverDraft.revision,
+                }
+              : assignment
+          )));
+          setActiveAssignment((prev) => (
+            prev && prev.id === activeAssignmentId
+              ? {
+                  ...prev,
+                  my_draft: nextDraft,
+                  my_draft_revision: serverDraft.revision,
+                }
+              : prev
+          ));
         } catch (error) {
-          console.error('Error autosaving assignment draft:', error);
+          const wasCanceled = error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError';
+          if (!wasCanceled && requestVersion === assignmentDraftRequestRef.current) {
+            setAssignmentDraftStatus('error');
+            saveAssignmentMemory(
+              {
+                userId: assignmentDraftUserId,
+                classId,
+                assignmentId: activeAssignmentId,
+              },
+              {
+                content: assignmentSubmission,
+                revision: expectedRevision,
+                savedAt: assignmentDraftSavedAt,
+                dirty: true,
+                status: 'error',
+              },
+            );
+          }
+        } finally {
+          if (assignmentDraftAbortRef.current === abortController) {
+            assignmentDraftAbortRef.current = null;
+          }
         }
       };
 
       syncDraft();
     }, 500);
 
-    return () => clearTimeout(autosaveTimer);
-  }, [assignmentSubmission, activeAssignment, assignmentDraftReady, assignmentDraftUserId, classId, isStudent, rememberDraftsEnabled]);
+    return () => {
+      clearTimeout(autosaveTimer);
+      abortController.abort();
+    };
+  }, [
+    assignmentSubmission,
+    activeAssignmentId,
+    assignmentDraftReady,
+    assignmentDraftDirty,
+    assignmentDraftUserId,
+    isStudent,
+    rememberDraftsEnabled,
+    assignmentSubmitting,
+    assignmentDraftClosing,
+    assignmentDraftRevision,
+    assignmentDraftSavedAt,
+    classId,
+    saveAssignmentMemory,
+  ]);
 
   useEffect(() => {
-    if (!showNewPostForm || !postDraftUserId || !rememberDraftsEnabled) {
+    if (
+      !showNewPostForm
+      || !postDraftUserId
+      || !rememberDraftsEnabled
+      || !postComposerDirty
+    ) {
       return;
     }
 
     const autosaveTimer = setTimeout(() => {
-      if (suppressPostDraftAutosaveRef.current) {
-        return;
-      }
-
-      const savedAt = writePostDraft({
+      const result = savePostDraftMemory({
         classId,
         userId: postDraftUserId,
         editingPostId,
@@ -1707,22 +1651,117 @@ const ClassFeed = () => {
           postContent,
         },
       });
-      setPostDraftSavedAt(savedAt);
-      setPostDrafts(listPostDrafts({ classId, userId: postDraftUserId }));
+      setPostDraftSavedAt(result.savedAt);
+      setPostComposerDirty(false);
     }, 500);
 
     return () => clearTimeout(autosaveTimer);
-  }, [showNewPostForm, postDraftUserId, rememberDraftsEnabled, classId, editingPostId, postTitle, content, postContent]);
+  }, [
+    showNewPostForm,
+    postDraftUserId,
+    rememberDraftsEnabled,
+    postComposerDirty,
+    classId,
+    editingPostId,
+    postTitle,
+    content,
+    postContent,
+    savePostDraftMemory,
+  ]);
 
-  useEffect(() => {
-    setPostDrafts(listPostDrafts({ classId, userId: postDraftUserId }));
-  }, [classId, postDraftUserId]);
-
-  useEffect(() => {
-    if (!showNewPostForm) {
-      suppressPostDraftAutosaveRef.current = false;
+  useEffect(() => () => {
+    const snapshot = latestPostComposerRef.current;
+    if (!snapshot?.showNewPostForm || !snapshot.postComposerDirty || !snapshot.userId) {
+      return;
     }
-  }, [showNewPostForm]);
+    savePostDraftMemory({
+      classId: snapshot.classId,
+      userId: snapshot.userId,
+      editingPostId: snapshot.editingPostId,
+      payload: {
+        postTitle: snapshot.postTitle,
+        content: snapshot.content,
+        postContent: snapshot.postContent,
+      },
+    });
+  }, [savePostDraftMemory]);
+
+  useEffect(() => {
+    const currentContext = {
+      classId: String(classId ?? ''),
+      userId: String(postDraftUserId ?? ''),
+    };
+    const previousContext = previousDraftContextRef.current;
+    const snapshot = latestPostComposerRef.current;
+
+    if (
+      previousContext
+      && (
+        previousContext.classId !== currentContext.classId
+        || previousContext.userId !== currentContext.userId
+      )
+    ) {
+      if (snapshot?.showNewPostForm && snapshot.postComposerDirty && previousContext.userId) {
+        savePostDraftMemory({
+          classId: previousContext.classId,
+          userId: previousContext.userId,
+          editingPostId: snapshot.editingPostId,
+          payload: {
+            postTitle: snapshot.postTitle,
+            content: snapshot.content,
+            postContent: snapshot.postContent,
+          },
+        });
+      }
+
+      assignmentDraftRequestRef.current += 1;
+      assignmentDraftAbortRef.current?.abort();
+      assignmentDraftAbortRef.current = null;
+      setShowAssignmentModal(false);
+      setActiveAssignment(null);
+      setAssignmentSubmission('');
+      setAssignmentDraftReady(false);
+      setAssignmentDraftSavedAt(null);
+      setAssignmentDraftStatus('idle');
+      setAssignmentDraftDirty(false);
+      setAssignmentDraftRevision(0);
+      setAssignmentDraftClosing(false);
+      setAssignmentSubmitting(false);
+      setShowNewPostForm(false);
+      setPostTitle('');
+      setContent('');
+      setPostContent(createEmptyPostContent());
+      setPostDraftSavedAt(null);
+      setPostComposerDirty(false);
+      setEditingPostId(null);
+    }
+
+    previousDraftContextRef.current = currentContext;
+  }, [classId, postDraftUserId, savePostDraftMemory]);
+
+  useEffect(() => {
+    const hasCurrentRisk = (
+      postComposerDirty
+      || assignmentDraftDirty
+      || ['pending', 'saving'].includes(assignmentDraftStatus)
+      || hasRiskyDrafts({ userId: postDraftUserId })
+    );
+    if (!hasCurrentRisk) return undefined;
+
+    const protectRefresh = (event) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', protectRefresh);
+    return () => window.removeEventListener('beforeunload', protectRefresh);
+  }, [
+    assignmentDraftDirty,
+    assignmentDraftStatus,
+    hasRiskyDrafts,
+    postComposerDirty,
+    postDraftUserId,
+    postDrafts,
+  ]);
 
   useEffect(() => {
     if (darkMode) {
@@ -1850,9 +1889,6 @@ const ClassFeed = () => {
         // Fetch comment counts immediately after posts load
         const counts = {};
         
-        // Debug log to check if this function is running
-        console.log("Fetching comment counts for posts:", response.data.length);
-        
         // We'll fetch one by one to ensure reliability
         for (const post of response.data) {
           try {
@@ -1860,15 +1896,11 @@ const ClassFeed = () => {
               `/classes/${classId}/posts/${post.id}/comments?limit=1`
             );
             counts[post.id] = commentResponse.data.total;
-            console.log(`Post ${post.id} has ${commentResponse.data.total} comments`);
           } catch (err) {
             console.error(`Failed to fetch comments for post ${post.id}:`, err);
             counts[post.id] = 0;
           }
         }
-        
-        // Log the counts before setting state
-        console.log("Final comment counts:", counts);
         
         // Update comment counts
         setCommentCounts(counts);
@@ -1891,85 +1923,204 @@ const ClassFeed = () => {
     return () => clearInterval(timeUpdateInterval);
   }, []);
 
-  const refreshAssignments = async () => {
-    const assignmentsResponse = await axios.get(`/classes/${classId}/assignments`);
-    setAssignments(assignmentsResponse.data || []);
-  };
-
-  const updateAssignmentDraftState = (assignmentId, draft) => {
+  const updateAssignmentDraftState = (assignmentId, draft, revision = 0) => {
     setAssignments((prev) => prev.map((assignment) => (
       assignment.id === assignmentId
-        ? { ...assignment, my_draft: draft }
+        ? { ...assignment, my_draft: draft, my_draft_revision: revision }
         : assignment
     )));
     setActiveAssignment((prev) => (
       prev && prev.id === assignmentId
-        ? { ...prev, my_draft: draft }
+        ? { ...prev, my_draft: draft, my_draft_revision: revision }
         : prev
     ));
-  };
-
-  const persistAssignmentDraftLocally = (content, assignment = activeAssignment) => {
-    if (!assignment || !assignmentDraftUserId) {
-      return null;
-    }
-
-    const savedAt = writeAssignmentDraft({
-      classId,
-      assignmentId: assignment.id,
-      userId: assignmentDraftUserId,
-      content,
-    });
-
-    setAssignmentDraftSavedAt(savedAt);
-    updateAssignmentDraftState(
-      assignment.id,
-      savedAt
-        ? {
-            content,
-            updated_at: savedAt,
-          }
-        : null
-    );
-
-    return savedAt;
   };
 
   const handleAssignmentSubmissionChange = (event) => {
     const nextContent = event.target.value;
     setAssignmentSubmission(nextContent);
-    if (rememberDraftsEnabled) {
-      persistAssignmentDraftLocally(nextContent);
+    setAssignmentDraftDirty(true);
+    const nextStatus = rememberDraftsEnabled ? 'pending' : 'memory-only';
+    setAssignmentDraftStatus(nextStatus);
+    if (activeAssignmentMemoryContext) {
+      saveAssignmentMemory(activeAssignmentMemoryContext, {
+        content: nextContent,
+        revision: assignmentDraftRevision,
+        savedAt: assignmentDraftSavedAt,
+        dirty: true,
+        status: nextStatus,
+      });
     }
   };
 
-  const closeAssignmentModal = () => {
-    if (assignmentDraftReady) {
-      persistAssignmentDraftLocally(assignmentSubmission);
-    }
+  const assignmentRequestContext = (assignmentId) => ({
+    classId: String(classId ?? ''),
+    userId: String(assignmentDraftUserId ?? ''),
+    assignmentId: String(assignmentId),
+  });
+
+  const isCurrentAssignmentClass = (context, requestVersion) => {
+    const current = latestAssignmentContextRef.current;
+    return (
+      requestVersion === assignmentDraftRequestRef.current
+      && current?.classId === context.classId
+      && current?.userId === context.userId
+    );
+  };
+
+  const isCurrentAssignmentRequest = (context, requestVersion) => (
+    isCurrentAssignmentClass(context, requestVersion)
+    && latestAssignmentContextRef.current?.assignmentId === context.assignmentId
+  );
+
+  const isCanceledAssignmentRequest = (error) => (
+    error?.code === 'ERR_CANCELED'
+    || error?.name === 'CanceledError'
+    || error?.name === 'AbortError'
+  );
+
+  const resetAssignmentModalState = () => {
     setShowAssignmentModal(false);
     setActiveAssignment(null);
+    setAssignmentSubmission('');
     setAssignmentDraftReady(false);
     setAssignmentDraftSavedAt(null);
+    setAssignmentDraftStatus('idle');
+    setAssignmentDraftDirty(false);
+    setAssignmentDraftRevision(0);
+    setAssignmentDraftClosing(false);
+    setAssignmentSubmitting(false);
+  };
+
+  const dismissAssignmentModal = () => {
+    assignmentDraftRequestRef.current += 1;
+    assignmentDraftAbortRef.current?.abort();
+    assignmentDraftAbortRef.current = null;
+    resetAssignmentModalState();
+  };
+
+  const closeAssignmentModal = async () => {
+    if (
+      !rememberDraftsEnabled
+      || !assignmentDraftReady
+      || !assignmentDraftDirty
+      || !activeAssignmentId
+    ) {
+      dismissAssignmentModal();
+      return;
+    }
+
+    assignmentDraftAbortRef.current?.abort();
+    const requestVersion = ++assignmentDraftRequestRef.current;
+    const requestContext = assignmentRequestContext(activeAssignmentId);
+    const abortController = new AbortController();
+    assignmentDraftAbortRef.current = abortController;
+    setAssignmentDraftClosing(true);
+    setAssignmentDraftStatus('saving');
+    try {
+      const serverDraft = await saveAssignmentDraft(
+        axios,
+        activeAssignmentId,
+        assignmentSubmission,
+        assignmentDraftRevision,
+        { signal: abortController.signal },
+      );
+      if (!isCurrentAssignmentRequest(requestContext, requestVersion)) return;
+
+      updateAssignmentDraftState(
+        activeAssignmentId,
+        serverDraft.hasDraft
+          ? {
+              content: serverDraft.content,
+              updated_at: serverDraft.savedAt,
+              revision: serverDraft.revision,
+            }
+          : null,
+        serverDraft.revision,
+      );
+      removeAssignmentMemory(requestContext);
+      resetAssignmentModalState();
+    } catch (error) {
+      if (
+        isCanceledAssignmentRequest(error)
+        || !isCurrentAssignmentRequest(requestContext, requestVersion)
+      ) {
+        return;
+      }
+      setAssignmentDraftStatus('error');
+      saveAssignmentMemory(requestContext, {
+        content: assignmentSubmission,
+        revision: assignmentDraftRevision,
+        savedAt: assignmentDraftSavedAt,
+        dirty: true,
+        status: 'error',
+      });
+      toast.error('Could not save your response. Keep this tab open and try again.');
+    } finally {
+      if (assignmentDraftAbortRef.current === abortController) {
+        assignmentDraftAbortRef.current = null;
+      }
+      if (isCurrentAssignmentRequest(requestContext, requestVersion)) {
+        setAssignmentDraftClosing(false);
+      }
+    }
+  };
+
+  const discardUnsavedAssignmentChanges = () => {
+    if (!confirm('Discard these unsaved assignment changes? This cannot be undone.')) {
+      return;
+    }
+    if (activeAssignmentMemoryContext) {
+      removeAssignmentMemory(activeAssignmentMemoryContext);
+    }
+    dismissAssignmentModal();
   };
 
   const openAssignmentModal = async (assignment) => {
-    const localDraft = rememberDraftsEnabled ? readAssignmentDraft({
+    assignmentDraftAbortRef.current?.abort();
+    assignmentDraftAbortRef.current = null;
+    const requestVersion = ++assignmentDraftRequestRef.current;
+    const fallbackContent = assignment.my_draft?.content || assignment.my_submission?.content || '';
+    const fallbackSavedAt = assignment.my_draft?.updated_at || null;
+    const fallbackRevision = assignment.my_draft?.revision ?? assignment.my_draft_revision ?? 0;
+    const memoryContext = {
+      userId: assignmentDraftUserId,
       classId,
       assignmentId: assignment.id,
-      userId: assignmentDraftUserId,
-    }) : { hasDraft: false, content: '', savedAt: null };
-
-    const fallbackContent = localDraft.hasDraft
-      ? localDraft.content
-      : (assignment.my_draft?.content || assignment.my_submission?.content || '');
-    const fallbackSavedAt = localDraft.savedAt || assignment.my_draft?.updated_at || null;
+    };
+    const remembered = getAssignmentMemory(memoryContext);
+    const cleanLoadError = Boolean(
+      remembered && !remembered.dirty && remembered.status === 'error'
+    );
+    const useRememberedWithoutLoad = Boolean(
+      remembered
+      && (
+        remembered.dirty
+        || ['pending', 'saving', 'memory-only'].includes(remembered.status)
+        || !rememberDraftsEnabled
+      )
+    );
 
     setActiveAssignment(assignment);
-    setAssignmentSubmission(fallbackContent);
-    setAssignmentDraftSavedAt(fallbackSavedAt);
+    setAssignmentSubmission(remembered?.content ?? fallbackContent);
+    setAssignmentDraftSavedAt(remembered?.savedAt ?? fallbackSavedAt);
+    setAssignmentDraftRevision(remembered?.revision ?? fallbackRevision);
     setShowAssignmentModal(true);
-    setAssignmentDraftReady(false);
+    setAssignmentDraftReady(Boolean(remembered) && !cleanLoadError);
+    setAssignmentDraftDirty(Boolean(remembered?.dirty));
+    setAssignmentDraftStatus(
+      cleanLoadError
+        ? 'loading'
+        : remembered?.status
+      || (rememberDraftsEnabled ? 'loading' : 'memory-only')
+    );
+
+    if (useRememberedWithoutLoad) {
+      if (remembered.dirty && remembered.status !== 'error') {
+        setAssignmentDraftStatus(rememberDraftsEnabled ? 'pending' : 'memory-only');
+      }
+      return;
+    }
 
     if (!rememberDraftsEnabled) {
       setAssignmentDraftReady(true);
@@ -1977,67 +2128,147 @@ const ClassFeed = () => {
     }
 
     try {
-      const response = await axios.get(`/assignments/${assignment.id}/draft`);
+      const serverDraft = await loadAssignmentDraft(axios, assignment.id);
+      if (requestVersion !== assignmentDraftRequestRef.current) return;
 
-      const serverHasDraft = response.data?.has_draft;
-      const serverSavedAt = response.data?.saved_at || null;
-      const localSavedAtMs = localDraft.savedAt ? new Date(localDraft.savedAt).getTime() : 0;
-      const serverSavedAtMs = serverSavedAt ? new Date(serverSavedAt).getTime() : 0;
-
-      if (serverHasDraft && serverSavedAtMs >= localSavedAtMs) {
-        setAssignmentSubmission(response.data.content || '');
-        setAssignmentDraftSavedAt(serverSavedAt);
-        writeAssignmentDraft({
-          classId,
-          assignmentId: assignment.id,
-          userId: assignmentDraftUserId,
-          content: response.data.content || '',
-          savedAt: serverSavedAt,
+      const recoveredContent = serverDraft.hasDraft
+        ? serverDraft.content
+        : (assignment.my_submission?.content || '');
+      setAssignmentSubmission(recoveredContent);
+      setAssignmentDraftSavedAt(serverDraft.savedAt);
+      setAssignmentDraftRevision(serverDraft.revision);
+      setAssignmentDraftDirty(false);
+      setAssignmentDraftStatus(serverDraft.hasDraft ? 'saved' : 'idle');
+      saveAssignmentMemory(memoryContext, {
+        content: recoveredContent,
+        revision: serverDraft.revision,
+        savedAt: serverDraft.savedAt,
+        dirty: false,
+        status: serverDraft.hasDraft ? 'saved' : 'idle',
+      });
+      updateAssignmentDraftState(
+        assignment.id,
+        serverDraft.hasDraft
+          ? {
+              content: serverDraft.content,
+              updated_at: serverDraft.savedAt,
+              revision: serverDraft.revision,
+            }
+          : null,
+        serverDraft.revision,
+      );
+    } catch {
+      if (requestVersion === assignmentDraftRequestRef.current) {
+        setAssignmentDraftStatus('error');
+        saveAssignmentMemory(memoryContext, {
+          content: fallbackContent,
+          revision: fallbackRevision,
+          savedAt: fallbackSavedAt,
+          dirty: false,
+          status: 'error',
         });
-        updateAssignmentDraftState(assignment.id, {
-          content: response.data.content || '',
-          updated_at: serverSavedAt,
-        });
-      } else if (!serverHasDraft && !localDraft.hasDraft) {
-        setAssignmentDraftSavedAt(null);
-        updateAssignmentDraftState(assignment.id, null);
       }
-    } catch (error) {
-      console.error('Error loading assignment draft:', error);
     } finally {
-      setAssignmentDraftReady(true);
+      if (requestVersion === assignmentDraftRequestRef.current) {
+        setAssignmentDraftReady(true);
+      }
     }
+  };
+
+  const retryAssignmentDraftLoad = () => {
+    if (!activeAssignment) return;
+    if (activeAssignmentMemoryContext) {
+      removeAssignmentMemory(activeAssignmentMemoryContext);
+    }
+    openAssignmentModal(activeAssignment);
   };
 
   const handleSubmitAssignment = async () => {
     if (!activeAssignment) return;
+    assignmentDraftAbortRef.current?.abort();
+    const requestVersion = ++assignmentDraftRequestRef.current;
+    const requestContext = assignmentRequestContext(activeAssignment.id);
+    const abortController = new AbortController();
+    assignmentDraftAbortRef.current = abortController;
+    setAssignmentSubmitting(true);
+
+    let submitted;
     try {
-      setAssignmentSubmitting(true);
-      await axios.post(
-        `/assignments/${activeAssignment.id}/submit`,
-        { content: assignmentSubmission }
+      submitted = await submitAssignment(
+        axios,
+        activeAssignment.id,
+        assignmentSubmission,
+        assignmentDraftRevision,
+        { signal: abortController.signal },
       );
-
-      clearAssignmentDraft({
-        classId,
-        assignmentId: activeAssignment.id,
-        userId: assignmentDraftUserId,
-      });
-      updateAssignmentDraftState(activeAssignment.id, null);
-      await refreshAssignments();
-
-      closeAssignmentModal();
-      setAssignmentSubmission('');
-      toast.success('Assignment submitted successfully!');
     } catch (error) {
-      console.error('Error submitting assignment:', error);
+      const requestIsCurrent = isCurrentAssignmentRequest(
+        requestContext,
+        requestVersion,
+      );
+      if (assignmentDraftAbortRef.current === abortController) {
+        assignmentDraftAbortRef.current = null;
+      }
+      if (
+        isCanceledAssignmentRequest(error)
+        || !requestIsCurrent
+      ) {
+        if (requestIsCurrent) setAssignmentSubmitting(false);
+        return;
+      }
+      setAssignmentDraftStatus('error');
+      setAssignmentDraftDirty(true);
+      saveAssignmentMemory(requestContext, {
+        content: assignmentSubmission,
+        revision: assignmentDraftRevision,
+        savedAt: assignmentDraftSavedAt,
+        dirty: true,
+        status: 'error',
+      });
       toast.error(error.response?.data?.detail || 'Failed to submit assignment');
-    } finally {
       setAssignmentSubmitting(false);
+      return;
+    }
+
+    if (!isCurrentAssignmentRequest(requestContext, requestVersion)) return;
+
+    setAssignments((previousAssignments) => previousAssignments.map((assignment) => (
+      assignment.id === activeAssignment.id
+        ? {
+            ...assignment,
+            my_submission: submitted,
+            my_draft: null,
+            my_draft_revision: submitted.draft_revision,
+          }
+        : assignment
+    )));
+    removeAssignmentMemory(requestContext);
+    resetAssignmentModalState();
+    toast.success('Assignment submitted successfully!');
+
+    try {
+      const assignmentsResponse = await axios.get(
+        `/classes/${requestContext.classId}/assignments`,
+        { signal: abortController.signal },
+      );
+      if (isCurrentAssignmentClass(requestContext, requestVersion)) {
+        setAssignments(assignmentsResponse.data || []);
+      }
+    } catch {
+      // Submission already succeeded and local state is authoritative until
+      // the next normal refresh. Do not resurrect the submitted draft.
+    } finally {
+      if (assignmentDraftAbortRef.current === abortController) {
+        assignmentDraftAbortRef.current = null;
+      }
+      if (isCurrentAssignmentClass(requestContext, requestVersion)) {
+        setAssignmentSubmitting(false);
+      }
     }
   };
 
   const updateExpandableList = (id, field, value) => {
+    setPostComposerDirty(true);
     setPostContent(prev => ({
       ...prev,
       expandableLists: prev.expandableLists.map(list => 
@@ -2047,6 +2278,7 @@ const ClassFeed = () => {
   };
 
   const handleRemoveMedia = (type, index) => {
+    setPostComposerDirty(true);
     setPostContent(prev => ({
       ...prev,
       [type]: prev[type].filter((_, i) => i !== index)
@@ -2120,6 +2352,12 @@ const ClassFeed = () => {
   };
 
   const visiblePostDrafts = postDrafts.filter((draft) => {
+    if (
+      String(draft.userId) !== String(postDraftUserId)
+      || String(draft.classId) !== String(classId)
+    ) {
+      return false;
+    }
     const title = (draft.postTitle || '').toLowerCase();
     const contentText = stripHtml(draft.content || '').toLowerCase();
     const label = draft.editingPostId ? `edit post ${draft.editingPostId}` : 'new post draft';
@@ -2150,16 +2388,8 @@ const ClassFeed = () => {
 
     setPostTitle(draftPayload.postTitle || '');
     setContent(normalizePostContentForEditor(draftPayload.content || ''));
-    setPostContent(clonePostContent(draftPayload.postContent));
-  };
-
-  const refreshPostDrafts = () => {
-    setPostDrafts(
-      listPostDrafts({
-        classId,
-        userId: postDraftUserId,
-      })
-    );
+    setPostContent(clonePrivatePostContent(draftPayload.postContent));
+    setPostComposerDirty(false);
   };
 
   const persistCurrentPostDraft = (savedAt = null, { silent = false } = {}) => {
@@ -2170,7 +2400,7 @@ const ClassFeed = () => {
       return null;
     }
 
-    const nextSavedAt = writePostDraft({
+    const result = savePostDraftMemory({
       classId,
       userId: postDraftUserId,
       editingPostId,
@@ -2182,9 +2412,9 @@ const ClassFeed = () => {
       savedAt,
     });
 
-    setPostDraftSavedAt(nextSavedAt);
-    refreshPostDrafts();
-    return nextSavedAt;
+    setPostDraftSavedAt(result.savedAt);
+    setPostComposerDirty(false);
+    return result.savedAt;
   };
 
   const resetPostComposer = () => {
@@ -2192,14 +2422,16 @@ const ClassFeed = () => {
     setContent('');
     setPostContent(createEmptyPostContent());
     setPostDraftSavedAt(null);
+    setPostComposerDirty(false);
   };
 
   const closePostComposer = ({ persistDraft = true } = {}) => {
-    if (!persistDraft) {
-      suppressPostDraftAutosaveRef.current = true;
-    }
-
-    if (showNewPostForm && rememberDraftsEnabled && persistDraft) {
+    if (
+      showNewPostForm
+      && rememberDraftsEnabled
+      && persistDraft
+      && postComposerDirty
+    ) {
       persistCurrentPostDraft(null, { silent: true });
     }
     resetPostComposer();
@@ -2219,7 +2451,7 @@ const ClassFeed = () => {
     }
 
     resetPostComposer();
-    setEditingPostId(draft.editingPostId || null);
+    setEditingPostId(draft.editingPostId ?? null);
     applyPostDraftToComposer({
       postTitle: draft.postTitle,
       content: draft.content,
@@ -2231,16 +2463,20 @@ const ClassFeed = () => {
   };
 
   const deletePostDraftByScope = (scope) => {
-    clearPostDraft({
+    removePostDraftMemory({
       classId,
       userId: postDraftUserId,
       editingPostId: scope.startsWith('edit:') ? Number(scope.split(':')[1]) : null,
     });
-    refreshPostDrafts();
     toast.success('Draft deleted');
   };
 
   const handleSignOut = async () => {
+    dismissAssignmentModal();
+    clearPrivateDraftMemory();
+    resetPostComposer();
+    setEditingPostId(null);
+    setShowNewPostForm(false);
     try {
       await logoutBrowserSession();
       setUserInfo(null);
@@ -2271,15 +2507,15 @@ const ClassFeed = () => {
       setContent(normalizePostContentForEditor(post.content || ''));
       setEditingPostId(postId);
 
-      const draft = readPostDraft({
+      const draft = getPostDraft({
         classId,
         userId: postDraftUserId,
         editingPostId: postId,
       });
-      if (draft.hasDraft && draft.payload) {
-        applyPostDraftToComposer(draft.payload);
+      if (draft) {
+        applyPostDraftToComposer(draft);
         setPostDraftSavedAt(draft.savedAt);
-        toast.success('Loaded your saved edit draft');
+        toast.success('Loaded your in-tab edit draft');
       }
 
       setShowNewPostForm(true);
@@ -2347,12 +2583,11 @@ const ClassFeed = () => {
           post.id === editingPostId ? { ...post, ...response.data } : post
         )));
 
-        clearPostDraft({
+        removePostDraftMemory({
           classId,
           userId: postDraftUserId,
           editingPostId,
         });
-        refreshPostDrafts();
         
         toast.success('Post updated successfully');
       } else {
@@ -2365,19 +2600,17 @@ const ClassFeed = () => {
         // Add the new post to the state
         setPosts((prevPosts) => [response.data, ...prevPosts]);
 
-        clearPostDraft({
+        removePostDraftMemory({
           classId,
           userId: postDraftUserId,
           editingPostId: null,
         });
-        refreshPostDrafts();
         
         toast.success('Post created successfully');
       }
       
       closePostComposer({ persistDraft: false });
-    } catch (error) {
-      console.error('Error saving post:', error);
+    } catch {
       toast.error(editingPostId ? 'Failed to update post' : 'Failed to create post');
     } finally {
       setLoading(false);
@@ -2387,7 +2620,7 @@ const ClassFeed = () => {
   const handleSavePostDraft = () => {
     const savedAt = persistCurrentPostDraft();
     if (savedAt) {
-      toast.success('Post draft saved');
+      toast.success('Post draft saved in this tab');
     } else {
       toast.error('Nothing to save in draft yet');
     }
@@ -2398,13 +2631,13 @@ const ClassFeed = () => {
       return;
     }
 
-    clearPostDraft({
+    removePostDraftMemory({
       classId,
       userId: postDraftUserId,
       editingPostId,
     });
-    refreshPostDrafts();
     setPostDraftSavedAt(null);
+    setPostComposerDirty(false);
 
     if (!editingPostId) {
       resetPostComposer();
@@ -2419,9 +2652,9 @@ const ClassFeed = () => {
       setPostTitle(post.title || '');
       setContent(normalizePostContentForEditor(post.content || ''));
       setPostContent(createEmptyPostContent());
+      setPostComposerDirty(false);
       toast.success('Draft discarded and post reset');
-    } catch (error) {
-      console.error('Error restoring post after draft discard:', error);
+    } catch {
       resetPostComposer();
       toast.success('Draft discarded');
     }
@@ -2836,7 +3069,7 @@ const ClassFeed = () => {
                 <div>
                   <h2 className="text-xl font-semibold">Your Drafts</h2>
                   <p className="text-sm text-gray-500">
-                    Only visible to you. Click Resume to continue writing.
+                    Only visible in this tab and cleared on refresh or sign out. Click Resume to continue writing.
                   </p>
                 </div>
                 <span className="text-xs font-semibold px-3 py-1 rounded-full bg-amber-500/10 text-amber-500">
@@ -2942,6 +3175,7 @@ const ClassFeed = () => {
                           e.stopPropagation();
                           setMenuOpen(menuOpen === post.id ? null : post.id);
                         }}
+                        aria-label={`Post actions for ${post.title || 'untitled post'}`}
                         className="p-1 rounded-full hover:bg-gray-200 transition-colors"
                       >
                         <svg className="w-5 h-5 text-gray-500" fill="currentColor" viewBox="0 0 20 20">
@@ -3218,17 +3452,26 @@ const ClassFeed = () => {
                       <span className="font-medium text-gray-700">Your Response</span>
                       <span className="text-xs text-gray-500">
                         {!rememberDraftsEnabled
-                          ? 'Draft autosave is turned off in Settings'
+                          ? 'Kept only in this tab; account autosave is off'
                           : !assignmentDraftReady
                           ? 'Loading saved draft...'
+                          : assignmentDraftClosing || assignmentDraftStatus === 'saving'
+                          ? 'Saving securely to your account...'
+                          : assignmentDraftStatus === 'error' && !assignmentDraftDirty
+                          ? 'Could not load your saved draft; retry when ready'
+                          : assignmentDraftStatus === 'error'
+                          ? 'Autosave failed — keep this tab open'
+                          : assignmentDraftStatus === 'pending'
+                          ? 'Waiting to save securely...'
                           : assignmentDraftSavedAt
-                          ? `Autosaved ${new Date(assignmentDraftSavedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
-                          : 'Draft autosaves to your account while you type'}
+                          ? `Saved to your account ${new Date(assignmentDraftSavedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+                          : 'Draft autosaves securely to your account'}
                       </span>
                     </div>
                     <textarea
                       value={assignmentSubmission}
                       onChange={handleAssignmentSubmissionChange}
+                      disabled={!assignmentDraftReady || assignmentDraftClosing || assignmentSubmitting}
                       rows={14}
                       placeholder="Write your submission..."
                       className="w-full min-h-[320px] p-3 rounded-lg border bg-white border-gray-300 text-gray-900"
@@ -3237,15 +3480,34 @@ const ClassFeed = () => {
                   </div>
                 </div>
                 <div className="mt-4 flex justify-end gap-3">
+                  {assignmentDraftStatus === 'error' && !assignmentDraftDirty && (
+                    <button
+                      onClick={retryAssignmentDraftLoad}
+                      disabled={assignmentDraftClosing || assignmentSubmitting}
+                      className="px-4 py-2 rounded-lg bg-amber-100 text-amber-700"
+                    >
+                      Retry loading
+                    </button>
+                  )}
+                  {assignmentDraftStatus === 'error' && assignmentDraftDirty && (
+                    <button
+                      onClick={discardUnsavedAssignmentChanges}
+                      disabled={assignmentDraftClosing || assignmentSubmitting}
+                      className="px-4 py-2 rounded-lg bg-rose-100 text-rose-700"
+                    >
+                      Discard unsaved changes
+                    </button>
+                  )}
                   <button
                     onClick={closeAssignmentModal}
+                    disabled={assignmentDraftClosing || assignmentSubmitting}
                     className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700"
                   >
-                    Cancel
+                    {assignmentDraftClosing ? 'Saving...' : 'Cancel'}
                   </button>
                   <button
                     onClick={handleSubmitAssignment}
-                    disabled={assignmentSubmitting}
+                    disabled={assignmentSubmitting || assignmentDraftClosing || !assignmentDraftReady}
                     className="px-4 py-2 rounded-lg text-white bg-blue-600 hover:bg-blue-500"
                   >
                     {assignmentSubmitting ? 'Submitting...' : 'Submit'}
@@ -3310,7 +3572,10 @@ const ClassFeed = () => {
                   type="text"
                     id="post-title"
                     value={postTitle}
-                    onChange={(e) => setPostTitle(e.target.value)}
+                    onChange={(e) => {
+                      setPostTitle(e.target.value);
+                      setPostComposerDirty(true);
+                    }}
                     className="w-full p-3 rounded-lg border text-lg bg-white border-blue-200 text-gray-800"
                     placeholder="Enter a descriptive title for your post"
                   required
@@ -3334,6 +3599,7 @@ const ClassFeed = () => {
                       value={content}
                       onEditorChange={(content) => {
                         setContent(content);
+                        setPostComposerDirty(true);
                       }}
                     />
                   </Suspense>
@@ -3356,6 +3622,7 @@ const ClassFeed = () => {
                         </div>
                         <button
                           onClick={() => {
+                            setPostComposerDirty(true);
                             setPostContent(prev => ({
                               ...prev,
                               codeSnippets: prev.codeSnippets.filter(s => s.id !== snippet.id)
@@ -3400,6 +3667,7 @@ const ClassFeed = () => {
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
+                          setPostComposerDirty(true);
                           setPostContent(prev => ({
                             ...prev,
                             expandableLists: prev.expandableLists.filter(item => item.id !== list.id)
@@ -3428,10 +3696,10 @@ const ClassFeed = () => {
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-xs text-gray-500">
                     {!rememberDraftsEnabled
-                      ? 'Draft autosave is turned off in Settings'
+                      ? 'Kept only in this tab until you close the editor'
                       : postDraftSavedAt
-                      ? `Autosaved ${new Date(postDraftSavedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
-                      : 'Draft autosaves while you type'}
+                      ? `Kept only in this tab · Saved ${new Date(postDraftSavedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+                      : 'Kept only in this tab; it is cleared on refresh or sign out'}
                   </span>
                   <div className="flex gap-4">
                     <motion.button

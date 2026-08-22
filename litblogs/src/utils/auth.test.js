@@ -98,6 +98,18 @@ describe("browser session metadata", () => {
     expect(sessionStorage.length).toBe(0);
     expect(localStorage.getItem("darkMode")).toBe("true");
   });
+
+  it("purges historical drafts from both storage scopes during app startup", () => {
+    localStorage.setItem("assignmentDraft:1:2:3", "private assignment draft");
+    sessionStorage.setItem("postDraft:1:2:new", "private post draft");
+    sessionStorage.setItem("user_info", "active-session-user");
+
+    auth.purgeLegacyPersistentAuth();
+
+    expect(localStorage.getItem("assignmentDraft:1:2:3")).toBeNull();
+    expect(sessionStorage.getItem("postDraft:1:2:new")).toBeNull();
+    expect(sessionStorage.getItem("user_info")).toBe("active-session-user");
+  });
 });
 
 describe("Axios cookie and CSRF policy", () => {
@@ -213,7 +225,7 @@ describe("Axios cookie and CSRF policy", () => {
     expect(sessionStorage.getItem("user_info")).toBeNull();
   });
 
-  it("keeps local session state when the server does not confirm logout", async () => {
+  it("keeps session metadata but purges legacy private drafts when logout is not confirmed", async () => {
     const client = axios.create({
       adapter: async (config) => {
         throw new axios.AxiosError("synthetic network failure", "ERR_NETWORK", config);
@@ -226,11 +238,13 @@ describe("Axios cookie and CSRF policy", () => {
     setCsrfCookie();
     sessionStorage.setItem("user_info", "active-session-user");
     localStorage.setItem("assignmentDraft:1:2:3", "active draft");
+    sessionStorage.setItem("postDraft:1:2:new", "active post draft");
 
     await expect(auth.logoutBrowserSession(client)).rejects.toThrow("synthetic network failure");
 
     expect(sessionStorage.getItem("user_info")).toBe("active-session-user");
-    expect(localStorage.getItem("assignmentDraft:1:2:3")).toBe("active draft");
+    expect(localStorage.getItem("assignmentDraft:1:2:3")).toBeNull();
+    expect(sessionStorage.getItem("postDraft:1:2:new")).toBeNull();
   });
 
   it("redacts the CSRF cookie value before request errors reach application logs", async () => {

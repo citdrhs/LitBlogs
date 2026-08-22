@@ -19,6 +19,7 @@ import PrivacyPolicy from './PrivacyPolicy';
 import TermsOfService from './TermsOfService';
 import { useState, useEffect } from 'react';
 import { applyGlobalUserSettings, getLocalUserSettings } from './utils/userSettings';
+import { PrivateDraftProvider } from './context/PrivateDraftContext';
 
 function App() {
   const [darkMode, setDarkMode] = useState(() => {
@@ -50,27 +51,29 @@ function App() {
   }, []);
 
   return (
-    <Routes>
-      <Route path="/" element={<LitBlogs darkMode={darkMode} toggleDarkMode={toggleDarkMode} />} />
-      <Route path="/help" element={<Help />} />
-      <Route path="/sign-in" element={<SignIn />} />
-      <Route path="/sign-up" element={<SignUp />} />
-      <Route path="/teacher-dashboard" element={<ProtectedRoute><TeacherDashboard /></ProtectedRoute>} />
-      <Route path="/class-feed" element={<ProtectedRoute><ClassFeed /></ProtectedRoute>} />
-      <Route path="/class-feed/:classId" element={<ProtectedRoute><ClassFeed /></ProtectedRoute>} />
-      <Route path="/class/:classId/assignment/:assignmentId/submissions" element={<ProtectedRoute><AssignmentSubmissions /></ProtectedRoute>} />
-      <Route path="/admin-dashboard" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
-      <Route path="/class/:classId/post/:postId" element={<ProtectedRoute><PostView /></ProtectedRoute>} />
-      <Route path="/class/:classId/student/:studentId" element={<ProtectedRoute><StudentDetails darkMode={darkMode} /></ProtectedRoute>} />
-      <Route path="/student-hub" element={<ProtectedRoute><StudentHub /></ProtectedRoute>} />
-      <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
-      <Route path="/profile/:userId" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
-      <Route path="/settings" element={<ProtectedRoute><Settings onDarkModeChange={setDarkMode} /></ProtectedRoute>} />
-      <Route path="/forgot-password" element={<ForgotPassword />} />
-      <Route path="/reset-password" element={<ResetPassword />} />
-      <Route path="/privacy-policy" element={<PrivacyPolicy />} />
-      <Route path="/terms" element={<TermsOfService />} />
-    </Routes>
+    <PrivateDraftProvider>
+      <Routes>
+        <Route path="/" element={<LitBlogs darkMode={darkMode} toggleDarkMode={toggleDarkMode} />} />
+        <Route path="/help" element={<Help />} />
+        <Route path="/sign-in" element={<SignIn />} />
+        <Route path="/sign-up" element={<SignUp />} />
+        <Route path="/teacher-dashboard" element={<ProtectedRoute><TeacherDashboard /></ProtectedRoute>} />
+        <Route path="/class-feed" element={<ProtectedRoute><ClassFeed /></ProtectedRoute>} />
+        <Route path="/class-feed/:classId" element={<ProtectedRoute><ClassFeed /></ProtectedRoute>} />
+        <Route path="/class/:classId/assignment/:assignmentId/submissions" element={<ProtectedRoute><AssignmentSubmissions /></ProtectedRoute>} />
+        <Route path="/admin-dashboard" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
+        <Route path="/class/:classId/post/:postId" element={<ProtectedRoute><PostView /></ProtectedRoute>} />
+        <Route path="/class/:classId/student/:studentId" element={<ProtectedRoute><StudentDetails darkMode={darkMode} /></ProtectedRoute>} />
+        <Route path="/student-hub" element={<ProtectedRoute><StudentHub /></ProtectedRoute>} />
+        <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
+        <Route path="/profile/:userId" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
+        <Route path="/settings" element={<ProtectedRoute><Settings onDarkModeChange={setDarkMode} /></ProtectedRoute>} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/privacy-policy" element={<PrivacyPolicy />} />
+        <Route path="/terms" element={<TermsOfService />} />
+      </Routes>
+    </PrivateDraftProvider>
   );
 }
 

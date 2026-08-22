@@ -568,7 +568,7 @@ const Settings = ({ onDarkModeChange }) => {
             />
             <ToggleRow
               label="Remember unsent drafts"
-              description="Keep draft content in local storage for recovery."
+              description="Assignment drafts are saved securely to your account; post drafts stay only in the current tab."
               enabled={settings.rememberDrafts}
               onToggle={() => toggleSetting("rememberDrafts")}
               darkMode={settings.darkMode}

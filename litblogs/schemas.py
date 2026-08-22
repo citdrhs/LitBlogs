@@ -1,7 +1,9 @@
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, EmailStr, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+MAX_ASSIGNMENT_CONTENT_LENGTH = 1_000_000
 
 
 # Blog schemas
@@ -123,10 +125,18 @@ class AssignmentResponse(BaseModel):
     visibility: str
 
 class AssignmentSubmissionCreate(BaseModel):
-    content: str | None = None
+    content: str | None = Field(
+        default=None,
+        max_length=MAX_ASSIGNMENT_CONTENT_LENGTH,
+    )
+    expected_draft_revision: int = Field(ge=0, le=2_147_483_646)
 
 class AssignmentDraftUpdate(BaseModel):
-    content: str | None = None
+    content: str | None = Field(
+        default=None,
+        max_length=MAX_ASSIGNMENT_CONTENT_LENGTH,
+    )
+    expected_revision: int = Field(ge=0, le=2_147_483_646)
 
 class AssignmentSubmissionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
