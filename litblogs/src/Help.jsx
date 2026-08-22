@@ -20,7 +20,6 @@ const Help = () => {
   
   const videoRef = useRef(null);
   const playerRef = useRef(null);
-  useRef(null);
 
   useEffect(() => {
     const storedDarkMode = JSON.parse(localStorage.getItem('darkMode'));

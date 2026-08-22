@@ -33,6 +33,10 @@ export default [
           message: 'Do not discard the value returned by useState.',
         },
         {
+          selector: 'ExpressionStatement > CallExpression[callee.name="useRef"]',
+          message: 'Do not discard the value returned by useRef.',
+        },
+        {
           selector: 'ExpressionStatement > CallExpression[callee.name="useNavigate"]',
           message: 'Do not discard the value returned by useNavigate.',
         },
