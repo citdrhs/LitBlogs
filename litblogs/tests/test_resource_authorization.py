@@ -740,12 +740,12 @@ def test_archived_class_rejects_content_mutations(client, authorization_scenario
         client.put(
             f"/api/assignments/{scenario['assignment_a']}/draft",
             headers=scenario["student_a_headers"],
-            json={"content": "must not persist"},
+            json={"content": "must not persist", "expected_revision": 0},
         ),
         client.post(
             f"/api/assignments/{scenario['assignment_a']}/submit",
             headers=scenario["student_a_headers"],
-            json={"content": "must not persist"},
+            json={"content": "must not persist", "expected_draft_revision": 0},
         ),
         client.post(
             (
@@ -840,12 +840,12 @@ def test_oversized_or_malformed_post_bodies_are_rejected_before_persistence(
         (
             "put",
             "/api/assignments/{assignment_a}/draft",
-            {"content": "x" * 100_001},
+            {"content": "x" * 1_000_001, "expected_revision": 0},
         ),
         (
             "post",
             "/api/assignments/{assignment_a}/submit",
-            {"content": "x" * 100_001},
+            {"content": "x" * 1_000_001, "expected_draft_revision": 0},
         ),
         (
             "post",
@@ -1400,7 +1400,7 @@ def test_student_and_teacher_assignment_journey(client, authorization_scenario):
     save_draft_response = client.put(
         f"/api/assignments/{assignment_id}/draft",
         headers=scenario["student_a_headers"],
-        json={"content": "Private journey draft"},
+        json={"content": "Private journey draft", "expected_revision": 0},
     )
     get_draft_response = client.get(
         f"/api/assignments/{assignment_id}/draft",
@@ -1413,7 +1413,10 @@ def test_student_and_teacher_assignment_journey(client, authorization_scenario):
     submit_response = client.post(
         f"/api/assignments/{assignment_id}/submit",
         headers=scenario["student_a_headers"],
-        json={"content": "Private journey submission"},
+        json={
+            "content": "Private journey submission",
+            "expected_draft_revision": save_draft_response.json()["revision"],
+        },
     )
     assert submit_response.status_code == 200
     submission_id = submit_response.json()["id"]
