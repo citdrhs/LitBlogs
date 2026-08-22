@@ -152,6 +152,16 @@ def validate_private_operator_directory(
     if os.name != "posix":
         return path
     expected_uid = os.geteuid() if required_owner_uid is None else required_owner_uid
+    try:
+        metadata = path.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise PostgresOperatorError(
+            f"The {purpose} custody could not be verified"
+        ) from exc
+    if metadata.st_uid != expected_uid:
+        raise PostgresOperatorError(
+            f"The {purpose} must be owned by the effective operator"
+        )
     _validate_trusted_directory_chain(
         path,
         purpose=purpose,

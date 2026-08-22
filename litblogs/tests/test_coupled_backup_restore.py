@@ -641,6 +641,8 @@ def test_upload_archive_refuses_non_synthetic_or_nonempty_restore_roots(tmp_path
 
     restore_root = tmp_path / "litblog_restore_uploads_20260822_a1"
     restore_root.mkdir()
+    if os.name == "posix":
+        restore_root.chmod(0o700)
     (restore_root / "existing").write_text("retain", encoding="utf-8")
     with pytest.raises(upload_snapshot_common.UploadSnapshotError, match="empty"):
         upload_snapshot_common.extract_upload_archive(uploads, restore_root, inventory)

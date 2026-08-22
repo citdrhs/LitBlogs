@@ -172,6 +172,15 @@ def _utc_now_aware() -> datetime:
     """Return aware UTC for TIMESTAMPTZ-backed upload lifecycle columns."""
     return datetime.now(UTC)
 
+
+def _utc_sort_timestamp(value: datetime | None) -> datetime:
+    if value is None:
+        return datetime.min.replace(tzinfo=UTC)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 try:
     from pywebpush import WebPushException, webpush
 except Exception:
@@ -1290,7 +1299,7 @@ def _assignment_due_soon(due_date: datetime, now_utc: datetime) -> bool:
 
     normalized_due = due_date
     if normalized_due.tzinfo is not None:
-        normalized_due = normalized_due.astimezone(tz=None).replace(tzinfo=None)
+        normalized_due = normalized_due.astimezone(UTC).replace(tzinfo=None)
 
     window_end = now_utc + timedelta(hours=24)
     return now_utc < normalized_due <= window_end
@@ -5453,7 +5462,10 @@ async def get_student_details(
             "timestamp": post_like.created_at,
         })
 
-    activity_timeline.sort(key=lambda item: item.get("timestamp") or datetime.min, reverse=True)
+    activity_timeline.sort(
+        key=lambda item: _utc_sort_timestamp(item.get("timestamp")),
+        reverse=True,
+    )
 
     recent_activity = [
         {

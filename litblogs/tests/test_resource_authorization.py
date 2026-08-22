@@ -2,7 +2,7 @@ import hashlib
 import inspect
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from email import message_from_string
 
 import pytest
@@ -1010,6 +1010,18 @@ def test_assignment_push_payload_deep_links_to_the_assignment_class():
     assert payload["url"] != "/class-feed"
 
 
+def test_assignment_due_soon_normalizes_aware_due_date_to_utc():
+    class NonUtcHostDatetime(datetime):
+        def astimezone(self, tz=None):
+            target_timezone = timezone(timedelta(hours=-4)) if tz is None else tz
+            return super().astimezone(target_timezone)
+
+    now_utc = datetime(2026, 8, 22, 11, 0)
+    due_utc = NonUtcHostDatetime(2026, 8, 22, 12, 0, tzinfo=UTC)
+
+    assert main._assignment_due_soon(due_utc, now_utc) is True
+
+
 def test_private_assignment_is_not_sent_to_enrolled_student_push_subscriptions(
     client,
     authorization_scenario,
@@ -1367,7 +1379,11 @@ def test_password_reset_delivery_worker_removes_token_on_failure(
         db.close()
 
 
-def test_student_and_teacher_class_social_journey(client, authorization_scenario):
+def test_student_and_teacher_class_social_journey(
+    client,
+    authorization_scenario,
+    monkeypatch,
+):
     scenario = authorization_scenario
     create_class_response = client.post(
         "/api/classes",
@@ -1433,10 +1449,24 @@ def test_student_and_teacher_class_social_journey(client, authorization_scenario
         f"/api/classes/{class_id}/students",
         headers=scenario["teacher_a_headers"],
     )
-    teacher_student_details = client.get(
-        f"/api/classes/{class_id}/students/{scenario['student_a']}",
-        headers=scenario["teacher_a_headers"],
-    )
+    original_ensure_enrolled_student = main._ensure_enrolled_student
+
+    def ensure_enrolled_student_with_postgres_timestamp(*args, **kwargs):
+        student, enrollment = original_ensure_enrolled_student(*args, **kwargs)
+        if enrollment.enrolled_at.tzinfo is None:
+            enrollment.enrolled_at = enrollment.enrolled_at.replace(tzinfo=UTC)
+        return student, enrollment
+
+    with monkeypatch.context() as postgres_timestamp_shape:
+        postgres_timestamp_shape.setattr(
+            main,
+            "_ensure_enrolled_student",
+            ensure_enrolled_student_with_postgres_timestamp,
+        )
+        teacher_student_details = client.get(
+            f"/api/classes/{class_id}/students/{scenario['student_a']}",
+            headers=scenario["teacher_a_headers"],
+        )
     teacher_student_posts = client.get(
         f"/api/classes/{class_id}/students/{scenario['student_a']}/posts",
         headers=scenario["teacher_a_headers"],

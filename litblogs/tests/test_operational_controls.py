@@ -147,11 +147,48 @@ def _write_release(root, short_sha, *, full_sha=None):
         f"commit={commit}\nbuilt_at_epoch=1787359200\n",
         encoding="utf-8",
     )
+    if os.name == "posix":
+        python_bin = release / ".venv" / "bin"
+        python_bin.mkdir(parents=True)
+        (python_bin / "python").symlink_to(Path(sys.executable).resolve(strict=True))
     return release_id, release
 
 
 def _release_commit(short_sha):
     return short_sha + ("a" * (40 - len(short_sha)))
+
+
+def _stat_result_with(metadata, *, owner_uid=None, mode=None):
+    fields = list(metadata)
+    if owner_uid is not None:
+        fields[stat.ST_UID] = owner_uid
+    if mode is not None:
+        fields[stat.ST_MODE] = mode
+    return os.stat_result(fields)
+
+
+@pytest.fixture
+def synthetic_trusted_release_python(monkeypatch):
+    """Keep unit tests independent of hosted-runner Python custody."""
+
+    trusted_python = Path(sys.executable).resolve(strict=True)
+    monkeypatch.setattr(release_switch, "_trusted_python", lambda: trusted_python)
+    return trusted_python
+
+
+@pytest.fixture
+def root_owned_release_lock_metadata(monkeypatch, synthetic_trusted_release_python):
+    """Exercise pointer behavior while preserving the real lock and flock path."""
+
+    if os.name != "posix":
+        return
+    real_fstat = os.fstat
+
+    def report_root_owned_lock(descriptor):
+        metadata = real_fstat(descriptor)
+        return _stat_result_with(metadata, owner_uid=0)
+
+    monkeypatch.setattr(release_switch.os, "fstat", report_root_owned_lock)
 
 
 def test_operator_scripts_are_tracked_as_portable_python_entry_points():
@@ -1353,7 +1390,87 @@ def test_release_mode_rejects_group_or_world_writable_artifacts():
     assert not release_switch.is_immutable_release_mode(0o666)
 
 
-def test_release_tree_rejects_unreviewed_application_symlinks(tmp_path):
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits required")
+def test_trusted_release_python_rejects_group_writable_custody(tmp_path, monkeypatch):
+    runtime = tmp_path / "python3.13"
+    runtime.write_bytes(b"synthetic interpreter")
+    runtime.chmod(0o775)
+    monkeypatch.setattr(release_switch.sys, "executable", str(runtime))
+    monkeypatch.setattr(
+        release_switch.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail(
+            "unsafe interpreter custody must fail before execution"
+        ),
+    )
+
+    with pytest.raises(release_switch.ReleaseSwitchError, match="unsafe custody"):
+        release_switch._trusted_python()
+
+
+def test_trusted_release_python_rejects_wrong_interpreter_version(tmp_path, monkeypatch):
+    runtime = tmp_path / "python3.13"
+    runtime.write_bytes(b"synthetic interpreter")
+    runtime.chmod(0o755)
+    monkeypatch.setattr(release_switch.sys, "executable", str(runtime))
+
+    def wrong_version(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="Python 3.12.10\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(release_switch.subprocess, "run", wrong_version)
+
+    with pytest.raises(release_switch.ReleaseSwitchError, match="reviewed Python 3.13"):
+        release_switch._trusted_python()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX ownership required")
+def test_release_lock_rejects_non_root_ownership(tmp_path, monkeypatch):
+    root = tmp_path / "litblogs"
+    root.mkdir()
+    real_fstat = os.fstat
+
+    def report_non_root_owner(descriptor):
+        return _stat_result_with(
+            real_fstat(descriptor),
+            owner_uid=max(1, os.geteuid()),
+        )
+
+    monkeypatch.setattr(release_switch.os, "fstat", report_non_root_owner)
+
+    with pytest.raises(release_switch.ReleaseSwitchError, match="unsafe custody"):
+        with release_switch._release_lock(root):
+            pytest.fail("a non-root release lock must never be acquired")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits required")
+def test_release_lock_rejects_group_writable_mode(tmp_path, monkeypatch):
+    root = tmp_path / "litblogs"
+    root.mkdir()
+    real_fstat = os.fstat
+
+    def report_group_writable_mode(descriptor):
+        metadata = real_fstat(descriptor)
+        return _stat_result_with(
+            metadata,
+            owner_uid=0,
+            mode=metadata.st_mode | stat.S_IWGRP,
+        )
+
+    monkeypatch.setattr(release_switch.os, "fstat", report_group_writable_mode)
+
+    with pytest.raises(release_switch.ReleaseSwitchError, match="unsafe custody"):
+        with release_switch._release_lock(root):
+            pytest.fail("a group-writable release lock must never be acquired")
+
+
+def test_release_tree_rejects_unreviewed_application_symlinks(
+    tmp_path, synthetic_trusted_release_python
+):
     release = tmp_path / "release"
     (release / "litblogs").mkdir(parents=True)
     outside = tmp_path / "outside.py"
@@ -1367,12 +1484,25 @@ def test_release_tree_rejects_unreviewed_application_symlinks(tmp_path):
         release_switch._validate_release_tree(release)
 
 
-def test_release_activation_fsyncs_the_pointer_directory(tmp_path, monkeypatch):
+def test_release_activation_fsyncs_the_pointer_directory(
+    tmp_path, monkeypatch, root_owned_release_lock_metadata
+):
     root = tmp_path / "litblogs"
     (root / "releases").mkdir(parents=True)
     release_id, _release = _write_release(root, "123456789abc")
-    synced = []
-    monkeypatch.setattr(release_switch, "_fsync_directory", synced.append)
+    events = []
+    real_replace = os.replace
+
+    def record_replace(source, destination):
+        events.append(("replace", Path(destination)))
+        real_replace(source, destination)
+
+    monkeypatch.setattr(release_switch.os, "replace", record_replace)
+    monkeypatch.setattr(
+        release_switch,
+        "_fsync_directory",
+        lambda directory: events.append(("fsync", Path(directory))),
+    )
 
     try:
         release_switch.activate_release(
@@ -1384,7 +1514,12 @@ def test_release_activation_fsyncs_the_pointer_directory(tmp_path, monkeypatch):
     except OSError as exc:
         pytest.skip(f"symlinks unavailable in this test environment: {exc}")
 
-    assert synced and set(synced) == {root}
+    expected_events = [
+        *(([("fsync", root)]) if os.name == "posix" else []),
+        ("replace", root / "current"),
+        ("fsync", root),
+    ]
+    assert events == expected_events
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits required")
@@ -1404,7 +1539,9 @@ def test_release_activation_rejects_a_group_writable_release_root(tmp_path):
     assert not (root / "current").exists()
 
 
-def test_release_activation_is_atomic_and_rollback_targets_last_known_release(tmp_path):
+def test_release_activation_is_atomic_and_rollback_targets_last_known_release(
+    tmp_path, root_owned_release_lock_metadata
+):
     root = tmp_path / "litblogs"
     first_id, first_release = _write_release(root, "111111111111")
     second_id, second_release = _write_release(root, "222222222222")
@@ -1442,7 +1579,9 @@ def test_release_activation_is_atomic_and_rollback_targets_last_known_release(tm
     assert (root / "current").resolve() == first_release.resolve()
 
 
-def test_release_activation_rejects_an_orphan_previous_pointer(tmp_path):
+def test_release_activation_rejects_an_orphan_previous_pointer(
+    tmp_path, root_owned_release_lock_metadata
+):
     root = tmp_path / "litblogs"
     stale_id, stale_release = _write_release(root, "121212121212")
     next_id, _next_release = _write_release(root, "343434343434")
@@ -1465,7 +1604,9 @@ def test_release_activation_rejects_an_orphan_previous_pointer(tmp_path):
     assert (root / "previous").resolve() == stale_release.resolve()
 
 
-def test_release_activation_refuses_to_overwrite_a_real_current_path(tmp_path):
+def test_release_activation_refuses_to_overwrite_a_real_current_path(
+    tmp_path, root_owned_release_lock_metadata
+):
     root = tmp_path / "litblogs"
     release_id, _ = _write_release(root, "333333333333")
     (root / "current").mkdir()
@@ -1482,7 +1623,9 @@ def test_release_activation_refuses_to_overwrite_a_real_current_path(tmp_path):
     assert not (root / "current").is_symlink()
 
 
-def test_release_activation_rejects_manifest_commit_mismatch(tmp_path):
+def test_release_activation_rejects_manifest_commit_mismatch(
+    tmp_path, root_owned_release_lock_metadata
+):
     root = tmp_path / "litblogs"
     release_id, release = _write_release(
         root,
@@ -1516,7 +1659,9 @@ def test_release_activation_requires_exact_confirmation_before_pointer_changes(t
     assert not (root / "current").exists()
 
 
-def test_release_activation_requires_the_exact_reviewed_main_commit(tmp_path):
+def test_release_activation_requires_the_exact_reviewed_main_commit(
+    tmp_path, root_owned_release_lock_metadata
+):
     root = tmp_path / "litblogs"
     release_id, _ = _write_release(root, "999999999999")
 
@@ -1531,7 +1676,9 @@ def test_release_activation_requires_the_exact_reviewed_main_commit(tmp_path):
     assert not (root / "current").exists()
 
 
-def test_release_rollback_refuses_pointer_that_escapes_release_root(tmp_path):
+def test_release_rollback_refuses_pointer_that_escapes_release_root(
+    tmp_path, root_owned_release_lock_metadata
+):
     root = tmp_path / "litblogs"
     root.mkdir()
     (root / "releases").mkdir()
