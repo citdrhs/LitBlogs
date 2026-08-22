@@ -7,7 +7,7 @@ import axios from "axios"
 import Navbar from "./components/Navbar"
 import Loader from "./components/Loader"
 import Footer from "./components/Footer"
-import { mediaPath } from "./utils/urlUtils"
+import { assetPath, mediaPath } from "./utils/urlUtils"
 import { logoutBrowserSession } from "./utils/auth"
 
 // Animated avatar options
@@ -58,10 +58,10 @@ const AVATAR_OPTIONS = [
 
 // Background options
 const BACKGROUND_OPTIONS = [
-  "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?ixlib=rb-4.0.3&auto=format&fit=crop&w=1200&q=80",
-  "https://images.unsplash.com/photo-1441974231531-c6227db76b6e?ixlib=rb-4.0.3&auto=format&fit=crop&w=1200&q=80",
-  "https://images.unsplash.com/photo-1506744038136-46273834b3fb?ixlib=rb-4.0.3&auto=format&fit=crop&w=1200&q=80",
-  "https://images.unsplash.com/photo-1470770841072-f978cf4d019e?ixlib=rb-4.0.3&auto=format&fit=crop&w=1200&q=80",
+  assetPath("Classroom1.jpeg"),
+  assetPath("Classroom2.jpeg"),
+  assetPath("Classroom3.jpeg"),
+  assetPath("Classroom4.jpeg"),
 ]
 
 // Custom animation styles

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { lazy, Suspense, useState, useEffect, useMemo, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import axios from 'axios';
@@ -15,7 +15,6 @@ import 'prismjs/components/prism-sql';
 import Loader from './components/Loader';
 import Navbar from "./components/Navbar";
 import Footer from "./components/Footer";
-import { Editor } from '@tinymce/tinymce-react';
 import './LitBlogs.css';
 import { toast } from 'react-hot-toast';
 import { IoMdHeart, IoMdHeartEmpty } from 'react-icons/io';
@@ -38,6 +37,8 @@ import {
   saveLocalUserSettings,
   shouldRememberDrafts,
 } from './utils/userSettings';
+
+const SelfHostedEditor = lazy(() => import('./components/SelfHostedEditor'));
 
 const expandableListStyles = `
   .expandable-list {
@@ -459,6 +460,9 @@ const MediaPreview = ({ media, files, onRemove }) => {
 const TINYMCE_CONFIG = {
   height: 520,
   menubar: false,
+  branding: false,
+  promotion: false,
+  help_tabs: ['shortcuts', 'keyboardnav'],
   plugins: [
     'advlist', 'autolink', 'lists', 'link', 'image', 'charmap', 'preview',
     'anchor', 'searchreplace', 'visualblocks', 'code', 'fullscreen',
@@ -3318,14 +3322,21 @@ const ClassFeed = () => {
 
                 {/* Content Input */}
                 <div className="relative">
-                  <Editor
-                    apiKey="edr7zffd9q7v6okan1ka9dbc23ugp710ycjhcfroxd9undjo"
-                    init={tinyMceConfig}
-                    value={content}
-                    onEditorChange={(content) => {
-                      setContent(content);
-                    }}
-                  />
+                  <Suspense
+                    fallback={(
+                      <div className="flex h-32 items-center justify-center rounded-lg border border-gray-200 bg-gray-50 text-sm text-gray-600">
+                        Loading the editor&hellip;
+                      </div>
+                    )}
+                  >
+                    <SelfHostedEditor
+                      init={tinyMceConfig}
+                      value={content}
+                      onEditorChange={(content) => {
+                        setContent(content);
+                      }}
+                    />
+                  </Suspense>
                   
                   {/* Add the MediaPreview component here */}
                   <MediaPreview 

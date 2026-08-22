@@ -4,13 +4,10 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/x-icon" href="/litBlogSmallLight.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <!-- Content Security Policy: allow required auth and font sources -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://accounts.google.com https://apis.google.com https://cdn.tiny.cloud https://*.tiny.cloud; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com; style-src-elem 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com https://cdn.tiny.cloud https://*.tiny.cloud; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https://*.googleusercontent.com https://images.unsplash.com https://sp.tinymce.com https://cdn.tiny.cloud https://*.tiny.cloud; media-src 'self' data: blob: https:; connect-src 'self' %VITE_CSP_CONNECT_SRC% https://accounts.google.com https://login.microsoftonline.com https://graph.microsoft.com https://cdn.tiny.cloud https://*.tiny.cloud https://sp.tinymce.com; frame-src 'self' https://accounts.google.com https://login.microsoftonline.com;">
+  <!-- Content Security Policy: keep student content same-origin while allowing configured OAuth providers. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; form-action 'self'; script-src 'self' https://accounts.google.com https://apis.google.com; style-src 'self' 'unsafe-inline' https://accounts.google.com; style-src-elem 'self' 'unsafe-inline' https://accounts.google.com; font-src 'self' data:; img-src 'self' data: blob: https://*.googleusercontent.com; media-src 'self' data: blob:; connect-src 'self' https://accounts.google.com https://login.microsoftonline.com https://graph.microsoft.com; frame-src 'self' https://accounts.google.com https://login.microsoftonline.com; worker-src 'self' blob:; manifest-src 'self';">
   <meta http-equiv="Cross-Origin-Opener-Policy" content="same-origin-allow-popups">
     <title>LitBlogs | CIT Made</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Arial&family=Georgia&family=Times+New+Roman&family=Courier+New&family=Verdana&display=swap" rel="stylesheet">
   </head>
   <body>
     <div id="root"></div>
