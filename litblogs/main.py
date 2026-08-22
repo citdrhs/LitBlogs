@@ -39,7 +39,6 @@ from sqlalchemy.orm import Session
 import models
 import schemas
 from database import SessionLocal, get_db, initialize_database, reset_database
-from models import PasswordReset, User
 from security_utils import secure_code_matches
 
 try:
@@ -4326,7 +4325,7 @@ async def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(
     """Request a password reset token"""
     
     # Find user by email
-    user = db.query(User).filter(User.email == request.email).first()
+    user = db.query(models.User).filter(models.User.email == request.email).first()
     
     if not user:
         raise HTTPException(status_code=404, detail="No account found with this email address")
@@ -4336,7 +4335,7 @@ async def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(
     expires_at = datetime.utcnow() + timedelta(hours=1)
     
     # Store token in database
-    password_reset = PasswordReset(
+    password_reset = models.PasswordReset(
         user_id=user.id,
         token=token,
         expires_at=expires_at
@@ -4362,17 +4361,17 @@ async def reset_password(request: ResetPasswordRequest, db: Session = Depends(ge
         raise HTTPException(status_code=400, detail="Token is required")
     
     # Find token in database
-    password_reset = db.query(PasswordReset).filter(
-        PasswordReset.token == request.token,
-        PasswordReset.expires_at > datetime.utcnow(),
-        PasswordReset.used.is_(False)
+    password_reset = db.query(models.PasswordReset).filter(
+        models.PasswordReset.token == request.token,
+        models.PasswordReset.expires_at > datetime.utcnow(),
+        models.PasswordReset.used.is_(False)
     ).first()
     
     if not password_reset:
         raise HTTPException(status_code=400, detail="Invalid or expired token")
     
     # Get the user
-    user = db.query(User).filter(User.id == password_reset.user_id).first()
+    user = db.query(models.User).filter(models.User.id == password_reset.user_id).first()
     
     if not user:
         raise HTTPException(status_code=404, detail="User not found")

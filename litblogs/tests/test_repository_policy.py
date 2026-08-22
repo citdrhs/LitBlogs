@@ -1,3 +1,4 @@
+import ast
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
@@ -6,6 +7,8 @@ import pytest
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 VALIDATOR_PATH = REPOSITORY_ROOT / "scripts" / "validate-repository-policy.py"
 CI_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
+BACKEND_ROOT = REPOSITORY_ROOT / "litblogs"
+MAIN_PATH = BACKEND_ROOT / "main.py"
 
 SQLITE_PYTEST_STEP = """      - name: Run isolated backend tests
         working-directory: litblogs
@@ -80,3 +83,23 @@ def test_policy_validator_rejects_sqlite_backend_pytest(policy_validator, tmp_pa
     failures = _validate_workflow(policy_validator, tmp_path, sqlite_workflow)
 
     assert any("guarded synthetic PostgreSQL" in failure for failure in failures)
+
+
+def test_backend_entrypoint_does_not_mix_local_module_import_styles():
+    tree = ast.parse(MAIN_PATH.read_text(encoding="utf-8"))
+    local_modules = {path.stem for path in BACKEND_ROOT.glob("*.py")}
+    directly_imported = {
+        alias.name.partition(".")[0]
+        for node in tree.body
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    imported_from = {
+        node.module.partition(".")[0]
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+
+    mixed_local_imports = local_modules & directly_imported & imported_from
+
+    assert mixed_local_imports == set()

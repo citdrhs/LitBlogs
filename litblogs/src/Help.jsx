@@ -7,7 +7,6 @@ import './LitBlogs.css'; // Import your styles
 import FAQ from './components/FAQ';
 const Help = () => {
   const [darkMode, setDarkMode] = useState(false);
-  useState("");
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(1);
   const [progress, setProgress] = useState(0);

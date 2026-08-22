@@ -48,7 +48,6 @@ const StudentHub = () => {
     return JSON.parse(localStorage.getItem('darkMode')) ?? false;
   });
   const [archivedClasses, setArchivedClasses] = useState([]);
-  useState('active'); // Preserve the existing hook order.
 
   useEffect(() => {
     const storedUserInfo = localStorage.getItem('user_info');

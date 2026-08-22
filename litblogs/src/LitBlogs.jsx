@@ -11,8 +11,6 @@ const LitBlogs = () => {
   const [userInfo, setUserInfo] = useState(null);
   const [currentSlide, setCurrentSlide] = useState(0);
   const [darkMode, setDarkMode] = useState(false);
-  useState("");
-  useState("");
   const slides = [
     assetPath("Classroom1.jpeg"),
     assetPath("Classroom2.jpeg"),

@@ -16,7 +16,6 @@ const TeacherDashboard = () => {
   const [activeTab, setActiveTab] = useState('Dashboard');
   const [showClassForm, setShowClassForm] = useState(false);
   const [newClass, setNewClass] = useState({ name: '', description: '' });
-  useState([]);
   const [classes, setClasses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
