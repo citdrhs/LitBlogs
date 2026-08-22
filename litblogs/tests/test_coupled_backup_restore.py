@@ -129,7 +129,9 @@ class _RestoreRunner:
         self.calls.append((command, kwargs))
         stdout = ""
         if Path(command[0]).name == "psql":
-            sql = command[command.index("--command") + 1]
+            sql = kwargs.get("input")
+            if sql is None:
+                sql = command[command.index("--command") + 1]
             if "FROM pg_database" in sql:
                 stdout = f"{self.target_state}\n"
             elif sql == restore_verify_postgres.SCHEMA_INTEGRITY_SQL:

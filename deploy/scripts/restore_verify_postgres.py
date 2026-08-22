@@ -203,7 +203,7 @@ SELECT COALESCE(
     pg_catalog.jsonb_agg(
         pg_catalog.jsonb_build_object(
             'signature', routine.proname || '(' ||
-                pg_catalog.pg_get_function_identity_arguments(routine.oid) || ')',
+                pg_catalog.oidvectortypes(routine.proargtypes) || ')',
             'source_hex', pg_catalog.encode(
                 pg_catalog.convert_to(routine.prosrc, 'UTF8'), 'hex'
             ),
@@ -219,7 +219,7 @@ SELECT COALESCE(
             'argument_defaults', routine.pronargdefaults,
             'owner', owner.rolname
         ) ORDER BY routine.proname,
-            pg_catalog.pg_get_function_identity_arguments(routine.oid)
+            pg_catalog.oidvectortypes(routine.proargtypes)
     ),
     '[]'::pg_catalog.jsonb
 )::text
@@ -736,7 +736,7 @@ actual_routines(function_oid, signature, owner_name, prosecdef, proconfig) AS (
     SELECT
         routine.oid,
         routine.proname || '(' ||
-            pg_catalog.pg_get_function_identity_arguments(routine.oid) || ')',
+            pg_catalog.oidvectortypes(routine.proargtypes) || ')',
         owner.rolname,
         routine.prosecdef,
         routine.proconfig
@@ -756,7 +756,7 @@ actual_function_acl(role_name, signature, privilege_type, is_grantable) AS (
     SELECT
         COALESCE(grantee.rolname, 'PUBLIC'),
         routine.proname || '(' ||
-            pg_catalog.pg_get_function_identity_arguments(routine.oid) || ')',
+            pg_catalog.oidvectortypes(routine.proargtypes) || ')',
         acl.privilege_type,
         acl.is_grantable
     FROM pg_catalog.pg_proc AS routine
@@ -785,7 +785,7 @@ expected_default_function_acl(
         (
             'litblogs_migrator',
             'GLOBAL',
-            'f',
+            'f'::"char",
             'litblogs_migrator',
             'litblogs_migrator',
             'EXECUTE',
@@ -1172,17 +1172,20 @@ def _run(
     environment: dict[str, str],
     runner: CommandRunner,
     capture_stdout: bool = False,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     try:
-        return runner(
-            command,
-            env=environment,
-            check=False,
-            shell=False,
-            stdout=subprocess.PIPE if capture_stdout else subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
+        kwargs = {
+            "env": environment,
+            "check": False,
+            "shell": False,
+            "stdout": subprocess.PIPE if capture_stdout else subprocess.DEVNULL,
+            "stderr": subprocess.PIPE,
+            "text": True,
+        }
+        if input_text is not None:
+            kwargs["input"] = input_text
+        return runner(command, **kwargs)
     except OSError as exc:
         raise PostgresOperatorError(
             "A required PostgreSQL operator command could not start"
@@ -1272,12 +1275,8 @@ def _read_restored_upload_registry(
         ) from exc
 
 
-def _psql_command(
-    sql: str,
-    *,
-    variables: Mapping[str, str] | None = None,
-) -> list[str]:
-    command = [
+def _psql_base_command() -> list[str]:
+    return [
         postgres_executable("psql"),
         "--no-psqlrc",
         "--no-password",
@@ -1285,12 +1284,33 @@ def _psql_command(
         "--no-align",
         "--set=ON_ERROR_STOP=1",
     ]
+
+
+def _psql_command(sql: str) -> list[str]:
+    return [*_psql_base_command(), "--command", sql]
+
+
+def _run_psql(
+    sql: str,
+    *,
+    variables: Mapping[str, str],
+    environment: dict[str, str],
+    runner: CommandRunner,
+    capture_stdout: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    command = _psql_base_command()
     for name, value in sorted((variables or {}).items()):
         if not PSQL_VARIABLE_NAME.fullmatch(name):
             raise PostgresOperatorError("The psql variable name is invalid")
         command.append(f"--set={name}={value}")
-    command.extend(["--command", sql])
-    return command
+    command.append("--file=-")
+    return _run(
+        command,
+        environment=environment,
+        runner=runner,
+        capture_stdout=capture_stdout,
+        input_text=sql,
+    )
 
 
 def _require_success(
@@ -1400,6 +1420,7 @@ def check_alembic_schema_drift(
     config = Config(stdout=migration_output, output_buffer=migration_output)
     config.set_main_option("script_location", str(backend_root / "migrations"))
     config.set_main_option("prepend_sys_path", str(backend_root))
+    config.set_main_option("path_separator", "os")
     try:
         with engine.connect() as database_connection:
             config.attributes["connection"] = database_connection
@@ -1568,11 +1589,9 @@ def restore_and_verify(
     _require_success(archive_check, "The backup archive failed structural validation")
 
     maintenance_environment = build_pg_environment(connection, database="postgres")
-    existence = _run(
-        _psql_command(
-            SYNTHETIC_TARGET_STATE_SQL,
-            variables={"target_database": target},
-        ),
+    existence = _run_psql(
+        SYNTHETIC_TARGET_STATE_SQL,
+        variables={"target_database": target},
         environment=maintenance_environment,
         runner=runner,
         capture_stdout=True,
@@ -1613,11 +1632,9 @@ def restore_and_verify(
         "The verification database could not be created; no database was dropped",
     )
 
-    access_lockdown = _run(
-        _psql_command(
-            'REVOKE CONNECT, TEMPORARY ON DATABASE :"target_database" FROM PUBLIC;',
-            variables={"target_database": target},
-        ),
+    access_lockdown = _run_psql(
+        'REVOKE CONNECT, TEMPORARY ON DATABASE :"target_database" FROM PUBLIC;',
+        variables={"target_database": target},
         environment=maintenance_environment,
         runner=runner,
     )
@@ -1747,8 +1764,9 @@ def verify_existing_database(
         "SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_database WHERE datname = "
         ":'target_database') THEN 'exists' ELSE 'absent' END;"
     )
-    existence = _run(
-        _psql_command(existence_sql, variables={"target_database": target}),
+    existence = _run_psql(
+        existence_sql,
+        variables={"target_database": target},
         environment=maintenance_environment,
         runner=runner,
         capture_stdout=True,

@@ -47,8 +47,10 @@ class PinnedContainerPostgresRunner:
     def __init__(self, container_id: str):
         self.container_id = container_id
 
-    def _docker_command(self, command, environment):
+    def _docker_command(self, command, environment, *, interactive=False):
         docker_command = ["docker", "exec"]
+        if interactive:
+            docker_command.append("--interactive")
         for name, value in sorted(environment.items()):
             if name.startswith("PG"):
                 # The pinned CI service is loopback-only and has no TLS listener.
@@ -56,6 +58,8 @@ class PinnedContainerPostgresRunner:
                 # adapts libpq after the strict URL has been validated.
                 if name == "PGSSLMODE":
                     value = "disable"
+                elif name == "PGPORT":
+                    value = "5432"
                 docker_command.extend(["--env", f"{name}={value}"])
         docker_command.extend([self.container_id, *command])
         return docker_command
@@ -70,6 +74,7 @@ class PinnedContainerPostgresRunner:
         stdout,
         stderr,
         text,
+        input=None,
     ):
         assert check is False
         assert shell is False
@@ -97,9 +102,9 @@ class PinnedContainerPostgresRunner:
                 stderr=result.stderr,
             )
         if executable == "pg_dump":
-            file_index = selected_command.index("--file") + 1
-            host_output = Path(selected_command[file_index])
-            selected_command[file_index] = "/dev/stdout"
+            file_index = selected_command.index("--file")
+            host_output = Path(selected_command[file_index + 1])
+            del selected_command[file_index : file_index + 2]
             with host_output.open("wb") as output_file:
                 result = subprocess.run(  # noqa: S603
                     self._docker_command(selected_command, env),
@@ -137,19 +142,28 @@ class PinnedContainerPostgresRunner:
             selected_command[-1] = container_archive
 
         try:
+            encoded_input = input.encode("utf-8") if input is not None else None
             result = subprocess.run(  # noqa: S603
-                self._docker_command(selected_command, env),
+                self._docker_command(
+                    selected_command,
+                    env,
+                    interactive=input is not None,
+                ),
                 check=False,
                 shell=False,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                input=encoded_input,
             )
             return subprocess.CompletedProcess(
                 command,
                 result.returncode,
-                stdout=result.stdout if stdout == subprocess.PIPE else None,
-                stderr=result.stderr,
+                stdout=(
+                    result.stdout.decode("utf-8", errors="replace")
+                    if stdout == subprocess.PIPE
+                    else None
+                ),
+                stderr=result.stderr.decode("utf-8", errors="replace"),
             )
         finally:
             if container_archive:
@@ -195,8 +209,7 @@ def _run_psql(runner, database_url: str, database: str, sql: str, *, sentinel: s
             "--no-align",
             "--set=ON_ERROR_STOP=1",
             f"--set=sentinel={sentinel}",
-            "--command",
-            sql,
+            "--file=-",
         ],
         env=environment,
         check=False,
@@ -204,6 +217,7 @@ def _run_psql(runner, database_url: str, database: str, sql: str, *, sentinel: s
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        input=sql,
     )
     assert result.returncode == 0, "synthetic PostgreSQL sentinel operation failed"
     return (result.stdout or "").strip()
@@ -280,6 +294,26 @@ def _container_client_validator(runner, database_url: str) -> None:
         )
         assert result.returncode == 0
         assert POSTGRES_VERSION.fullmatch(result.stdout or "") is not None
+
+
+@pytest.mark.skipif(
+    not CONTAINER_ID or not RESTORE_DATABASE_URL,
+    reason="requires the pinned PostgreSQL CI service container",
+)
+def test_run_psql_substitutes_sentinel_as_quoted_literal():
+    runner = PinnedContainerPostgresRunner(CONTAINER_ID)
+    database = parse_postgres_url(RESTORE_DATABASE_URL).database
+    sentinel = "operator_'; SELECT 'injected"
+
+    result = _run_psql(
+        runner,
+        RESTORE_DATABASE_URL,
+        database,
+        "SELECT :'sentinel';",
+        sentinel=sentinel,
+    )
+
+    assert result == sentinel
 
 
 @pytest.mark.skipif(

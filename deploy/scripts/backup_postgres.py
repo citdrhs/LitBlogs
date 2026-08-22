@@ -191,9 +191,7 @@ direct_application_acl AS (
     SELECT 1 AS present
     FROM backup_role AS role
     JOIN pg_catalog.pg_namespace AS namespace ON TRUE
-    CROSS JOIN LATERAL pg_catalog.aclexplode(
-        COALESCE(namespace.nspacl, '{}'::pg_catalog.aclitem[])
-    ) AS acl
+    CROSS JOIN LATERAL pg_catalog.aclexplode(namespace.nspacl) AS acl
     WHERE namespace.nspname <> 'information_schema'
       AND namespace.nspname !~ '^pg_'
       AND acl.grantee = role.oid
@@ -203,9 +201,7 @@ direct_application_acl AS (
     JOIN pg_catalog.pg_class AS relation ON TRUE
     JOIN pg_catalog.pg_namespace AS namespace
       ON namespace.oid = relation.relnamespace
-    CROSS JOIN LATERAL pg_catalog.aclexplode(
-        COALESCE(relation.relacl, '{}'::pg_catalog.aclitem[])
-    ) AS acl
+    CROSS JOIN LATERAL pg_catalog.aclexplode(relation.relacl) AS acl
     WHERE namespace.nspname <> 'information_schema'
       AND namespace.nspname !~ '^pg_'
       AND acl.grantee = role.oid
@@ -216,9 +212,7 @@ direct_application_acl AS (
     JOIN pg_catalog.pg_class AS relation ON relation.oid = attribute.attrelid
     JOIN pg_catalog.pg_namespace AS namespace
       ON namespace.oid = relation.relnamespace
-    CROSS JOIN LATERAL pg_catalog.aclexplode(
-        COALESCE(attribute.attacl, '{}'::pg_catalog.aclitem[])
-    ) AS acl
+    CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS acl
     WHERE namespace.nspname <> 'information_schema'
       AND namespace.nspname !~ '^pg_'
       AND acl.grantee = role.oid
@@ -228,9 +222,7 @@ direct_application_acl AS (
     JOIN pg_catalog.pg_proc AS routine ON TRUE
     JOIN pg_catalog.pg_namespace AS namespace
       ON namespace.oid = routine.pronamespace
-    CROSS JOIN LATERAL pg_catalog.aclexplode(
-        COALESCE(routine.proacl, '{}'::pg_catalog.aclitem[])
-    ) AS acl
+    CROSS JOIN LATERAL pg_catalog.aclexplode(routine.proacl) AS acl
     WHERE namespace.nspname <> 'information_schema'
       AND namespace.nspname !~ '^pg_'
       AND acl.grantee = role.oid
@@ -240,9 +232,7 @@ direct_application_acl AS (
     JOIN pg_catalog.pg_type AS type_record ON TRUE
     JOIN pg_catalog.pg_namespace AS namespace
       ON namespace.oid = type_record.typnamespace
-    CROSS JOIN LATERAL pg_catalog.aclexplode(
-        COALESCE(type_record.typacl, '{}'::pg_catalog.aclitem[])
-    ) AS acl
+    CROSS JOIN LATERAL pg_catalog.aclexplode(type_record.typacl) AS acl
     WHERE namespace.nspname <> 'information_schema'
       AND namespace.nspname !~ '^pg_'
       AND acl.grantee = role.oid

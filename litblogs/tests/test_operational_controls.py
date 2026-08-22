@@ -65,7 +65,9 @@ class RecordingRunner:
         command = [str(item) for item in command]
         self.calls.append((command, kwargs))
         if Path(command[0]).name == "psql":
-            sql = command[command.index("--command") + 1]
+            sql = kwargs.get("input")
+            if sql is None:
+                sql = command[command.index("--command") + 1]
             if sql == backup_postgres.BACKUP_ROLE_PRECHECK_SQL:
                 return subprocess.CompletedProcess(
                     command,
@@ -92,6 +94,32 @@ def _operator_routine_catalog_response() -> str:
         record["source_hex"] = expected["source"].encode("utf-8").hex()
         records.append(record)
     return json.dumps(records) + "\n"
+
+
+def test_restore_psql_uses_stdin_for_quoted_variable_substitution():
+    calls = []
+    sql = "SELECT :'sentinel';"
+    sentinel = "operator_'; SELECT 'injected"
+
+    def runner(command, **kwargs):
+        calls.append(([str(item) for item in command], kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout=sentinel, stderr="")
+
+    result = restore_verify_postgres._run_psql(
+        sql,
+        variables={"sentinel": sentinel},
+        environment={},
+        runner=runner,
+        capture_stdout=True,
+    )
+
+    assert result.stdout == sentinel
+    command, kwargs = calls[0]
+    assert "--file=-" in command
+    assert "--command" not in command
+    assert f"--set=sentinel={sentinel}" in command
+    assert sql not in command
+    assert kwargs["input"] == sql
 
 
 def _create_coupled_backup(output_directory, database_url, **kwargs):
@@ -832,16 +860,20 @@ def test_restore_creates_only_a_new_synthetic_database_and_runs_integrity_checks
     assert "--list" in commands[0]
     assert commands[2][-1] == target
     assert "--maintenance-db=postgres" in commands[2]
-    existence_sql = commands[1][commands[1].index("--command") + 1]
+    existence_sql = runner.calls[1][1]["input"]
+    assert "--file=-" in commands[1]
+    assert "--command" not in commands[1]
     assert target not in existence_sql
     assert ":'target_database'" in existence_sql
     assert f"--set=target_database={target}" in commands[1]
-    lockdown_sql = commands[3][commands[3].index("--command") + 1]
+    lockdown_sql = runner.calls[3][1]["input"]
+    assert "--file=-" in commands[3]
+    assert "--command" not in commands[3]
     assert target not in lockdown_sql
     assert ':"target_database"' in lockdown_sql
     assert f"--set=target_database={target}" in commands[3]
-    assert "REVOKE CONNECT, TEMPORARY" in " ".join(commands[3])
-    assert "FROM PUBLIC" in " ".join(commands[3])
+    assert "REVOKE CONNECT, TEMPORARY" in lockdown_sql
+    assert "FROM PUBLIC" in lockdown_sql
     assert "--single-transaction" in commands[4]
     assert "--exit-on-error" in commands[4]
     assert "--no-owner" not in commands[4]
