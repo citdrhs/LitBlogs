@@ -23,8 +23,13 @@ import CommentThread from './components/CommentThread';
 import { formatRelativeTime, setupTimeUpdater } from './utils/timeUtils';
 import { mediaPath } from './utils/urlUtils';
 import { logoutBrowserSession } from './utils/auth';
-import ReactHtmlParser from 'react-html-parser';
 import { openPdfViewerModal } from './components/PdfViewerModal';
+import {
+  createSanitizedRichTextContainer,
+  normalizeRichTextUrl,
+  sanitizeRichText,
+  serializeSanitizedRichText,
+} from './utils/richTextSecurity';
 import {
   applyGlobalUserSettings,
   getEditorFontSizePx,
@@ -352,42 +357,8 @@ const clearPostDraft = ({ classId, userId, editingPostId }) => {
   localStorage.removeItem(key);
 };
 
-const decodeHtmlEntities = (value = '') => {
-  if (typeof document === 'undefined') {
-    return value;
-  }
-
-  const textarea = document.createElement('textarea');
-  textarea.innerHTML = value;
-  return textarea.value;
-};
-
 const normalizePostContentForEditor = (content = '') => {
-  if (!content || typeof document === 'undefined') {
-    return content;
-  }
-
-  try {
-    const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = content;
-
-    const fileActionContainers = tempDiv.querySelectorAll('.file-attachment .file-actions');
-    fileActionContainers.forEach((container) => {
-      if (container.innerHTML.includes('&lt;') || container.textContent?.includes('<button')) {
-        container.innerHTML = decodeHtmlEntities(container.innerHTML);
-      }
-
-      const removeButton = container.querySelector('.remove-btn');
-      if (removeButton && !removeButton.classList.contains('editor-only')) {
-        removeButton.classList.add('editor-only');
-      }
-    });
-
-    return tempDiv.innerHTML;
-  } catch (error) {
-    console.error('Failed to normalize post content for editor:', error);
-    return content;
-  }
+  return sanitizeRichText(content, { mode: 'editor' });
 };
 
 const listPostDrafts = ({ classId, userId }) => {
@@ -825,10 +796,23 @@ const TINYMCE_CONFIG = {
                 );
                 
                 // Insert the uploaded image
-                editor.insertContent(`<img src="${mediaPath(response.data.url)}" alt="${file.name}" style="max-width: 100%; height: auto;" />`);
+                editor.insertContent(sanitizeRichText(
+                  `<img src="${mediaPath(response.data.url)}" alt="${file.name}" style="max-width: 100%; height: auto;" />`,
+                  { mode: 'editor' },
+                ));
               } else if (data.source === 'url' && data.url) {
-                // Insert image from URL
-                editor.insertContent(`<img src="${data.url}" alt="Image from URL" style="max-width: 100%; height: auto;" />`);
+                const normalizedImageUrl = normalizeRichTextUrl(data.url, 'image');
+                if (!normalizedImageUrl) {
+                  editor.notificationManager.open({
+                    text: 'For privacy, images must be uploaded to this school site.',
+                    type: 'warning',
+                  });
+                  return;
+                }
+                editor.insertContent(sanitizeRichText(
+                  `<img src="${normalizedImageUrl}" alt="Uploaded image" style="max-width: 100%; height: auto;" />`,
+                  { mode: 'editor' },
+                ));
               }
               
               api.close();
@@ -908,7 +892,7 @@ const TINYMCE_CONFIG = {
               `;
               
               // Insert the file attachment at the cursor position
-              editor.insertContent(fileHtml);
+              editor.insertContent(sanitizeRichText(fileHtml, { mode: 'editor' }));
               
             } catch (error) {
               console.error('Error uploading file:', error);
@@ -943,7 +927,7 @@ const TINYMCE_CONFIG = {
         
         // Create close button
         const closeBtn = document.createElement('button');
-        closeBtn.innerHTML = '&times;';
+        closeBtn.textContent = '×';
         closeBtn.style.position = 'absolute';
         closeBtn.style.top = '20px';
         closeBtn.style.right = '20px';
@@ -1028,13 +1012,12 @@ const TINYMCE_CONFIG = {
     
     // Listen for clicks on the editor content
     editor.on('click', function(e) {
-      // Check if the clicked element is a remove button
-      if (e.target.classList.contains('remove-btn') && e.target.dataset.fileUrl) {
-        // Get the file URL from the data attribute
-        const fileUrl = e.target.dataset.fileUrl;
-        
-        // Delete the file from the server
-        deleteFileFromServer(fileUrl);
+      if (e.target.matches('.remove-btn, .video-delete-btn')) {
+        const fileUrl = e.target.dataset.fileUrl || e.target.dataset.videoUrl;
+        if (fileUrl) {
+          e.target.closest('.file-attachment, .video-container')?.remove();
+          deleteFileFromServer(fileUrl);
+        }
       }
     });
     
@@ -1132,7 +1115,7 @@ const TINYMCE_CONFIG = {
               `;
               
               // Insert the video HTML
-              editor.insertContent(videoHtml);
+              editor.insertContent(sanitizeRichText(videoHtml, { mode: 'editor' }));
               
               // Dismiss loading toast and show success
               toast.dismiss(loadingToast);
@@ -1149,19 +1132,6 @@ const TINYMCE_CONFIG = {
       }
     });
     
-    // Listen for clicks on the editor content
-    editor.on('click', function(e) {
-      // Check if the clicked element is a remove button
-      if (e.target.classList.contains('remove-btn')) {
-        // Get the file or video URL from the data attribute
-        const fileUrl = e.target.dataset.fileUrl || e.target.dataset.videoUrl;
-        
-        if (fileUrl) {
-          // Delete the file from the server
-          deleteFileFromServer(fileUrl);
-        }
-      }
-    });
   },
 };
 
@@ -1238,20 +1208,16 @@ function getFileIcon(fileType) {
 
 // Update the processHTMLWithDOM function to handle different media types
 
+const appendPlaceholderLabel = (placeholder, labelText) => {
+  const label = document.createElement('span');
+  label.className = 'text-blue-500';
+  label.textContent = labelText;
+  placeholder.appendChild(label);
+};
+
 const processHTMLWithDOM = (html) => {
   if (!html) return '';
-
-  // Some saved editor payloads may contain escaped media markup.
-  // Decode first so parser can treat video/file blocks as HTML elements.
-  const normalizedHtml = html
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&amp;/g, '&');
-  
-  // Create a temporary div to parse the HTML
-  const tempDiv = document.createElement('div');
-  tempDiv.innerHTML = normalizedHtml;
+  const tempDiv = createSanitizedRichTextContainer(html);
   
   // Remove editor-only controls
   const editorControls = tempDiv.querySelectorAll('.editor-only-control, .video-delete-btn');
@@ -1299,7 +1265,7 @@ const processHTMLWithDOM = (html) => {
         if (!mediaPlaceholderAdded) {
           const placeholder = document.createElement('div');
           placeholder.className = 'media-placeholder video-placeholder';
-          placeholder.innerHTML = '<span class="text-blue-500">[View post to see video content]</span>';
+          appendPlaceholderLabel(placeholder, '[View post to see video content]');
           node.parentNode.replaceChild(placeholder, node);
           mediaPlaceholderAdded = true;
         } else {
@@ -1314,7 +1280,7 @@ const processHTMLWithDOM = (html) => {
         if (!mediaPlaceholderAdded) {
           const placeholder = document.createElement('div');
           placeholder.className = 'media-placeholder file-placeholder';
-          placeholder.innerHTML = '<span class="text-blue-500">[View post to see attached files]</span>';
+          appendPlaceholderLabel(placeholder, '[View post to see attached files]');
           node.parentNode.replaceChild(placeholder, node);
           mediaPlaceholderAdded = true;
         } else {
@@ -1348,7 +1314,7 @@ const processHTMLWithDOM = (html) => {
     if (mediaTypes.video) {
       const placeholder = document.createElement('div');
       placeholder.className = 'media-placeholder video-placeholder';
-      placeholder.innerHTML = '<span class="text-blue-500">[View post to see video content]</span>';
+      appendPlaceholderLabel(placeholder, '[View post to see video content]');
       
       // Replace the first video element with the placeholder
       if (videoElements.length > 0) {
@@ -1364,7 +1330,7 @@ const processHTMLWithDOM = (html) => {
     if (mediaTypes.file) {
       const placeholder = document.createElement('div');
       placeholder.className = 'media-placeholder file-placeholder';
-      placeholder.innerHTML = '<span class="text-blue-500">[View post to see attached files]</span>';
+      appendPlaceholderLabel(placeholder, '[View post to see attached files]');
       
       // Replace the first file element with the placeholder
       if (fileElements.length > 0) {
@@ -1380,7 +1346,7 @@ const processHTMLWithDOM = (html) => {
     if (mediaTypes.audio) {
       const placeholder = document.createElement('div');
       placeholder.className = 'media-placeholder audio-placeholder';
-      placeholder.innerHTML = '<span class="text-blue-500">[View post to see audio content]</span>';
+      appendPlaceholderLabel(placeholder, '[View post to see audio content]');
       
       // Replace the first audio element with the placeholder
       if (audioElements.length > 0) {
@@ -1392,7 +1358,7 @@ const processHTMLWithDOM = (html) => {
     if (iframeElements.length > 0) {
       const placeholder = document.createElement('div');
       placeholder.className = 'media-placeholder embed-placeholder';
-      placeholder.innerHTML = '<span class="text-blue-500">[View post to see embedded content]</span>';
+      appendPlaceholderLabel(placeholder, '[View post to see embedded content]');
       
       // Replace the first iframe with the placeholder
       iframeElements[0].parentNode.replaceChild(placeholder, iframeElements[0]);
@@ -1404,7 +1370,7 @@ const processHTMLWithDOM = (html) => {
     }
   }
   
-  return tempDiv.innerHTML;
+  return serializeSanitizedRichText(tempDiv);
 };
 
 // Update the truncateHTML function to better preserve content structure
@@ -1412,9 +1378,7 @@ const processHTMLWithDOM = (html) => {
 const truncateHTML = (htmlContent, maxLength = 200) => {
   if (!htmlContent) return '';
   
-  // Create a temporary div to parse the HTML
-  const tempDiv = document.createElement('div');
-  tempDiv.innerHTML = htmlContent;
+  const tempDiv = createSanitizedRichTextContainer(htmlContent);
   
   // Remove videos, file attachments, and other media elements from the preview
   const videosAndMedia = tempDiv.querySelectorAll('video, .video-wrapper, .mceNonEditable, .file-attachment, iframe, audio');
@@ -1422,7 +1386,7 @@ const truncateHTML = (htmlContent, maxLength = 200) => {
     // Replace with a placeholder
     const placeholder = document.createElement('div');
       placeholder.className = 'media-placeholder file-placeholder';
-      placeholder.innerHTML = '<span class="text-blue-500">[View post to see attached files]</span>';
+      appendPlaceholderLabel(placeholder, '[View post to see attached files]');
     element.parentNode.replaceChild(placeholder, element);
   });
   
@@ -1431,19 +1395,26 @@ const truncateHTML = (htmlContent, maxLength = 200) => {
   
   // If content is short enough, return the modified HTML
   if (textContent.length <= maxLength) {
-    return tempDiv.innerHTML;
+    return serializeSanitizedRichText(tempDiv);
   }
   
   // For longer content, we need to truncate while preserving HTML structure
-  return tempDiv.innerHTML + '<span class="text-blue-500">... (read more)</span>';
+  const readMore = document.createElement('span');
+  readMore.className = 'text-blue-500';
+  readMore.textContent = '... (read more)';
+  tempDiv.appendChild(readMore);
+  return serializeSanitizedRichText(tempDiv);
 };
 const getUploadRelativePath = (url = '') => {
-  const normalizedUrl = String(url || '');
-  const match = normalizedUrl.match(/(?:\/api)?\/uploads\/(.+)$/);
-  if (match && match[1]) {
-    return match[1];
+  const normalizedUrl = normalizeRichTextUrl(String(url || ''), 'attachment');
+  if (!normalizedUrl) {
+    throw new Error('Invalid upload URL');
   }
-  return normalizedUrl.replace(/^\/+/, '');
+  const marker = '/api/uploads/';
+  const markerIndex = normalizedUrl.indexOf(marker);
+  return markerIndex >= 0
+    ? normalizedUrl.slice(markerIndex + marker.length)
+    : normalizedUrl.replace(/^\/+/, '');
 };
 
 // Add this function to handle file deletion
@@ -3019,12 +2990,13 @@ const ClassFeed = () => {
                 </div>
               
                 {/* Post Content */}
-                <div 
+                <div
                   className="html-content mb-4 cursor-pointer max-w-none text-gray-800 line-clamp-3"
                   onClick={() => openPost(post.id)}
-                >
-                  {ReactHtmlParser(processHTMLWithDOM(truncateHTML(post.content, 150)))}
-                </div>
+                  dangerouslySetInnerHTML={{
+                    __html: processHTMLWithDOM(truncateHTML(post.content, 150)),
+                  }}
+                />
                 
                 {/* Comments Section */}
                 <AnimatePresence>

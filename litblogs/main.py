@@ -2,30 +2,31 @@
 # To run locally run:
 # uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
 import json
-import os
 import random
 import re
 import secrets
-import shutil
 import smtplib
 import string
 import threading
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from html import escape
 from pathlib import Path
 from typing import List
+from urllib.parse import unquote, urlsplit
 
 import bleach
 import jwt
+import tinycss2
 import uvicorn
 from bleach.css_sanitizer import CSSSanitizer
 from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import OAuth2PasswordBearer
-from fastapi.staticfiles import StaticFiles
 from google.auth.transport import requests
 from google.oauth2 import id_token
 from jwt.exceptions import InvalidTokenError
@@ -101,6 +102,102 @@ app.add_middleware(
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
+MAX_UPLOAD_REFERENCE_LENGTH = 4096
+UPLOAD_CHUNK_SIZE = 1024 * 1024
+UPLOAD_HEADER_BYTES = 512
+MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_VIDEO_UPLOAD_BYTES = 100 * 1024 * 1024
+MAX_PDF_UPLOAD_BYTES = 25 * 1024 * 1024
+UPLOAD_REQUEST_OVERHEAD_BYTES = 1024 * 1024
+MAX_RICH_TEXT_INPUT_LENGTH = 1_000_000
+SAFE_UPLOAD_PATH_CHARACTERS = frozenset(
+    string.ascii_letters + string.digits + "._-"
+)
+
+
+class _UploadRequestTooLarge(Exception):
+    pass
+
+
+def _upload_request_body_limit(scope: dict) -> int | None:
+    if scope.get("type") != "http" or scope.get("method", "").upper() != "POST":
+        return None
+
+    path = str(scope.get("path") or "").rstrip("/") or "/"
+    upload_limits = {
+        "/api/upload/image": MAX_IMAGE_UPLOAD_BYTES,
+        "/api/upload/video": MAX_VIDEO_UPLOAD_BYTES,
+        "/api/upload/file": MAX_PDF_UPLOAD_BYTES,
+        "/api/upload": MAX_VIDEO_UPLOAD_BYTES,
+        "/api/user/upload-profile-image": MAX_IMAGE_UPLOAD_BYTES,
+        "/api/user/upload-cover-image": MAX_IMAGE_UPLOAD_BYTES,
+    }
+    file_limit = upload_limits.get(path)
+    if file_limit is None:
+        return None
+    return file_limit + UPLOAD_REQUEST_OVERHEAD_BYTES
+
+
+class UploadRequestBodyLimitMiddleware:
+    """Reject oversized upload bodies before Starlette parses multipart data."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        request_limit = _upload_request_body_limit(scope)
+        if request_limit is None:
+            await self.app(scope, receive, send)
+            return
+
+        for header_name, header_value in scope.get("headers", []):
+            if header_name.lower() != b"content-length":
+                continue
+            try:
+                content_length = int(header_value)
+            except (TypeError, ValueError):
+                break
+            if content_length > request_limit:
+                await self._send_too_large(scope, receive, send)
+                return
+            break
+
+        received_bytes = 0
+        response_started = False
+
+        async def limited_receive():
+            nonlocal received_bytes
+            message = await receive()
+            if message.get("type") == "http.request":
+                received_bytes += len(message.get("body", b""))
+                if received_bytes > request_limit:
+                    raise _UploadRequestTooLarge
+            return message
+
+        async def tracked_send(message):
+            nonlocal response_started
+            if message.get("type") == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, tracked_send)
+        except _UploadRequestTooLarge:
+            if response_started:
+                raise
+            await self._send_too_large(scope, receive, send)
+
+    @staticmethod
+    async def _send_too_large(scope, receive, send):
+        response = JSONResponse(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            content={"detail": "Upload request exceeds the allowed size"},
+            headers={"Cache-Control": "no-store"},
+        )
+        await response(scope, receive, send)
+
+
+app.add_middleware(UploadRequestBodyLimitMiddleware)
 
 def _sanitize_filename(filename: str | None, fallback: str = "upload") -> str:
     clean_name = Path(filename or fallback).name
@@ -110,53 +207,289 @@ def _sanitize_filename(filename: str | None, fallback: str = "upload") -> str:
 
 def _build_unique_filename(filename: str | None, prefix: str | None = None) -> str:
     safe_name = _sanitize_filename(filename)
-    stem = Path(safe_name).stem or "upload"
-    suffix = Path(safe_name).suffix
-    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-    random_str = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
-    name_parts = [part for part in [prefix, timestamp, random_str, stem] if part]
-    return f"{'_'.join(name_parts)}{suffix}"
+    suffix = Path(safe_name).suffix.lower()
+    safe_prefix = _sanitize_filename(prefix, "").strip("._-") if prefix else ""
+    opaque_name = secrets.token_hex(16)
+    return f"{safe_prefix}_{opaque_name}{suffix}" if safe_prefix else f"{opaque_name}{suffix}"
 
 def _upload_path(*parts: str) -> Path:
-    return UPLOAD_DIR.joinpath(*parts)
+    upload_root = UPLOAD_DIR.resolve()
+    candidate = upload_root.joinpath(*(str(part) for part in parts)).resolve()
+    try:
+        candidate.relative_to(upload_root)
+    except ValueError as exc:
+        raise ValueError("Invalid upload path") from exc
+    return candidate
+
+
+def _has_valid_percent_encoding(value: str) -> bool:
+    index = 0
+    while index < len(value):
+        if value[index] != "%":
+            index += 1
+            continue
+        if (
+            index + 2 >= len(value)
+            or value[index + 1] not in string.hexdigits
+            or value[index + 2] not in string.hexdigits
+        ):
+            return False
+        index += 3
+    return True
+
+
+def _canonical_upload_relative_path(reference: str) -> str:
+    """Return a bounded, traversal-free path beneath ``UPLOAD_DIR``.
+
+    Accepted references are raw relative upload paths or same-origin URL paths
+    ending in ``/uploads/...`` or ``/api/uploads/...``. Absolute/network URLs,
+    query strings, fragments, control characters, and ambiguous path segments
+    are rejected before filesystem access.
+    """
+
+    if not isinstance(reference, str) or not reference or len(reference) > MAX_UPLOAD_REFERENCE_LENGTH:
+        raise ValueError("Invalid upload reference")
+    if reference != reference.strip() or "\\" in reference:
+        raise ValueError("Invalid upload reference")
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in reference):
+        raise ValueError("Invalid upload reference")
+    if not _has_valid_percent_encoding(reference):
+        raise ValueError("Invalid upload reference")
+
+    parsed = urlsplit(reference)
+    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+        raise ValueError("Invalid upload reference")
+
+    decoded_path = unquote(parsed.path, errors="strict")
+    if "\\" in decoded_path or any(
+        ord(character) < 0x20 or ord(character) == 0x7F
+        for character in decoded_path
+    ):
+        raise ValueError("Invalid upload reference")
+
+    if decoded_path.startswith("/uploads/"):
+        relative_path = decoded_path.removeprefix("/uploads/")
+    elif "/api/uploads/" in decoded_path:
+        prefix, relative_path = decoded_path.split("/api/uploads/", 1)
+        if prefix and not prefix.startswith("/"):
+            raise ValueError("Invalid upload reference")
+        prefix_parts = prefix.split("/")[1:]
+        if any(not part or part in {".", ".."} for part in prefix_parts):
+            raise ValueError("Invalid upload reference")
+    elif decoded_path.startswith("/"):
+        raise ValueError("Invalid upload reference")
+    else:
+        relative_path = decoded_path
+
+    path_parts = relative_path.split("/")
+    if any(
+        not part
+        or part in {".", ".."}
+        or len(part) > 255
+        or any(character not in SAFE_UPLOAD_PATH_CHARACTERS for character in part)
+        for part in path_parts
+    ):
+        raise ValueError("Invalid upload reference")
+
+    canonical_path = "/".join(path_parts)
+    _upload_path(*path_parts)
+    return canonical_path
 
 def _upload_url(*parts: str) -> str:
     normalized_parts = [str(part).replace("\\", "/").strip("/") for part in parts if str(part).strip("/")]
-    return f"/uploads/{'/'.join(normalized_parts)}"
+    return f"/api/uploads/{'/'.join(normalized_parts)}"
 
-def _resolve_upload_bucket(file: UploadFile) -> str:
-    content_type = (file.content_type or "").lower()
-    extension = Path(file.filename or "").suffix.lower()
+@dataclass(frozen=True)
+class UploadTypeSpec:
+    kind: str
+    bucket: str
+    extension: str
+    media_type: str
+    signature: str
+    declared_media_types: frozenset[str]
 
-    image_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"}
-    video_exts = {".mp4", ".webm", ".ogg", ".mov", ".m4v", ".avi", ".mkv"}
 
-    if content_type.startswith("image/") or extension in image_exts:
-        return "images"
-    if content_type.startswith("video/") or extension in video_exts:
-        return "videos"
-    return "files"
+def _upload_type_spec(
+    kind: str,
+    bucket: str,
+    extension: str,
+    media_type: str,
+    signature: str,
+    *declared_media_types: str,
+) -> UploadTypeSpec:
+    return UploadTypeSpec(
+        kind=kind,
+        bucket=bucket,
+        extension=extension,
+        media_type=media_type,
+        signature=signature,
+        declared_media_types=frozenset(declared_media_types or (media_type,)),
+    )
 
-def _is_pdf_upload(file: UploadFile) -> bool:
-    content_type = (file.content_type or "").lower()
-    extension = Path(file.filename or "").suffix.lower()
-    return content_type == "application/pdf" or extension == ".pdf"
 
-def _is_allowed_video_upload(file: UploadFile) -> bool:
-    content_type = (file.content_type or "").lower()
-    extension = Path(file.filename or "").suffix.lower()
-
-    allowed_mime_types = {
-        "video/mp4",
-        "video/webm",
-        "video/ogg",
-        "video/x-msvideo",
-        "video/x-matroska",
-        "video/x-m4v",
+UPLOAD_TYPE_SPECS = {
+    ".jpg": _upload_type_spec("image", "images", ".jpg", "image/jpeg", "jpeg"),
+    ".jpeg": _upload_type_spec("image", "images", ".jpeg", "image/jpeg", "jpeg"),
+    ".png": _upload_type_spec("image", "images", ".png", "image/png", "png"),
+    ".gif": _upload_type_spec("image", "images", ".gif", "image/gif", "gif"),
+    ".webp": _upload_type_spec("image", "images", ".webp", "image/webp", "webp"),
+    ".bmp": _upload_type_spec("image", "images", ".bmp", "image/bmp", "bmp"),
+    ".pdf": _upload_type_spec("pdf", "files", ".pdf", "application/pdf", "pdf"),
+    ".mp4": _upload_type_spec("video", "videos", ".mp4", "video/mp4", "mp4"),
+    ".m4v": _upload_type_spec(
+        "video", "videos", ".m4v", "video/x-m4v", "mp4", "video/x-m4v", "video/mp4"
+    ),
+    ".webm": _upload_type_spec("video", "videos", ".webm", "video/webm", "ebml"),
+    ".mkv": _upload_type_spec("video", "videos", ".mkv", "video/x-matroska", "ebml"),
+    ".ogg": _upload_type_spec("video", "videos", ".ogg", "video/ogg", "ogg"),
+    ".avi": _upload_type_spec("video", "videos", ".avi", "video/x-msvideo", "avi"),
+}
+def _matches_upload_signature(spec: UploadTypeSpec, header: bytes) -> bool:
+    signatures = {
+        "jpeg": header.startswith(b"\xff\xd8\xff"),
+        "png": header.startswith(b"\x89PNG\r\n\x1a\n"),
+        "gif": header.startswith((b"GIF87a", b"GIF89a")),
+        "webp": len(header) >= 12 and header.startswith(b"RIFF") and header[8:12] == b"WEBP",
+        "bmp": header.startswith(b"BM"),
+        "pdf": header.startswith(b"%PDF-"),
+        "mp4": len(header) >= 12 and header[4:8] == b"ftyp",
+        "ebml": header.startswith(b"\x1aE\xdf\xa3"),
+        "ogg": header.startswith(b"OggS"),
+        "avi": len(header) >= 12 and header.startswith(b"RIFF") and header[8:12] == b"AVI ",
     }
-    allowed_extensions = {".mp4", ".webm", ".ogg", ".m4v", ".avi", ".mkv"}
+    return signatures.get(spec.signature, False)
 
-    return content_type in allowed_mime_types or extension in allowed_extensions
+
+def _validated_upload_spec(
+    file: UploadFile,
+    allowed_kinds: set[str],
+    header: bytes,
+) -> UploadTypeSpec:
+    extension = Path(file.filename or "").suffix.lower()
+    declared_media_type = (file.content_type or "").split(";", 1)[0].strip().lower()
+    spec = UPLOAD_TYPE_SPECS.get(extension)
+    if (
+        spec is None
+        or spec.kind not in allowed_kinds
+        or declared_media_type not in spec.declared_media_types
+        or not _matches_upload_signature(spec, header)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported or invalid upload content",
+        )
+    return spec
+
+
+@dataclass(frozen=True)
+class StoredUpload:
+    path: Path
+    url: str
+    filename: str
+    original_filename: str
+    size: int
+    spec: UploadTypeSpec
+
+
+async def _save_validated_upload(
+    file: UploadFile,
+    *,
+    allowed_kinds: set[str],
+    bucket_override: str | None = None,
+    user_id: int | None = None,
+    filename_prefix: str | None = None,
+) -> StoredUpload:
+    file_path = None
+    try:
+        header = await file.read(UPLOAD_HEADER_BYTES)
+        spec = _validated_upload_spec(file, allowed_kinds, header)
+        max_bytes = {
+            "image": MAX_IMAGE_UPLOAD_BYTES,
+            "video": MAX_VIDEO_UPLOAD_BYTES,
+            "pdf": MAX_PDF_UPLOAD_BYTES,
+        }[spec.kind]
+        bucket = bucket_override or spec.bucket
+        directory_parts = [bucket]
+        if user_id is not None:
+            directory_parts.append(str(user_id))
+        upload_dir = _upload_path(*directory_parts)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        filename = _build_unique_filename(file.filename, filename_prefix)
+        file_path = _upload_path(*directory_parts, filename)
+        size = 0
+        with file_path.open("xb") as buffer:
+            chunk = header
+            while chunk:
+                size += len(chunk)
+                if size > max_bytes:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                        detail="Upload exceeds the allowed size",
+                    )
+                buffer.write(chunk)
+                chunk = await file.read(UPLOAD_CHUNK_SIZE)
+
+        return StoredUpload(
+            path=file_path,
+            url=_upload_url(*directory_parts, filename),
+            filename=filename,
+            original_filename=_sanitize_filename(file.filename),
+            size=size,
+            spec=spec,
+        )
+    except Exception:
+        if file_path is not None:
+            file_path.unlink(missing_ok=True)
+        raise
+    finally:
+        await file.close()
+
+
+def _safe_download_filename(requested_name: str | None, actual_extension: str) -> str:
+    requested = _sanitize_filename(requested_name, "download")
+    safe_stem = Path(requested).stem[:100].strip("._-") or "download"
+    return f"{safe_stem}{actual_extension}"
+
+
+def _safe_upload_file_response(
+    file_path: Path,
+    *,
+    requested_filename: str | None = None,
+    disposition: str = "inline",
+) -> FileResponse:
+    spec = UPLOAD_TYPE_SPECS.get(file_path.suffix.lower())
+    if spec is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    try:
+        with file_path.open("rb") as stored_file:
+            header = stored_file.read(UPLOAD_HEADER_BYTES)
+    except OSError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found") from exc
+    if not _matches_upload_signature(spec, header):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
+    response_filename = _safe_download_filename(
+        requested_filename or file_path.name,
+        spec.extension,
+    )
+    safe_disposition = (
+        "inline"
+        if disposition == "inline" and spec.kind in {"image", "video"}
+        else "attachment"
+    )
+    return FileResponse(
+        path=file_path,
+        media_type=spec.media_type,
+        filename=response_filename,
+        content_disposition_type=safe_disposition,
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Security-Policy": "sandbox; default-src 'none'",
+            "Cross-Origin-Resource-Policy": "same-origin",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 def _is_admin_role(role) -> bool:
     if role is None:
@@ -1304,80 +1637,264 @@ class PostContent(BaseModel):
     polls: List[dict] = []
     expandable_lists: List[dict] = []
 
-def sanitize_html(content: str) -> str:
-    # Define allowed tags and attributes
-    ALLOWED_TAGS = [
-        'p', 'div', 'span', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-        'strong', 'em', 'u', 'strike', 'br', 'ul', 'ol', 'li',
-        'blockquote', 'pre', 'code', 'hr', 'a', 'img', 'table',
-        'thead', 'tbody', 'tr', 'th', 'td', 'style', 'b', 'i', 's',
-        'font', 'mark', 'del'
-    ]
-    
-    ALLOWED_ATTRIBUTES = {
-        '*': ['class', 'style', 'id', 'data-mce-style'],
-        'a': ['href', 'title', 'target'],
-        'img': ['src', 'alt', 'title'],
-        'td': ['colspan', 'rowspan'],
-        'th': ['colspan', 'rowspan', 'scope'],
-        'font': ['color', 'size', 'face'],
-        'p': ['align', 'style'],
-        'div': ['align', 'style'],
-        'span': ['style'],
-        'h1': ['style'],
-        'h2': ['style'],
-        'h3': ['style'],
-        'h4': ['style'],
-        'h5': ['style'],
-        'h6': ['style']
-    }
-    
-    # Define allowed CSS properties
-    ALLOWED_STYLES = [
-        'color', 'background-color', 'font-size', 'text-align', 
-        'font-family', 'font-weight', 'font-style', 'text-decoration'
-    ]
-    
-    # Create a CSS sanitizer with allowed styles
-    css_sanitizer = CSSSanitizer(allowed_css_properties=ALLOWED_STYLES)
-    
-    # Create a Bleach cleaner with the allowed tags, attributes, and CSS sanitizer
-    cleaner = bleach.Cleaner(
-        tags=ALLOWED_TAGS,
-        attributes=ALLOWED_ATTRIBUTES,
-        css_sanitizer=css_sanitizer,
-        strip=False  # Don't strip tags that aren't in the whitelist
+RICH_TEXT_ALLOWED_TAGS = {
+    "a", "b", "blockquote", "br", "button", "code", "del", "div", "em",
+    "figure", "font", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i",
+    "img", "li", "mark", "ol", "p", "pre", "s", "source", "span", "strike",
+    "strong", "table", "tbody", "td", "th", "thead", "tr", "u", "ul", "video",
+}
+RICH_TEXT_GLOBAL_ATTRIBUTES = {"class", "style"}
+RICH_TEXT_TAG_ATTRIBUTES = {
+    "a": {"href", "rel", "target", "title"},
+    "button": {"class", "data-file-url", "data-video-url", "type"},
+    "div": {
+        "align", "contenteditable", "data-file-name", "data-file-size",
+        "data-file-type", "data-file-url", "data-video-type", "data-video-url",
+    },
+    "figure": {"contenteditable"},
+    "font": {"color", "face", "size"},
+    "img": {"alt", "height", "src", "title", "width"},
+    "source": {"src", "type"},
+    "td": {"colspan", "rowspan"},
+    "th": {"colspan", "rowspan", "scope"},
+    "video": {"controls", "height", "preload", "src", "width"},
+}
+RICH_TEXT_ALLOWED_CLASSES = {
+    "aligncenter", "alignleft", "alignright", "custom-font", "d-block",
+    "editor-only", "editor-only-control", "file-actions", "file-attachment",
+    "file-icon", "file-info", "file-name", "file-size", "float-left", "float-right",
+    "mceNonEditable", "mx-auto", "post-image", "preserved-heading", "remove-btn",
+    "video-container", "video-data", "video-delete-btn", "video-delete-overlay",
+    "video-wrapper",
+}
+RICH_TEXT_ALLOWED_STYLES = {
+    "background-color", "border-radius", "color", "display", "float", "font-family",
+    "font-size", "font-style", "font-weight", "height", "margin", "margin-bottom",
+    "margin-left", "margin-right", "margin-top", "max-height", "max-width", "overflow-wrap",
+    "text-align", "text-decoration", "width", "word-break",
+}
+RICH_TEXT_CSS_KEYWORDS = {
+    "display": {"block", "inline", "inline-block", "list-item", "table", "table-cell", "table-row"},
+    "float": {"left", "none", "right"},
+    "font-style": {"italic", "normal", "oblique"},
+    "font-weight": {
+        "100", "200", "300", "400", "500", "600", "700", "800", "900",
+        "bold", "bolder", "lighter", "normal",
+    },
+    "overflow-wrap": {"anywhere", "break-word", "normal"},
+    "text-align": {"center", "end", "justify", "left", "right", "start"},
+    "text-decoration": {"line-through", "none", "overline", "underline"},
+    "word-break": {"break-all", "break-word", "keep-all", "normal"},
+}
+
+
+def _is_bounded_css_length(value: str, limits: dict[str, tuple[float, float]], keywords: set[str] | None = None) -> bool:
+    normalized_value = value.strip().lower()
+    if keywords and normalized_value in keywords:
+        return True
+
+    unit = ""
+    for candidate_unit in ("rem", "em", "px", "%"):
+        if normalized_value.endswith(candidate_unit):
+            unit = candidate_unit
+            normalized_value = normalized_value[:-len(candidate_unit)]
+            break
+    try:
+        amount = float(normalized_value)
+    except ValueError:
+        return False
+    if not unit:
+        return amount == 0
+    minimum, maximum = limits.get(unit, (1, 0))
+    return minimum <= amount <= maximum
+
+
+def _is_bounded_rich_text_css_value(property_name: str, value: str) -> bool:
+    if not value or len(value) > 128 or "\\" in value:
+        return False
+    lowered_value = value.lower()
+    if any(character.isspace() and ord(character) < 0x20 for character in value):
+        return False
+    if any(fragment in lowered_value for fragment in ("expression(", "url(", "@import")):
+        return False
+    if property_name in {"background-color", "color"}:
+        return len(value) <= 64
+    if property_name == "font-family":
+        return True
+    if property_name in RICH_TEXT_CSS_KEYWORDS:
+        return lowered_value in RICH_TEXT_CSS_KEYWORDS[property_name]
+    if property_name == "font-size":
+        return _is_bounded_css_length(
+            value,
+            {"px": (8, 96), "%": (50, 400), "em": (0.5, 6), "rem": (0.5, 6)},
+            {"large", "larger", "medium", "small", "smaller", "x-large", "x-small", "xx-large", "xx-small"},
+        )
+    if property_name in {"height", "max-height", "max-width", "width"}:
+        return _is_bounded_css_length(
+            value,
+            {"px": (0, 4096), "%": (0, 100), "em": (0, 256), "rem": (0, 256)},
+            {"auto", "none"},
+        )
+    if property_name == "border-radius":
+        return all(
+            _is_bounded_css_length(
+                token,
+                {"px": (0, 512), "%": (0, 100), "em": (0, 64), "rem": (0, 64)},
+            )
+            for token in value.split()
+        )
+    if property_name == "margin" or property_name.startswith("margin-"):
+        tokens = value.split()
+        return len(tokens) <= 4 and all(
+            _is_bounded_css_length(
+                token,
+                {"px": (-512, 512), "%": (-100, 100), "em": (-64, 64), "rem": (-64, 64)},
+                {"auto"},
+            )
+            for token in tokens
+        )
+    return False
+
+
+def _is_bounded_dimension_attribute(value: str) -> bool:
+    normalized_value = value.strip().lower()
+    if not normalized_value or len(normalized_value) > 32 or normalized_value.startswith("-"):
+        return False
+    if re.fullmatch(r"\d+(?:\.\d+)?", normalized_value):
+        normalized_value = f"{normalized_value}px"
+    return _is_bounded_css_length(
+        normalized_value,
+        {"px": (0, 4096), "%": (0, 100), "em": (0, 256), "rem": (0, 256)},
+        {"auto"},
     )
-    
-    # Sanitize the content
-    sanitized_content = cleaner.clean(content)
-    
-    return sanitized_content
+
+
+class BoundedRichTextCSSSanitizer(CSSSanitizer):
+    def sanitize_css(self, style: str) -> str:
+        declarations = []
+        for token in tinycss2.parse_declaration_list(style):
+            if token.type != "declaration" or token.lower_name not in self.allowed_css_properties:
+                continue
+            value = tinycss2.serialize(token.value).strip()
+            if not _is_bounded_rich_text_css_value(token.lower_name, value):
+                continue
+            important = " !important" if token.important else ""
+            declarations.append(f"{token.lower_name}: {value}{important}")
+        return "; ".join(declarations) + (";" if declarations else "")
+
+
+def _is_safe_rich_text_url(value: str, *, media_kind: str) -> bool:
+    if not value or value != value.strip() or len(value) > 2048 or "\\" in value:
+        return False
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
+        return False
+
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    if parsed.scheme:
+        return media_kind == "link" and parsed.scheme == "https" and bool(parsed.netloc)
+    if parsed.netloc or value.startswith("//"):
+        return False
+
+    if media_kind == "link":
+        return True
+
+    is_upload_route = (
+        parsed.path.startswith("/uploads/")
+        or "/api/uploads/" in parsed.path
+    )
+    if not is_upload_route:
+        return False
+
+    try:
+        _canonical_upload_relative_path(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _rich_text_attribute_allowed(tag: str, name: str, value: str) -> bool:
+    if name.startswith("on"):
+        return False
+    allowed_attributes = RICH_TEXT_GLOBAL_ATTRIBUTES | RICH_TEXT_TAG_ATTRIBUTES.get(tag, set())
+    if name not in allowed_attributes:
+        return False
+    if name == "class":
+        class_names = value.split()
+        return bool(class_names) and all(
+            class_name in RICH_TEXT_ALLOWED_CLASSES or class_name.startswith("language-")
+            for class_name in class_names
+        )
+    if name == "contenteditable":
+        return value.lower() == "false"
+    if name == "target":
+        return value in {"_blank", "_self"}
+    if name == "href":
+        return _is_safe_rich_text_url(value, media_kind="link")
+    if name == "src":
+        media_kind = "image" if tag == "img" else "video"
+        return _is_safe_rich_text_url(value, media_kind=media_kind)
+    if name in {"data-file-url", "data-video-url"}:
+        return _is_safe_rich_text_url(value, media_kind="attachment")
+    if name in {"height", "width"}:
+        return _is_bounded_dimension_attribute(value)
+    return True
+
+
+def sanitize_html(content: str) -> str:
+    raw_content = content or ""
+    if len(raw_content) > MAX_RICH_TEXT_INPUT_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Rich text exceeds the allowed size",
+        )
+    css_sanitizer = BoundedRichTextCSSSanitizer(
+        allowed_css_properties=RICH_TEXT_ALLOWED_STYLES,
+    )
+    cleaner = bleach.Cleaner(
+        tags=RICH_TEXT_ALLOWED_TAGS,
+        attributes=_rich_text_attribute_allowed,
+        protocols={"https"},
+        css_sanitizer=css_sanitizer,
+        strip=True,
+        strip_comments=True,
+    )
+    return cleaner.clean(raw_content)
 
 def _build_post_content(post: schemas.BlogCreate) -> str:
     content = sanitize_html(post.content)
 
     if post.code_snippets:
         for snippet in post.code_snippets:
-            content += f"\n[CODE:{snippet['language']}]{snippet['code']}\n"
+            language = escape(str(snippet["language"]), quote=True)
+            code = escape(str(snippet["code"]), quote=True)
+            content += f"\n[CODE:{language}]{code}\n"
 
     if post.media:
         for media in post.media:
+            media_url = escape(str(media["url"]), quote=True)
             if media['type'] == 'gif':
-                content += f"\n[GIF:{media['url']}]\n"
+                content += f"\n[GIF:{media_url}]\n"
             elif media['type'] == 'image':
-                content += f"\n[IMAGE:{media['url']}]\n"
+                content += f"\n[IMAGE:{media_url}]\n"
 
     if post.polls:
         for poll in post.polls:
-            options = ','.join(poll['options'])
+            options = ",".join(
+                escape(str(option), quote=True)
+                for option in poll["options"]
+            )
             content += f"\n[POLL:{options}]\n"
 
     if post.files:
         for file in post.files:
-            content += f"\n[FILE:{file['name']}|{file['url']}]\n"
+            file_name = escape(str(file["name"]), quote=True)
+            file_url = escape(str(file["url"]), quote=True)
+            content += f"\n[FILE:{file_name}|{file_url}]\n"
 
-    return content
+    return sanitize_html(content)
 
 @app.post("/api/classes/{class_id}/posts", response_model=schemas.BlogResponse)
 async def create_class_post(
@@ -1545,42 +2062,33 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 # Add these new endpoints
 @app.post("/api/upload/image")
 async def upload_image(file: UploadFile = File(...), current_user: models.User = Depends(get_current_user)):
-    try:
-        filename = _build_unique_filename(file.filename, "image")
-        file_path = _upload_path("images", filename)
-        with file_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        return {"url": _upload_url("images", filename)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+    stored = await _save_validated_upload(
+        file,
+        allowed_kinds={"image"},
+        user_id=current_user.id,
+        filename_prefix="image",
+    )
+    return {"url": stored.url}
 
 @app.post("/api/upload/video")
 async def upload_video(file: UploadFile = File(...), current_user: models.User = Depends(get_current_user)):
-    try:
-        if not _is_allowed_video_upload(file):
-            raise HTTPException(status_code=400, detail="Unsupported video type. MOV is not allowed.")
-
-        filename = _build_unique_filename(file.filename, "video")
-        file_path = _upload_path("videos", filename)
-        with file_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        return {"url": _upload_url("videos", filename)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+    stored = await _save_validated_upload(
+        file,
+        allowed_kinds={"video"},
+        user_id=current_user.id,
+        filename_prefix="video",
+    )
+    return {"url": stored.url}
 
 @app.post("/api/upload/file")
 async def upload_file(file: UploadFile = File(...), current_user: models.User = Depends(get_current_user)):
-    try:
-        if not _is_pdf_upload(file):
-            raise HTTPException(status_code=400, detail="Only PDF files are allowed")
-
-        filename = _build_unique_filename(file.filename, "file")
-        file_path = _upload_path("files", filename)
-        with file_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        return {"url": _upload_url("files", filename)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+    stored = await _save_validated_upload(
+        file,
+        allowed_kinds={"pdf"},
+        user_id=current_user.id,
+        filename_prefix="file",
+    )
+    return {"url": stored.url}
 
 @app.post("/api/upload")
 async def upload_generic_file(
@@ -1588,38 +2096,16 @@ async def upload_generic_file(
     current_user: models.User = Depends(get_current_user)
 ):
     """Upload a file and return its URL"""
-    try:
-        bucket = _resolve_upload_bucket(file)
-        if bucket == "files" and not _is_pdf_upload(file):
-            raise HTTPException(status_code=400, detail="Only PDF files are allowed")
-        if bucket == "videos" and not _is_allowed_video_upload(file):
-            raise HTTPException(status_code=400, detail="Unsupported video type. MOV is not allowed.")
-
-        user_dir = _upload_path(bucket, str(current_user.id))
-        user_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Generate a unique filename
-        filename = _build_unique_filename(file.filename)
-        
-        # Save the file
-        file_path = user_dir / filename
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        # Return the file URL
-        file_url = _upload_url(bucket, str(current_user.id), filename)
-        
-        return {
-            "url": file_url,
-            "filename": file.filename,
-            "size": os.path.getsize(file_path)
-        }
-    except Exception as e:
-        print(f"File upload error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to upload file: {str(e)}"
-        ) from e
+    stored = await _save_validated_upload(
+        file,
+        allowed_kinds={"image", "pdf", "video"},
+        user_id=current_user.id,
+    )
+    return {
+        "url": stored.url,
+        "filename": stored.original_filename,
+        "size": stored.size,
+    }
 
 @app.get("/api/teacher/dashboard")
 async def get_teacher_dashboard(
@@ -2739,26 +3225,29 @@ async def upload_profile_image(
     current_user: models.User = Depends(get_current_user)
 ):
     """Upload profile image"""
+    stored = None
     try:
-        upload_dir = _upload_path("profile_images")
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        unique_filename = _build_unique_filename(file.filename, f"profile_{current_user.id}")
-        file_path = upload_dir / unique_filename
-        
-        # Save file
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        stored = await _save_validated_upload(
+            file,
+            allowed_kinds={"image"},
+            bucket_override="profile_images",
+            filename_prefix=f"profile_{current_user.id}",
+        )
         
         # Update user record in database
         user = db.query(models.User).filter(models.User.id == current_user.id).first()
-        user.profile_image = _upload_url("profile_images", unique_filename)
+        user.profile_image = stored.url
         db.commit()
         db.refresh(user)
         
         return {"image_url": user.profile_image}
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to upload image: {str(e)}") from e
+        if stored is not None:
+            stored.path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail="Failed to upload image") from e
 
 @app.post("/api/user/upload-cover-image")
 async def upload_cover_image(
@@ -2767,26 +3256,29 @@ async def upload_cover_image(
     current_user: models.User = Depends(get_current_user)
 ):
     """Upload cover image"""
+    stored = None
     try:
-        upload_dir = _upload_path("cover_images")
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        unique_filename = _build_unique_filename(file.filename, f"cover_{current_user.id}")
-        file_path = upload_dir / unique_filename
-        
-        # Save file
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        stored = await _save_validated_upload(
+            file,
+            allowed_kinds={"image"},
+            bucket_override="cover_images",
+            filename_prefix=f"cover_{current_user.id}",
+        )
         
         # Update user record in database
         user = db.query(models.User).filter(models.User.id == current_user.id).first()
-        user.cover_image = _upload_url("cover_images", unique_filename)
+        user.cover_image = stored.url
         db.commit()
         db.refresh(user)
         
         return {"image_url": user.cover_image}
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to upload image: {str(e)}") from e
+        if stored is not None:
+            stored.path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail="Failed to upload image") from e
 
 def _get_user_class_ids(db: Session, user: models.User) -> List[int]:
     if user.role == models.UserRole.STUDENT:
@@ -3768,18 +4260,24 @@ async def get_class_students(
     
     return students
 
-# Add this after creating the app
-app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
-
 @app.get("/api/uploads/{file_path:path}")
-async def get_uploaded_file(file_path: str):
+async def get_uploaded_file(
+    file_path: str,
+    current_user: models.User = Depends(get_current_user),
+):
     """Serve uploaded files with compatibility for both legacy and bucketed paths."""
-    normalized_path = file_path.replace("\\", "/").lstrip("/")
+    try:
+        normalized_path = _canonical_upload_relative_path(file_path)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid upload path",
+        ) from exc
 
     # 1) Exact path hit (works for /api/uploads/images/<user>/<file> and legacy /api/uploads/<user>/<file>)
     direct_path = _upload_path(normalized_path)
     if direct_path.exists() and direct_path.is_file():
-        return FileResponse(path=direct_path)
+        return _safe_upload_file_response(direct_path)
 
     parts = [part for part in normalized_path.split("/") if part]
 
@@ -3790,7 +4288,7 @@ async def get_uploaded_file(file_path: str):
         for bucket in ("images", "videos", "files"):
             candidate = _upload_path(bucket, user_id, *trailing_parts)
             if candidate.exists() and candidate.is_file():
-                return FileResponse(path=candidate)
+                return _safe_upload_file_response(candidate)
 
     # 3) Bucketed URL fallback: /api/uploads/<bucket>/<user>/<file> -> legacy location
     if len(parts) >= 3 and parts[0] in {"images", "videos", "files"} and parts[1].isdigit():
@@ -3798,19 +4296,11 @@ async def get_uploaded_file(file_path: str):
         trailing_parts = parts[2:]
         legacy_candidate = _upload_path(user_id, *trailing_parts)
         if legacy_candidate.exists() and legacy_candidate.is_file():
-            return FileResponse(path=legacy_candidate)
-
-    # 4) Filename fallback: if paths changed, try locating the same filename anywhere under uploads.
-    if parts:
-        target_name = Path(parts[-1]).name
-        if target_name:
-            for candidate in UPLOAD_DIR.rglob(target_name):
-                if candidate.is_file():
-                    return FileResponse(path=candidate)
+            return _safe_upload_file_response(legacy_candidate)
 
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"File not found: {normalized_path}"
+        detail="File not found",
     )
 
 @app.delete("/api/upload/{file_path:path}")
@@ -3823,24 +4313,33 @@ async def delete_file(
         # Ensure the file belongs to the current user.
         # Supports both legacy uploads/<user_id>/... and new uploads/<bucket>/<user_id>/... layouts.
         user_dir = f"{current_user.id}"
-        allowed_prefixes = {
-            user_dir,
-            f"images/{user_dir}",
-            f"videos/{user_dir}",
-            f"files/{user_dir}",
-        }
-        normalized_path = file_path.replace("\\", "/").lstrip("/")
-        if not any(normalized_path.startswith(prefix) for prefix in allowed_prefixes):
+        try:
+            normalized_path = _canonical_upload_relative_path(file_path)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid upload path",
+            ) from exc
+        normalized_parts = normalized_path.split("/")
+        belongs_to_user = (
+            normalized_parts[0] == user_dir
+            or (
+                len(normalized_parts) >= 2
+                and normalized_parts[0] in {"images", "videos", "files"}
+                and normalized_parts[1] == user_dir
+            )
+        )
+        if not belongs_to_user:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You don't have permission to delete this file"
             )
         
         # Construct the full file path
-        full_path = _upload_path(file_path)
+        full_path = _upload_path(normalized_path)
         
         # Check if file exists
-        if not full_path.exists():
+        if not full_path.is_file():
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="File not found"
@@ -3852,11 +4351,10 @@ async def delete_file(
         return {"message": "File deleted successfully"}
     except Exception as e:
         if isinstance(e, HTTPException):
-            raise e
-        print(f"File deletion error: {str(e)}")
+            raise
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to delete file: {str(e)}"
+            detail="Failed to delete file",
         ) from e
 
 @app.get("/api/download")
@@ -3867,22 +4365,13 @@ async def download_file(
 ):
     """Force download a file with the specified filename"""
     try:        
-        # Extract the file path from the URL.
-        # Supports both /uploads/... and /api/uploads/... forms.
-        upload_match = re.search(r"(?:/api)?/uploads/(.+)$", url)
-        if upload_match:
-            file_path = upload_match.group(1)
-        elif url.startswith('/uploads/'):
-            file_path = url[9:]
-        elif url.startswith('/api/uploads/'):
-            file_path = url[13:]
-        elif url.startswith('http'):
+        try:
+            file_path = _canonical_upload_relative_path(url)
+        except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid file URL"
-            )
-        else:
-            file_path = url
+                detail="Invalid file URL",
+            ) from exc
         
         # Construct the full path
         full_path = _upload_path(file_path)
@@ -3891,23 +4380,20 @@ async def download_file(
         if not full_path.exists():
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"File not found: {full_path}"
+                detail="File not found",
             )
         
-        # Return the file as an attachment to force download
-        return FileResponse(
-            path=full_path,
-            filename=filename,
-            media_type='application/octet-stream',
-            headers={"Content-Disposition": f"attachment; filename=\"{filename}\""}
+        return _safe_upload_file_response(
+            full_path,
+            requested_filename=filename,
+            disposition="attachment",
         )
     except Exception as e:
         if isinstance(e, HTTPException):
             raise e
-        print(f"Download error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to download file: {str(e)}"
+            detail="Failed to download file",
         ) from e
 
 # Add new endpoints for archiving and deleting classes

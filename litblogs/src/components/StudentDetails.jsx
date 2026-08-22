@@ -3,10 +3,13 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import axios from 'axios';
 import Loader from './Loader';
-import ReactHtmlParser from 'react-html-parser';
 import { formatRelativeTime } from '../utils/timeUtils';
 import { toast } from 'react-hot-toast';
 import Footer from './Footer';
+import {
+  createSanitizedRichTextContainer,
+  serializeSanitizedRichText,
+} from '../utils/richTextSecurity';
 
 const StudentDetails = ({ darkMode }) => {
   const { classId, studentId } = useParams();
@@ -95,19 +98,18 @@ const StudentDetails = ({ darkMode }) => {
   const truncateHTML = (htmlContent, maxLength = 100) => {
     if (!htmlContent) return '';
     
-    // Create a div to hold the HTML content
-    const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = htmlContent;
+    const tempDiv = createSanitizedRichTextContainer(htmlContent);
     
     // Get text content
     const textContent = tempDiv.textContent || tempDiv.innerText || '';
     
     // Truncate text content
     if (textContent.length <= maxLength) {
-      return htmlContent;
+      return serializeSanitizedRichText(tempDiv);
     }
-    
-    return textContent.substring(0, maxLength) + '...';
+
+    tempDiv.replaceChildren(document.createTextNode(`${textContent.substring(0, maxLength)}...`));
+    return serializeSanitizedRichText(tempDiv);
   };
 
   const openPost = (postId) => {
@@ -319,9 +321,10 @@ const StudentDetails = ({ darkMode }) => {
                     <div className="mb-2">
                       <h4 className="text-lg font-semibold dark:text-white">{post.title}</h4>
                     </div>
-                    <div className="text-gray-600 dark:text-gray-300 mb-4">
-                      {ReactHtmlParser(truncateHTML(post.content, 200))}
-                    </div>
+                    <div
+                      className="text-gray-600 dark:text-gray-300 mb-4"
+                      dangerouslySetInnerHTML={{ __html: truncateHTML(post.content, 200) }}
+                    />
                     <div className="flex justify-between items-center">
                       <div className="flex items-center space-x-4 text-gray-500 dark:text-gray-400">
                         <div className="flex items-center space-x-1">
