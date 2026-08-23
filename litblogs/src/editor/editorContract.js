@@ -14,6 +14,23 @@ const MALFORMED_PERCENT_ESCAPE_PATTERN = /%(?![0-9a-f]{2})/i;
 const FONT_FAMILY_ITEM_PATTERN = /^(?:"[^"\\\r\n]+"|'[^'\\\r\n]+'|[A-Za-z][A-Za-z0-9 _-]*)$/;
 const LENGTH_PATTERN = /^(\d+(?:\.\d+)?|\.\d+)(px|%|em|rem)$/i;
 const GLOBAL_CSS_VALUES = new Set(["inherit", "initial", "revert", "revert-layer", "unset"]);
+const CSS_NUMBER_SOURCE = String.raw`[+-]?(?:\d+(?:\.\d+)?|\.\d+)`;
+const RGB_CHANNEL_SOURCE = `(?:[+-]?\\d+|${CSS_NUMBER_SOURCE}%)`;
+const ALPHA_SOURCE = `${CSS_NUMBER_SOURCE}%?`;
+const HUE_SOURCE = `${CSS_NUMBER_SOURCE}(?:deg)?`;
+const PERCENT_SOURCE = `${CSS_NUMBER_SOURCE}%`;
+const LEGACY_COLOR_FUNCTION_PATTERNS = [
+  new RegExp(`^rgb\\(\\s*${RGB_CHANNEL_SOURCE}\\s*,\\s*${RGB_CHANNEL_SOURCE}\\s*,\\s*${RGB_CHANNEL_SOURCE}\\s*\\)$`),
+  new RegExp(`^rgba\\(\\s*${RGB_CHANNEL_SOURCE}\\s*,\\s*${RGB_CHANNEL_SOURCE}\\s*,\\s*${RGB_CHANNEL_SOURCE}\\s*,\\s*${ALPHA_SOURCE}\\s*\\)$`),
+  new RegExp(`^hsl\\(\\s*${HUE_SOURCE}\\s*,\\s*${PERCENT_SOURCE}\\s*,\\s*${PERCENT_SOURCE}\\s*\\)$`),
+  new RegExp(`^hsla\\(\\s*${HUE_SOURCE}\\s*,\\s*${PERCENT_SOURCE}\\s*,\\s*${PERCENT_SOURCE}\\s*,\\s*${ALPHA_SOURCE}\\s*\\)$`),
+];
+const RGB_COLOR_PATTERN = new RegExp(
+  `^(rgb|rgba)\\(\\s*(${RGB_CHANNEL_SOURCE})\\s*,\\s*(${RGB_CHANNEL_SOURCE})\\s*,\\s*(${RGB_CHANNEL_SOURCE})(?:\\s*,\\s*(${ALPHA_SOURCE}))?\\s*\\)$`,
+);
+const HSL_COLOR_PATTERN = new RegExp(
+  `^(hsl|hsla)\\(\\s*(${HUE_SOURCE})\\s*,\\s*(${PERCENT_SOURCE})\\s*,\\s*(${PERCENT_SOURCE})(?:\\s*,\\s*(${ALPHA_SOURCE}))?\\s*\\)$`,
+);
 
 const hasControlCharacters = (value) => Array.from(value).some((character) => {
   const codePoint = character.codePointAt(0);
@@ -40,6 +57,81 @@ const formatNumber = (value) => {
   return Number(value.toFixed(6)).toString();
 };
 
+const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
+const roundColorByte = (unitValue) => Math.floor(
+  Number(clamp(unitValue, 0, 1).toFixed(6)) * 255 + 0.5,
+);
+
+const normalizeAlphaToken = (token) => {
+  if (token === undefined) return 1;
+  const percent = token.endsWith("%");
+  const amount = Number(percent ? token.slice(0, -1) : token);
+  if (!Number.isFinite(amount)) return null;
+  return Number(clamp(amount / (percent ? 100 : 1), 0, 1).toFixed(6));
+};
+
+const canonicalFunctionalColor = (channels, alpha) => {
+  if (alpha === 1) {
+    const rgb = `rgb(${channels.join(", ")})`;
+    return PALETTE_RGB_ALIASES[rgb] || rgb;
+  }
+  return `rgba(${channels.join(", ")}, ${formatNumber(alpha)})`;
+};
+
+const normalizeRgbFunction = (value) => {
+  const match = value.match(RGB_COLOR_PATTERN);
+  if (!match || (match[1] === "rgba") !== (match[5] !== undefined)) return null;
+  const channels = match.slice(2, 5).map((token) => {
+    if (token.endsWith("%")) return roundColorByte(Number(token.slice(0, -1)) / 100);
+    return clamp(Number(token), 0, 255);
+  });
+  const alpha = normalizeAlphaToken(match[5]);
+  return channels.every(Number.isFinite) && alpha !== null
+    ? canonicalFunctionalColor(channels, alpha)
+    : null;
+};
+
+const hueChannel = (minimum, maximum, rawHue) => {
+  let hue = rawHue;
+  if (hue < 0) hue += 1;
+  if (hue > 1) hue -= 1;
+  if (hue < 1 / 6) return minimum + (maximum - minimum) * 6 * hue;
+  if (hue < 1 / 2) return maximum;
+  if (hue < 2 / 3) return minimum + (maximum - minimum) * (2 / 3 - hue) * 6;
+  return minimum;
+};
+
+const normalizeHslFunction = (value) => {
+  const match = value.match(HSL_COLOR_PATTERN);
+  if (!match || (match[1] === "hsla") !== (match[5] !== undefined)) return null;
+  const hueDegrees = Number(match[2].replace(/deg$/, ""));
+  const saturation = clamp(Number(match[3].slice(0, -1)) / 100, 0, 1);
+  const lightness = clamp(Number(match[4].slice(0, -1)) / 100, 0, 1);
+  const alpha = normalizeAlphaToken(match[5]);
+  if (![hueDegrees, saturation, lightness].every(Number.isFinite) || alpha === null) return null;
+
+  const hue = (((hueDegrees % 360) + 360) % 360) / 360;
+  let unitChannels;
+  if (saturation === 0) {
+    unitChannels = [lightness, lightness, lightness];
+  } else {
+    const maximum = lightness < 0.5
+      ? lightness * (1 + saturation)
+      : lightness + saturation - lightness * saturation;
+    const minimum = 2 * lightness - maximum;
+    unitChannels = [
+      hueChannel(minimum, maximum, hue + 1 / 3),
+      hueChannel(minimum, maximum, hue),
+      hueChannel(minimum, maximum, hue - 1 / 3),
+    ];
+  }
+  return canonicalFunctionalColor(unitChannels.map(roundColorByte), alpha);
+};
+
+const normalizeLegacyColorFunction = (value) => (
+  value.startsWith("rgb") ? normalizeRgbFunction(value) : normalizeHslFunction(value)
+);
+
 export const normalizePaletteColor = (rawValue, palette = "text") => {
   if (typeof rawValue !== "string" || !paletteValues[palette]) return null;
   const value = rawValue.trim().toLowerCase();
@@ -60,15 +152,15 @@ export const normalizeImportedColor = (rawValue) => {
   }
   const normalized = rawValue.trim().toLowerCase();
   if (!normalized || GLOBAL_CSS_VALUES.has(normalized)) return null;
-  const colorFunction = normalized.match(/^(rgb|rgba|hsl|hsla)\(([^)]*)\)$/);
-  const expectedCommas = { rgb: 2, rgba: 3, hsl: 2, hsla: 3 };
   if (!(
-    /^#[0-9a-f]{3,8}$/.test(normalized)
+    /^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/.test(normalized)
     || /^[a-z]+$/.test(normalized)
-    || (colorFunction
-      && (colorFunction[2].match(/,/g) || []).length === expectedCommas[colorFunction[1]])
+    || LEGACY_COLOR_FUNCTION_PATTERNS.some((pattern) => pattern.test(normalized))
   )) {
     return null;
+  }
+  if (/^(?:rgb|hsl)a?\(/.test(normalized)) {
+    return normalizeLegacyColorFunction(normalized);
   }
 
   const probe = document.createElement("span");
@@ -86,16 +178,11 @@ export const normalizeImportedColor = (rawValue) => {
   let channels = rgbMatch.slice(1, 4).map(Number);
   let alpha = 1;
   const hexMatch = normalized.match(/^#([0-9a-f]{3,8})$/i);
-  const alphaFunctionMatch = normalized.match(
-    /^(?:rgba|hsla)\([^,]+,[^,]+,[^,]+,\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*\)$/i,
-  );
   if (hexMatch && [4, 8].includes(hexMatch[1].length)) {
     const alphaHex = hexMatch[1].length === 4
       ? `${hexMatch[1][3]}${hexMatch[1][3]}`
       : hexMatch[1].slice(6, 8);
     alpha = Number.parseInt(alphaHex, 16) / 255;
-  } else if (alphaFunctionMatch) {
-    alpha = Math.max(0, Math.min(1, Number(alphaFunctionMatch[1])));
   } else if (normalized === "transparent") {
     alpha = 0;
     channels = [0, 0, 0];
@@ -213,6 +300,9 @@ export const normalizeLinkUrl = (rawValue) => {
     return null;
   }
 
+  const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(value);
+  if (hasScheme && !/^https:\/\/[^/?#]/i.test(value)) return null;
+
   const rawPath = value.split(/[?#]/, 1)[0];
   let decodedPath;
   try {
@@ -234,7 +324,7 @@ export const normalizeLinkUrl = (rawValue) => {
     if (parsed.username || parsed.password || !["http:", "https:"].includes(parsed.protocol)) {
       return null;
     }
-    if (/^[a-z][a-z0-9+.-]*:/i.test(value) && parsed.protocol !== "https:") return null;
+    if (hasScheme && parsed.protocol !== "https:") return null;
     if (parsed.origin !== base.origin && parsed.protocol !== "https:") return null;
     return value;
   } catch {

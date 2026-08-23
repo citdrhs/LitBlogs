@@ -1209,6 +1209,7 @@ def validate_release() -> None:
         "npm --prefix litblogs audit --omit=dev --audit-level=high",
         "check-generic-secrets.py",
         "validate-repository-policy.py",
+        'test -f "$staging/tree/litblogs/rich_text_security.py"',
         (
             "git archive --format=tar HEAD -- deploy docs/operations litblogs/*.py "
             "litblogs/rich_text_contract.json "
@@ -2264,6 +2265,7 @@ def validate_maintenance_release_contract() -> None:
         "litblogs/password_reset_delivery.py",
         "litblogs/rich_text_contract.json",
         "litblogs/rich_text_contract.py",
+        "litblogs/rich_text_security.py",
         "litblogs/runtime_database_identity.py",
         "litblogs/migrations/sqlite_contract.py",
     ):

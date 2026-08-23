@@ -13,6 +13,7 @@ import {
   isPaletteColorActive,
   normalizePaletteColor,
 } from "./richTextSchema.js";
+import { sanitizeRichText } from "../utils/richTextSecurity.js";
 
 const IMAGE_URL = "/api/uploads/objects/11/11111111111111111111111111111111.png";
 const VIDEO_URL = "/api/uploads/objects/22/22222222222222222222222222222222.mp4";
@@ -143,6 +144,15 @@ describe("createRichTextExtensions", () => {
     ["#1234", "rgba(17, 34, 51, 0.266667)"],
     ["rgba(1, 2, 3, .3333333)", "rgba(1, 2, 3, 0.333333)"],
     ["hsl(0, 0%, 50%)", "rgb(128, 128, 128)"],
+    ["rgba(1, 2, 3, 50%)", "rgba(1, 2, 3, 0.5)"],
+    ["rgba(1, 2, 3, 33.333333%)", "rgba(1, 2, 3, 0.333333)"],
+    ["hsl(120deg, 100%, 50%)", "rgb(0, 255, 0)"],
+    ["hsl(0, 50%, 33.333333%)", "rgb(128, 43, 43)"],
+    ["hsl(0, -1%, 50%)", "rgb(128, 128, 128)"],
+    ["rgb(49.999%, 0%, 12.345678%)", "rgb(127, 0, 31)"],
+    ["rgb(0.196078%, 0%, 0%)", "rgb(1, 0, 0)"],
+    ["rgba(12.345678%, 50%, 99.9%, 99.999999%)", "rgb(31, 128, 255)"],
+    ["activeborder", "activeborder"],
     ["rebeccapurple", "rebeccapurple"],
     ["currentcolor", "currentcolor"],
   ])("round-trips the sanitizer-admitted legacy CSS color %s as %s", (input, expected) => {
@@ -318,6 +328,18 @@ describe("createRichTextExtensions", () => {
     );
     expect(createEditor(once).getHTML()).toBe(once);
     expect(once.match(new RegExp(VIDEO_URL, "g"))).toHaveLength(1);
+  });
+
+  it("reopens sanitized untyped and multi-source videos without dropping bound assets", () => {
+    const imported = sanitizeRichText(`
+      <video controls><source src="${VIDEO_URL}"></video>
+      <video controls><source src="${VIDEO_URL}" type="text/html"><source src="${VIDEO_URL}" type="video/mp4"></video>
+    `);
+    const serialized = createEditor(imported).getHTML();
+
+    expect(serialized.match(new RegExp(VIDEO_URL, "g"))).toHaveLength(2);
+    expect(parseHtml(serialized).querySelectorAll("figure.video-container")).toHaveLength(2);
+    expect(createEditor(serialized).getHTML()).toBe(serialized);
   });
 
   it("normalizes canonical and approved legacy PDF attachments without editor controls", () => {

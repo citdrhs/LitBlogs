@@ -318,6 +318,7 @@ jobs:
           test -f "$staging/tree/litblogs/password_reset_delivery.py"
           test -f "$staging/tree/litblogs/rich_text_contract.json"
           test -f "$staging/tree/litblogs/rich_text_contract.py"
+          test -f "$staging/tree/litblogs/rich_text_security.py"
           test -f "$staging/tree/litblogs/runtime_database_identity.py"
           test -f "$staging/tree/litblogs/migrations/sqlite_contract.py"
           cp -R litblogs/dist "$staging/tree/litblogs/dist"

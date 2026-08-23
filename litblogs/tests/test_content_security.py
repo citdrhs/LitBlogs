@@ -3,6 +3,7 @@ import hashlib
 import inspect
 import re
 from datetime import timedelta
+from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,11 +16,52 @@ from starlette.routing import Mount
 import main
 import models
 from database import SessionLocal
+from rich_text_contract import RICH_TEXT_CONTRACT
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"safe-image-payload"
 PDF_BYTES = b"%PDF-1.7\n" + b"safe-pdf-payload"
 MP4_BYTES = b"\x00\x00\x00\x18ftypisom" + b"safe-video-payload"
 PNG_SIZE = len(PNG_BYTES)
+PALETTE_RGB_CASES = [
+    (
+        ", ".join(str(int(entry["value"][offset : offset + 2], 16)) for offset in (1, 3, 5)),
+        entry["value"],
+    )
+    for palette_name in ("text", "highlight")
+    for entry in RICH_TEXT_CONTRACT["palettes"][palette_name]
+    if entry["value"] is not None
+]
+
+
+class _RichTextProbe(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.elements = []
+        self.text = []
+
+    def handle_starttag(self, tag, attrs):
+        self.elements.append((tag, dict(attrs)))
+
+    def handle_startendtag(self, tag, attrs):
+        self.elements.append((tag, dict(attrs)))
+
+    def handle_data(self, data):
+        self.text.append(data)
+
+
+def _probe_rich_text(value):
+    probe = _RichTextProbe()
+    probe.feed(value)
+    probe.close()
+    return probe
+
+
+def _element(probe, tag, *, class_name=None):
+    for candidate_tag, attributes in probe.elements:
+        classes = set((attributes.get("class") or "").split())
+        if candidate_tag == tag and (class_name is None or class_name in classes):
+            return attributes
+    return None
 
 
 def _security_actor(user_id=42, role=models.UserRole.STUDENT):
@@ -116,6 +158,49 @@ def test_server_sanitizer_removes_active_content_and_unsafe_urls():
     assert "cache=bypass" not in sanitized
 
 
+def test_server_sanitizer_drops_dangerous_subtrees_but_unwraps_harmless_unknown_markup():
+    hidden_key = f"objects/a1/{'a1' + ('1' * 30)}.png"
+    sanitized = main.sanitize_html(
+        f"""
+        <iframe><img src="/api/uploads/{hidden_key}">hidden frame text</iframe>
+        <form><p>hidden form text</p></form>
+        <svg><title>hidden svg text</title></svg>
+        <section><strong>kept wrapper text</strong></section>
+        """
+    )
+
+    assert hidden_key not in sanitized
+    assert "hidden frame text" not in sanitized
+    assert "hidden form text" not in sanitized
+    assert "hidden svg text" not in sanitized
+    assert "<section" not in sanitized
+    assert "<strong>kept wrapper text</strong>" in sanitized
+
+
+def test_server_sanitizer_preserves_html5_foster_parented_content():
+    sanitized = main.sanitize_html(
+        "<table>before<div>inside</div><tr><td>x</td></tr>after</table>"
+    )
+
+    assert "before" in sanitized
+    assert "<div>inside</div>" in sanitized
+    assert "after" in sanitized
+    assert "<table><tbody><tr><td>x</td></tr></tbody></table>" in sanitized
+    assert sanitized.index("before") < sanitized.index("<div>inside</div>")
+    assert sanitized.index("<div>inside</div>") < sanitized.index("after")
+    assert sanitized.index("after") < sanitized.index("<table>")
+
+
+@pytest.mark.parametrize("tag", ["plaintext", "xmp", "textarea", "title"])
+def test_server_sanitizer_does_not_leak_synthetic_html_into_unclosed_text_tags(tag):
+    assert main.sanitize_html(f"<{tag}>hello") == "hello"
+
+
+@pytest.mark.parametrize("tag", ["iframe", "script", "style"])
+def test_server_sanitizer_drops_unclosed_dangerous_raw_text_subtrees(tag):
+    assert main.sanitize_html(f"<{tag}>hidden<p>swallowed") == ""
+
+
 def test_server_sanitizer_preserves_supported_rich_text_and_uploaded_media():
     sanitized = main.sanitize_html(
         """
@@ -137,18 +222,342 @@ def test_server_sanitizer_preserves_supported_rich_text_and_uploaded_media():
 
     assert "<h2>Reading response</h2>" in sanitized
     assert "font-family: Georgia, serif" in sanitized
-    assert "color: #123456" in sanitized
-    assert "background-color: #fafafa" in sanitized
+    assert "color: rgb(18, 52, 86)" in sanitized
+    assert "background-color: rgb(250, 250, 250)" in sanitized
     assert "font-size: 18px" in sanitized
     assert "text-align: center" in sanitized
     assert "position" not in sanitized
-    assert '<figure class="video-container" contenteditable="false">' in sanitized
+    assert '<figure class="video-container">' in sanitized
+    assert "contenteditable" not in sanitized
     assert "<video controls" in sanitized
     assert '<source src="/api/uploads/objects/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp4" type="video/mp4">' in sanitized
     assert 'src="/api/uploads/objects/bb/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.mp4"' in sanitized
     assert "https://tracker.example/direct.mp4" not in sanitized
     assert "data:video/mp4" not in sanitized
     assert '<img src="/api/uploads/objects/cc/cccccccccccccccccccccccccccccccc.png" alt="Book cover">' in sanitized
+
+
+def test_server_sanitizer_canonicalizes_deployment_prefixed_upload_urls():
+    object_id = "ab" + ("1" * 30)
+    canonical_url = f"/api/uploads/objects/ab/{object_id}.png"
+
+    sanitized = main.sanitize_html(
+        f'<img src="/litblogs{canonical_url}" alt="Legacy deployment path">'
+    )
+
+    assert canonical_url in sanitized
+    assert "/litblogs/api/uploads/" not in sanitized
+
+
+@pytest.mark.parametrize(
+    ("legacy_size", "canonical_size"),
+    [
+        ("8pt", "10.667px"),
+        ("10pt", "13.333px"),
+        ("12pt", "16px"),
+        ("14pt", "18.667px"),
+        ("16pt", "21.333px"),
+        ("18pt", "24px"),
+        ("24pt", "32px"),
+        ("36pt", "48px"),
+        ("48pt", "64px"),
+    ],
+)
+def test_server_sanitizer_normalizes_each_contract_point_size(legacy_size, canonical_size):
+    sanitized = main.sanitize_html(
+        f'<span style="font-size: {legacy_size} !important">Sized</span>'
+    )
+
+    assert f"font-size: {canonical_size}" in sanitized
+    assert "!important" not in sanitized
+
+
+@pytest.mark.parametrize(("rgb_channels", "canonical_hex"), PALETTE_RGB_CASES)
+def test_server_sanitizer_normalizes_each_palette_rgb_alias(rgb_channels, canonical_hex):
+    sanitized = main.sanitize_html(
+        f'<span style="color: rgba({rgb_channels}, 1)">Palette</span>'
+    )
+
+    assert f"color: {canonical_hex}" in sanitized
+
+
+@pytest.mark.parametrize(
+    ("legacy_color", "canonical_color"),
+    [
+        ("transparent", "transparent"),
+        ("rgb(10%, 20%, 30%)", "rgb(26, 51, 77)"),
+        ("#1234", "rgba(17, 34, 51, 0.266667)"),
+        ("rgba(1, 2, 3, .3333333)", "rgba(1, 2, 3, 0.333333)"),
+        ("hsl(0, 0%, 50%)", "rgb(128, 128, 128)"),
+        ("rebeccapurple", "rebeccapurple"),
+        ("currentcolor", "currentcolor"),
+        ("canvastext", "canvastext"),
+        ("buttontext", "buttontext"),
+        ("activeborder", "activeborder"),
+        ("buttonhighlight", "buttonhighlight"),
+        ("threedface", "threedface"),
+        ("windowtext", "windowtext"),
+        ("rgba(1, 2, 3, 50%)", "rgba(1, 2, 3, 0.5)"),
+        ("rgba(1, 2, 3, 33.333333%)", "rgba(1, 2, 3, 0.333333)"),
+        ("hsl(120deg, 100%, 50%)", "rgb(0, 255, 0)"),
+        ("hsl(0, 50%, 33.333333%)", "rgb(128, 43, 43)"),
+        ("hsl(0, -1%, 50%)", "rgb(128, 128, 128)"),
+        ("rgb(49.999%, 0%, 12.345678%)", "rgb(127, 0, 31)"),
+        ("rgb(0.196078%, 0%, 0%)", "rgb(1, 0, 0)"),
+        ("rgba(12.345678%, 50%, 99.9%, 99.999999%)", "rgb(31, 128, 255)"),
+    ],
+)
+def test_server_sanitizer_canonicalizes_safe_legacy_css_colors(
+    legacy_color, canonical_color
+):
+    sanitized = main.sanitize_html(
+        f'<span style="color: {legacy_color}">Legacy color</span>'
+    )
+
+    assert f"color: {canonical_color}" in sanitized
+
+
+def test_server_sanitizer_rejects_unsupported_modern_css_color_syntax():
+    sanitized = main.sanitize_html(
+        '<span style="color: rgb(10% 20% 30% / 50%)">Modern color</span>'
+        '<span style="color: hsl(.5turn, 100%, 50%)">Turn color</span>'
+        '<span style="color: hsl(2.094395rad, 100%, 50%)">Rad color</span>'
+        '<span style="color: hsl(200grad, 100%, 50%)">Grad color</span>'
+        '<span style="color: rgb(1e2, 0, 0)">Exponent color</span>'
+        '<span style="color: rgb(.5, 1.5, 2.5)">Decimal channel color</span>'
+    )
+
+    assert "style=" not in sanitized
+
+
+def test_server_sanitizer_normalizes_legacy_aliases_fonts_colors_and_structural_content():
+    sanitized = main.sanitize_html(
+        """
+        <h1>One</h1><h2>Two</h2><h3>Three</h3><h4>Four</h4><h5>Five</h5><h6>Six</h6>
+        <b>bold</b><i>italic</i><del>deleted</del><strike>struck</strike>
+        <font color="rgba(17, 24, 39, 1)" face="Legacy Serif" size="12pt">legacy font</font>
+        <p class="aligncenter unsafe mceNonEditable" align="center"
+           style="color: RGB(18, 52, 86); background-color: navy; font-family: Legacy Serif, serif; font-size: 9pt">
+          paragraph
+        </p>
+        <ol><li>ordered</li></ol><ul><li>unordered</li></ul>
+        <table><thead><tr><th scope="col" colspan="2">Head</th></tr></thead>
+          <tbody><tr><td rowspan="2">Cell</td></tr></tbody></table>
+        <pre><code class="language-python unsafe">print('safe')</code></pre>
+        """
+    )
+    probe = _probe_rich_text(sanitized)
+    tags = [tag for tag, _attributes in probe.elements]
+    span_styles = [attrs.get("style", "") for tag, attrs in probe.elements if tag == "span"]
+    paragraph = _element(probe, "p")
+    code = _element(probe, "code")
+
+    assert all(tag in tags for tag in ("h1", "h2", "h3", "h4", "h5", "h6"))
+    assert tags.count("strong") == 1
+    assert tags.count("em") == 1
+    assert tags.count("s") == 2
+    assert not {"b", "i", "del", "strike", "font"}.intersection(tags)
+    assert any("color: #111827" in style for style in span_styles)
+    assert any("font-family: Legacy Serif" in style for style in span_styles)
+    assert any("font-size: 16px" in style for style in span_styles)
+    assert paragraph is not None
+    assert paragraph.get("class") == "aligncenter"
+    assert "align" not in paragraph
+    assert "color: rgb(18, 52, 86)" in paragraph.get("style", "")
+    assert "background-color: navy" in paragraph.get("style", "")
+    assert "font-family: Legacy Serif, serif" in paragraph.get("style", "")
+    assert "font-size" not in paragraph.get("style", "")
+    assert code == {"class": "language-python"}
+    assert _element(probe, "th").get("colspan") == "2"
+    assert _element(probe, "td").get("rowspan") == "2"
+
+
+def test_server_sanitizer_hoists_legacy_metadata_before_removing_control_subtrees():
+    parent_key = f"objects/b1/{'b1' + ('1' * 30)}.pdf"
+    child_key = f"objects/b2/{'b2' + ('2' * 30)}.pdf"
+    video_key = f"objects/c1/{'c1' + ('1' * 30)}.mp4"
+    pdf_key = f"objects/d1/{'d1' + ('1' * 30)}.pdf"
+    sanitized = main.sanitize_html(
+        f"""
+        <div class="file-attachment mceNonEditable" data-file-url="/api/uploads/{parent_key}"
+             data-file-name="Parent.pdf" data-file-size="10 KB" data-file-type="pdf" contenteditable="false">
+          <div class="file-actions"><button class="remove-btn editor-only" data-file-url="/api/uploads/{child_key}" onclick="bad()">Remove parent</button></div>
+        </div>
+        <div class="file-attachment mceNonEditable" data-file-name="Child.pdf" data-file-type="pdf">
+          <button class="remove-btn editor-only" data-file-url="/api/uploads/{child_key}">Remove child</button>
+        </div>
+        <figure class="video-container mceNonEditable" contenteditable="false">
+          <video controls preload="AUTO"><source src="https://bad.example/video.mp4" type="text/html"></video>
+          <div class="video-data" data-video-url="/api/uploads/{video_key}" data-video-type="VIDEO/MP4"></div>
+          <div class="video-delete-overlay editor-only-control"><button class="video-delete-btn" data-video-url="/api/uploads/{video_key}">Delete video</button></div>
+        </figure>
+        <div data-inline-pdf-viewer="true" data-pdf-url="/api/uploads/{pdf_key}" data-pdf-title="Reading.pdf"></div>
+        """
+    )
+    probe = _probe_rich_text(sanitized)
+    attachments = [
+        attrs for tag, attrs in probe.elements
+        if tag == "div" and "file-attachment" in set((attrs.get("class") or "").split())
+    ]
+    source = _element(probe, "source")
+    video = _element(probe, "video")
+
+    assert [attrs.get("data-file-url") for attrs in attachments] == [
+        f"/api/uploads/{parent_key}",
+        f"/api/uploads/{child_key}",
+        f"/api/uploads/{pdf_key}",
+    ]
+    assert attachments[2].get("data-file-name") == "Reading.pdf"
+    assert attachments[2].get("data-file-type") == "pdf"
+    assert source == {"src": f"/api/uploads/{video_key}", "type": "video/mp4"}
+    assert video is not None and video.get("preload") is None and "controls" in video
+    assert "button" not in [tag for tag, _attrs in probe.elements]
+    assert "Remove parent" not in "".join(probe.text)
+    assert "Remove child" not in "".join(probe.text)
+    assert "Delete video" not in "".join(probe.text)
+    assert not any(
+        name.startswith("data-pdf") or name.startswith("data-video") or name == "contenteditable"
+        for _tag, attrs in probe.elements
+        for name in attrs
+    )
+
+
+def test_server_sanitizer_enforces_per_tag_attributes_links_media_and_table_bounds():
+    image_key = f"objects/e1/{'e1' + ('1' * 30)}.png"
+    video_key = f"objects/e2/{'e2' + ('2' * 30)}.mp4"
+    sanitized = main.sanitize_html(
+        f"""
+        <span href="https://school.example/wrong" src="/api/uploads/{image_key}" data-file-url="/api/uploads/{image_key}" colspan="2">Scoped</span>
+        <a id="external" href="https://school.example/library" target="_blank" rel="opener">External</a>
+        <a id="local" href="/classes/42?tab=posts#one" target="_self" rel="opener">Local</a>
+        <a id="credential" href="https://user:pass@school.example/private" target="_blank">Credential</a>
+        <a id="relative" href="lessons/today">Relative</a>
+        <a id="scheme-relative" href="//school.example/private">Scheme relative</a>
+        <img src="/api/uploads/{image_key}" width="100%" height="4096px" colspan="3">
+        <video src="/api/uploads/{video_key}" preload="metadata" controls></video>
+        <video preload="auto"><source src="/api/uploads/{video_key}" type="VIDEO/MP4"></video>
+        <source src="/api/uploads/{video_key}" type="video/mp4">
+        <table><tbody><tr><td colspan="0" rowspan="101">Bad cell</td><th scope="bad" colspan="2">Head</th></tr></tbody></table>
+        """
+    )
+    probe = _probe_rich_text(sanitized)
+    anchors = [attrs for tag, attrs in probe.elements if tag == "a"]
+    span = _element(probe, "span")
+    image = _element(probe, "img")
+    videos = [attrs for tag, attrs in probe.elements if tag == "video"]
+    sources = [attrs for tag, attrs in probe.elements if tag == "source"]
+
+    assert span == {}
+    assert anchors[0] == {
+        "href": "https://school.example/library",
+        "target": "_blank",
+        "rel": "noopener noreferrer",
+    }
+    assert anchors[1] == {"href": "/classes/42?tab=posts#one"}
+    assert anchors[2] == {}
+    assert anchors[3] == {"href": "lessons/today"}
+    assert anchors[4] == {}
+    assert image == {"src": f"/api/uploads/{image_key}", "width": "100%", "height": "4096px"}
+    assert videos[0].get("preload") == "metadata"
+    assert videos[1].get("preload") is None
+    assert sources == [{"src": f"/api/uploads/{video_key}", "type": "video/mp4"}]
+    assert _element(probe, "td") == {}
+    assert _element(probe, "th") == {"colspan": "2"}
+
+
+def test_server_sanitizer_normalizes_source_videos_to_one_editor_stable_asset():
+    first_key = f"objects/f2/{'f2' + ('2' * 30)}.mp4"
+    second_key = f"objects/f3/{'f3' + ('3' * 30)}.webm"
+    once = main.sanitize_html(
+        f"""
+        <video controls><source src="/api/uploads/{first_key}"></video>
+        <video controls>
+          <source src="/api/uploads/{first_key}" type="text/html">
+          <source src="/api/uploads/{second_key}" type="video/webm">
+          <source src="/api/uploads/{first_key}" type="video/mp4">
+        </video>
+        """
+    )
+    probe = _probe_rich_text(once)
+    videos = [attrs for tag, attrs in probe.elements if tag == "video"]
+    sources = [attrs for tag, attrs in probe.elements if tag == "source"]
+
+    assert videos[0].get("src") == f"/api/uploads/{first_key}"
+    assert "src" not in videos[1]
+    assert sources == [
+        {"src": f"/api/uploads/{second_key}", "type": "video/webm"}
+    ]
+    assert main.sanitize_html(once) == once
+
+
+def test_server_sanitizer_is_idempotent_and_recovers_only_bounded_escaped_media_outside_code():
+    video_key = f"objects/f1/{'f1' + ('1' * 30)}.mp4"
+    raw = (
+        "<pre><code>&lt;video src=&quot;/api/uploads/"
+        f"{video_key}&quot;&gt;&lt;/video&gt;</code></pre>"
+        "&lt;figure class=&quot;video-container&quot;&gt;&lt;video controls&gt;"
+        f"&lt;source src=&quot;/api/uploads/{video_key}&quot; type=&quot;video/mp4&quot;&gt;"
+        "&lt;/video&gt;&lt;/figure&gt;"
+    )
+
+    once = main.sanitize_html(raw)
+    twice = main.sanitize_html(once)
+    probe = _probe_rich_text(once)
+
+    assert once == twice
+    assert len([tag for tag, _attrs in probe.elements if tag == "video"]) == 1
+    assert "<video src=" in "".join(probe.text)
+
+
+@pytest.mark.parametrize("zero", ["0", "-0"])
+def test_server_sanitizer_rejects_unitless_zero_font_size_idempotently(zero):
+    once = main.sanitize_html(
+        f'<span style="font-size:{zero}">Text</span>'
+        f'<p style="margin:{zero};width:{zero}">Box</p>'
+    )
+
+    assert "<span>Text</span>" in once
+    assert '<p style="margin: 0px; width: 0px;">Box</p>' in once
+    assert "font-size" not in once
+    assert main.sanitize_html(once) == once
+
+
+def test_server_sanitizer_normalizes_css_comments_idempotently():
+    once = main.sanitize_html(
+        '<span style="color:r/**/ed;font-size:1/**/8px">Commented style</span>'
+    )
+
+    assert 'style="color: red; font-size: 18px;"' in once
+    assert main.sanitize_html(once) == once
+
+
+def test_server_sanitizer_reparses_unwrapped_content_model_nodes_idempotently():
+    once = main.sanitize_html("<li><section><li>x</li></section>")
+
+    assert once == "<li></li><li>x</li>"
+    assert main.sanitize_html(once) == once
+
+
+def test_server_sanitizer_recovers_foster_parented_escaped_video_immediately():
+    video_url = f"/api/uploads/objects/aa/{'a' * 32}.mp4"
+    once = main.sanitize_html(
+        f'<table>&lt;video src=&quot;{video_url}&quot;&gt;</table>'
+    )
+
+    assert f'<video src="{video_url}"></video>' in once
+    assert "&lt;video" not in once
+    assert main.sanitize_html(once) == once
+
+
+def test_server_sanitizer_removes_foster_parented_escaped_orphan_source():
+    video_url = f"/api/uploads/objects/aa/{'a' * 32}.mp4"
+    once = main.sanitize_html(
+        f'<table>&lt;source src=&quot;{video_url}&quot; type=&quot;video/mp4&quot;&gt;</table>'
+    )
+
+    assert "source" not in once
+    assert video_url not in once
+    assert main.sanitize_html(once) == once
 
 
 def test_server_sanitizer_drops_pathological_layout_values():
@@ -173,10 +582,16 @@ def test_server_sanitizer_drops_pathological_layout_values():
 def test_server_sanitizer_rejects_malformed_urls_without_raising():
     sanitized = main.sanitize_html(
         '<a href="https://[">Broken link</a><img src="//[">'
+        '<a href="/safe/%FF">Invalid UTF-8</a>'
+        '<a href="/%C0%AE%C0%AE/admin">Overlong path</a>'
+        '<a href="https:///evil.example/path">Ambiguous authority</a>'
+        '<a href="https:////evil.example/path">Ambiguous authority two</a>'
     )
 
     assert "href=" not in sanitized
     assert "src=" not in sanitized
+    assert "%FF" not in sanitized
+    assert "%C0%AE" not in sanitized
 
 
 def test_server_sanitizer_rejects_oversized_content_before_parsing(monkeypatch):

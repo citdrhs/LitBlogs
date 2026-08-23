@@ -958,6 +958,22 @@ def test_gitignore_policy_blocks_private_uploads_and_local_databases(policy_vali
     assert policy_validator.failures == []
 
 
+def test_policy_validator_requires_rich_text_security_release_admission(
+    policy_validator, tmp_path
+):
+    workflow = RELEASE_PATH.read_text(encoding="utf-8")
+    required = 'test -f "$staging/tree/litblogs/rich_text_security.py"'
+    assert required in workflow
+
+    failures = _validate_release_workflow(
+        policy_validator,
+        tmp_path,
+        workflow.replace(required, "true # weakened rich-text runtime admission", 1),
+    )
+
+    assert any("rich_text_security.py" in failure for failure in failures)
+
+
 def test_ci_browser_gate_is_mandatory_and_uploads_only_sanitized_failures(
     policy_validator,
 ):

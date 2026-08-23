@@ -331,24 +331,40 @@ def _sweep_orphan_objects(db: Session, upload_root: Path, *, now: datetime) -> N
 
 
 class _PostAssetReferenceParser(HTMLParser):
+    _VOID_TAGS = frozenset({"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"})
+
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.references: list[str] = []
+        self.open_tags: list[str] = []
 
     def handle_starttag(self, tag: str, attrs) -> None:
-        self._collect(tag, attrs)
+        normalized_tag = tag.lower()
+        self._collect(normalized_tag, attrs, parent_tag=self.open_tags[-1] if self.open_tags else None)
+        if normalized_tag not in self._VOID_TAGS:
+            self.open_tags.append(normalized_tag)
 
     def handle_startendtag(self, tag: str, attrs) -> None:
-        self._collect(tag, attrs)
+        self._collect(tag.lower(), attrs, parent_tag=self.open_tags[-1] if self.open_tags else None)
 
-    def _collect(self, tag: str, attrs) -> None:
-        attributes = dict(attrs)
-        if tag in {"img", "source", "video"} and attributes.get("src"):
+    def handle_endtag(self, tag: str) -> None:
+        normalized_tag = tag.lower()
+        for index in range(len(self.open_tags) - 1, -1, -1):
+            if self.open_tags[index] == normalized_tag:
+                del self.open_tags[index:]
+                return
+
+    def _collect(self, tag: str, attrs, *, parent_tag: str | None) -> None:
+        attributes = {}
+        for name, value in attrs:
+            attributes.setdefault(name.lower(), value)
+        if tag in {"img", "video"} and attributes.get("src"):
             self.references.append(attributes["src"])
-        for attribute_name in ("data-file-url", "data-video-url"):
-            if attributes.get(attribute_name):
-                self.references.append(attributes[attribute_name])
+        if tag == "source" and parent_tag == "video" and attributes.get("src"):
+            self.references.append(attributes["src"])
         class_names = set((attributes.get("class") or "").split())
+        if tag == "div" and "file-attachment" in class_names and attributes.get("data-file-url"):
+            self.references.append(attributes["data-file-url"])
         if tag == "a" and "file-attachment" in class_names and attributes.get("href"):
             self.references.append(attributes["href"])
 

@@ -226,15 +226,76 @@ def test_promoting_registered_staging_fsyncs_objects_root_before_publish(
 def test_post_asset_extraction_uses_only_final_persisted_semantics():
     image_key = f"objects/a1/{'a1' + ('1' * 30)}.png"
     file_key = f"objects/a2/{'a2' + ('2' * 30)}.pdf"
+    video_key = f"objects/a3/{'a3' + ('3' * 30)}.mp4"
+    second_video_key = f"objects/a4/{'a4' + ('4' * 30)}.webm"
+    div_file_key = f"objects/a5/{'a5' + ('5' * 30)}.pdf"
+    ignored_key = f"objects/a6/{'a6' + ('6' * 30)}.pdf"
     image_url = f"/api/uploads/{image_key}"
     file_url = f"/api/uploads/{file_key}"
+    video_url = f"/api/uploads/{video_key}"
+    second_video_url = f"/api/uploads/{second_video_key}"
+    div_file_url = f"/api/uploads/{div_file_key}"
+    ignored_url = f"/api/uploads/{ignored_key}"
     content = (
         f'<p>Body</p><img src="{image_url}">'
         f'<a class="file-attachment" href="{file_url}">reading.pdf</a>'
+        f'<video src="{video_url}"><source src="{second_video_url}" type="video/webm"></video>'
+        f'<div class="file-attachment" data-file-url="{div_file_url}"></div>'
+        f'<span data-file-url="{ignored_url}" data-video-url="{ignored_url}">ignored</span>'
+        f'<source src="{ignored_url}" type="video/mp4">'
     )
 
     assert upload_assets.post_asset_keys("<p>Body only</p>") == []
-    assert upload_assets.post_asset_keys(content) == [image_key, file_key]
+    assert upload_assets.post_asset_keys(content) == sorted(
+        [image_key, file_key, video_key, second_video_key, div_file_key]
+    )
+
+
+def test_post_asset_extraction_rejects_malformed_canonical_locations_but_ignores_metadata_noise():
+    valid_key = f"objects/b8/{'b8' + ('8' * 30)}.pdf"
+    valid_url = f"/api/uploads/{valid_key}"
+
+    assert upload_assets.post_asset_keys(
+        '<button data-file-url="not-canonical">Remove</button>'
+        '<span data-video-url="not-canonical">Metadata</span>'
+    ) == []
+
+    for content in (
+        '<img src="not-canonical">',
+        '<video src="https://tracker.example/video.mp4"></video>',
+        '<video><source src="not-canonical" type="video/mp4"></video>',
+        '<div class="file-attachment" data-file-url="not-canonical"></div>',
+        '<a class="file-attachment" href="not-canonical">file</a>',
+    ):
+        with pytest.raises(HTTPException) as error:
+            upload_assets.post_asset_keys(content)
+        assert error.value.status_code == 400
+        assert error.value.detail == "Invalid upload reference"
+
+    assert upload_assets.post_asset_keys(
+        f'<source src="not-canonical"><span data-file-url="{valid_url}"></span>'
+    ) == []
+
+
+def test_post_builder_keeps_structured_media_and_file_references_bindable_after_final_sanitization():
+    image_key = f"objects/c8/{'c8' + ('8' * 30)}.png"
+    video_key = f"objects/c9/{'c9' + ('9' * 30)}.mp4"
+    file_key = f"objects/ca/{'ca' + ('a' * 30)}.pdf"
+    post = schemas.BlogCreate(
+        title="Structured references",
+        content="<p>Body</p>",
+        media=[
+            {"type": "image", "url": f"/api/uploads/{image_key}"},
+            {"type": "video", "url": f"/api/uploads/{video_key}"},
+        ],
+        files=[{"name": "Reading.pdf", "url": f"/api/uploads/{file_key}"}],
+    )
+
+    sanitized = main._build_post_content(post)
+
+    assert upload_assets.post_asset_keys(sanitized) == sorted(
+        [image_key, video_key, file_key]
+    )
 
 
 def _user(db, user_id: int, role=models.UserRole.STUDENT):

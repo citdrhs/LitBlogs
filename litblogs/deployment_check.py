@@ -68,6 +68,7 @@ REQUIRED_RELEASE_FILES = (
     "litblogs/password_reset_job.py",
     "litblogs/rich_text_contract.json",
     "litblogs/rich_text_contract.py",
+    "litblogs/rich_text_security.py",
     "litblogs/reminder_job.py",
     "litblogs/requirements.in",
     "litblogs/requirements-lock.in",

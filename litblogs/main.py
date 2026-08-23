@@ -22,10 +22,7 @@ from pathlib import Path
 from typing import List, Literal
 from urllib.parse import urlsplit
 
-import bleach
-import tinycss2
 import uvicorn
-from bleach.css_sanitizer import CSSSanitizer
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
@@ -122,6 +119,7 @@ from identity_controls import (
 )
 from oauth_security import verify_google_id_token, verify_microsoft_id_token
 from observability import RequestObservabilityMiddleware
+from rich_text_security import sanitize_rich_text_html
 from upload_assets import (
     add_active_profile_asset,
     add_pending_asset,
@@ -2303,205 +2301,6 @@ class PostContent(BaseModel):
     polls: List[dict] = []
     expandable_lists: List[dict] = []
 
-RICH_TEXT_ALLOWED_TAGS = {
-    "a", "b", "blockquote", "br", "button", "code", "del", "div", "em",
-    "figure", "font", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i",
-    "img", "li", "mark", "ol", "p", "pre", "s", "source", "span", "strike",
-    "strong", "table", "tbody", "td", "th", "thead", "tr", "u", "ul", "video",
-}
-RICH_TEXT_GLOBAL_ATTRIBUTES = {"class", "style"}
-RICH_TEXT_TAG_ATTRIBUTES = {
-    "a": {"href", "rel", "target", "title"},
-    "button": {"class", "data-file-url", "data-video-url", "type"},
-    "div": {
-        "align", "contenteditable", "data-file-name", "data-file-size",
-        "data-file-type", "data-file-url", "data-video-type", "data-video-url",
-    },
-    "figure": {"contenteditable"},
-    "font": {"color", "face", "size"},
-    "img": {"alt", "height", "src", "title", "width"},
-    "source": {"src", "type"},
-    "td": {"colspan", "rowspan"},
-    "th": {"colspan", "rowspan", "scope"},
-    "video": {"controls", "height", "preload", "src", "width"},
-}
-RICH_TEXT_ALLOWED_CLASSES = {
-    "aligncenter", "alignleft", "alignright", "custom-font", "d-block",
-    "editor-only", "editor-only-control", "file-actions", "file-attachment",
-    "file-icon", "file-info", "file-name", "file-size", "float-left", "float-right",
-    "mceNonEditable", "mx-auto", "post-image", "preserved-heading", "remove-btn",
-    "video-container", "video-data", "video-delete-btn", "video-delete-overlay",
-    "video-wrapper",
-}
-RICH_TEXT_ALLOWED_STYLES = {
-    "background-color", "border-radius", "color", "display", "float", "font-family",
-    "font-size", "font-style", "font-weight", "height", "margin", "margin-bottom",
-    "margin-left", "margin-right", "margin-top", "max-height", "max-width", "overflow-wrap",
-    "text-align", "text-decoration", "width", "word-break",
-}
-RICH_TEXT_CSS_KEYWORDS = {
-    "display": {"block", "inline", "inline-block", "list-item", "table", "table-cell", "table-row"},
-    "float": {"left", "none", "right"},
-    "font-style": {"italic", "normal", "oblique"},
-    "font-weight": {
-        "100", "200", "300", "400", "500", "600", "700", "800", "900",
-        "bold", "bolder", "lighter", "normal",
-    },
-    "overflow-wrap": {"anywhere", "break-word", "normal"},
-    "text-align": {"center", "end", "justify", "left", "right", "start"},
-    "text-decoration": {"line-through", "none", "overline", "underline"},
-    "word-break": {"break-all", "break-word", "keep-all", "normal"},
-}
-
-
-def _is_bounded_css_length(value: str, limits: dict[str, tuple[float, float]], keywords: set[str] | None = None) -> bool:
-    normalized_value = value.strip().lower()
-    if keywords and normalized_value in keywords:
-        return True
-
-    unit = ""
-    for candidate_unit in ("rem", "em", "px", "%"):
-        if normalized_value.endswith(candidate_unit):
-            unit = candidate_unit
-            normalized_value = normalized_value[:-len(candidate_unit)]
-            break
-    try:
-        amount = float(normalized_value)
-    except ValueError:
-        return False
-    if not unit:
-        return amount == 0
-    minimum, maximum = limits.get(unit, (1, 0))
-    return minimum <= amount <= maximum
-
-
-def _is_bounded_rich_text_css_value(property_name: str, value: str) -> bool:
-    if not value or len(value) > 128 or "\\" in value:
-        return False
-    lowered_value = value.lower()
-    if any(character.isspace() and ord(character) < 0x20 for character in value):
-        return False
-    if any(fragment in lowered_value for fragment in ("expression(", "url(", "@import")):
-        return False
-    if property_name in {"background-color", "color"}:
-        return len(value) <= 64
-    if property_name == "font-family":
-        return True
-    if property_name in RICH_TEXT_CSS_KEYWORDS:
-        return lowered_value in RICH_TEXT_CSS_KEYWORDS[property_name]
-    if property_name == "font-size":
-        return _is_bounded_css_length(
-            value,
-            {"px": (8, 96), "%": (50, 400), "em": (0.5, 6), "rem": (0.5, 6)},
-            {"large", "larger", "medium", "small", "smaller", "x-large", "x-small", "xx-large", "xx-small"},
-        )
-    if property_name in {"height", "max-height", "max-width", "width"}:
-        return _is_bounded_css_length(
-            value,
-            {"px": (0, 4096), "%": (0, 100), "em": (0, 256), "rem": (0, 256)},
-            {"auto", "none"},
-        )
-    if property_name == "border-radius":
-        return all(
-            _is_bounded_css_length(
-                token,
-                {"px": (0, 512), "%": (0, 100), "em": (0, 64), "rem": (0, 64)},
-            )
-            for token in value.split()
-        )
-    if property_name == "margin" or property_name.startswith("margin-"):
-        tokens = value.split()
-        return len(tokens) <= 4 and all(
-            _is_bounded_css_length(
-                token,
-                {"px": (-512, 512), "%": (-100, 100), "em": (-64, 64), "rem": (-64, 64)},
-                {"auto"},
-            )
-            for token in tokens
-        )
-    return False
-
-
-def _is_bounded_dimension_attribute(value: str) -> bool:
-    normalized_value = value.strip().lower()
-    if not normalized_value or len(normalized_value) > 32 or normalized_value.startswith("-"):
-        return False
-    if re.fullmatch(r"\d+(?:\.\d+)?", normalized_value):
-        normalized_value = f"{normalized_value}px"
-    return _is_bounded_css_length(
-        normalized_value,
-        {"px": (0, 4096), "%": (0, 100), "em": (0, 256), "rem": (0, 256)},
-        {"auto"},
-    )
-
-
-class BoundedRichTextCSSSanitizer(CSSSanitizer):
-    def sanitize_css(self, style: str) -> str:
-        declarations = []
-        for token in tinycss2.parse_declaration_list(style):
-            if token.type != "declaration" or token.lower_name not in self.allowed_css_properties:
-                continue
-            value = tinycss2.serialize(token.value).strip()
-            if not _is_bounded_rich_text_css_value(token.lower_name, value):
-                continue
-            important = " !important" if token.important else ""
-            declarations.append(f"{token.lower_name}: {value}{important}")
-        return "; ".join(declarations) + (";" if declarations else "")
-
-
-def _is_safe_rich_text_url(value: str, *, media_kind: str) -> bool:
-    if not value or value != value.strip() or len(value) > 2048 or "\\" in value:
-        return False
-    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
-        return False
-
-    try:
-        parsed = urlsplit(value)
-    except ValueError:
-        return False
-    if parsed.scheme:
-        return media_kind == "link" and parsed.scheme == "https" and bool(parsed.netloc)
-    if parsed.netloc or value.startswith("//"):
-        return False
-
-    if media_kind == "link":
-        return True
-
-    try:
-        canonical_object_key(value)
-    except ValueError:
-        return False
-    return True
-
-
-def _rich_text_attribute_allowed(tag: str, name: str, value: str) -> bool:
-    if name.startswith("on"):
-        return False
-    allowed_attributes = RICH_TEXT_GLOBAL_ATTRIBUTES | RICH_TEXT_TAG_ATTRIBUTES.get(tag, set())
-    if name not in allowed_attributes:
-        return False
-    if name == "class":
-        class_names = value.split()
-        return bool(class_names) and all(
-            class_name in RICH_TEXT_ALLOWED_CLASSES or class_name.startswith("language-")
-            for class_name in class_names
-        )
-    if name == "contenteditable":
-        return value.lower() == "false"
-    if name == "target":
-        return value in {"_blank", "_self"}
-    if name == "href":
-        return _is_safe_rich_text_url(value, media_kind="link")
-    if name == "src":
-        media_kind = "image" if tag == "img" else "video"
-        return _is_safe_rich_text_url(value, media_kind=media_kind)
-    if name in {"data-file-url", "data-video-url"}:
-        return _is_safe_rich_text_url(value, media_kind="attachment")
-    if name in {"height", "width"}:
-        return _is_bounded_dimension_attribute(value)
-    return True
-
-
 def sanitize_html(content: str) -> str:
     raw_content = content or ""
     if len(raw_content) > MAX_RICH_TEXT_INPUT_LENGTH:
@@ -2509,18 +2308,7 @@ def sanitize_html(content: str) -> str:
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="Rich text exceeds the allowed size",
         )
-    css_sanitizer = BoundedRichTextCSSSanitizer(
-        allowed_css_properties=RICH_TEXT_ALLOWED_STYLES,
-    )
-    cleaner = bleach.Cleaner(
-        tags=RICH_TEXT_ALLOWED_TAGS,
-        attributes=_rich_text_attribute_allowed,
-        protocols={"https"},
-        css_sanitizer=css_sanitizer,
-        strip=True,
-        strip_comments=True,
-    )
-    return cleaner.clean(raw_content)
+    return sanitize_rich_text_html(raw_content)
 
 def _build_post_content(post: schemas.BlogCreate) -> str:
     content = sanitize_html(post.content)
