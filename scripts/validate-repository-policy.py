@@ -1568,6 +1568,13 @@ def editor_runtime_policy_paths() -> list[Path]:
     return sorted({path for path in paths if path.is_file()})
 
 
+def canonical_tiptap_package_reference(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    match = TIPTAP_PACKAGE_REFERENCE.search(value)
+    return match.group(0).casefold() if match else None
+
+
 def audited_tiptap_lock_edges() -> frozenset[tuple[str, str, str, str]]:
     edges = {
         ("", "dependencies", package_name, TIPTAP_VERSION)
@@ -1760,11 +1767,11 @@ def validate_tiptap_editor_policy() -> None:
     )
 
     if isinstance(locked_packages, dict):
-        expected_tiptap_lock_paths = {
-            f"node_modules/{package_name}"
+        expected_tiptap_lock_nodes = {
+            (f"node_modules/{package_name}", package_name)
             for package_name in AUDITED_TIPTAP_LOCK_PACKAGES
         }
-        actual_tiptap_lock_paths = set()
+        actual_tiptap_lock_nodes = set()
         actual_tiptap_lock_edges = set()
         for package_path, locked_package in locked_packages.items():
             normalized_path = str(package_path).replace("\\", "/")
@@ -1773,28 +1780,44 @@ def validate_tiptap_editor_policy() -> None:
                 if not normalized_path
                 else normalized_path.rsplit("node_modules/", 1)[-1]
             )
-            if package_name.startswith("@tiptap/"):
-                actual_tiptap_lock_paths.add(normalized_path)
+            path_identity = canonical_tiptap_package_reference(package_name)
+            locked_name_identity = (
+                canonical_tiptap_package_reference(locked_package.get("name"))
+                if isinstance(locked_package, dict)
+                else None
+            )
+            package_identity = locked_name_identity or path_identity
+            if package_identity:
+                actual_tiptap_lock_nodes.add(
+                    (normalized_path, package_identity)
+                )
             if not isinstance(locked_package, dict):
                 continue
             for section_name in TIPTAP_LOCK_DEPENDENCY_SECTIONS:
                 section = locked_package.get(section_name, {})
                 if not isinstance(section, dict):
                     continue
-                actual_tiptap_lock_edges.update(
-                    (package_name, section_name, target_name, str(target_version))
-                    for target_name, target_version in section.items()
-                    if isinstance(target_name, str)
-                    and target_name.startswith("@tiptap/")
-                )
+                for target_name, target_version in section.items():
+                    target_identity = canonical_tiptap_package_reference(
+                        target_name
+                    ) or canonical_tiptap_package_reference(target_version)
+                    if target_identity:
+                        actual_tiptap_lock_edges.add(
+                            (
+                                package_identity or package_name,
+                                section_name,
+                                target_identity,
+                                str(target_version),
+                            )
+                        )
         expected_tiptap_lock_edges = audited_tiptap_lock_edges()
         expect(
-            actual_tiptap_lock_paths == expected_tiptap_lock_paths
+            actual_tiptap_lock_nodes == expected_tiptap_lock_nodes
             and actual_tiptap_lock_edges == expected_tiptap_lock_edges,
             (
                 "package-lock must match the audited Tiptap package-lock closure "
-                f"(unexpected nodes={len(actual_tiptap_lock_paths - expected_tiptap_lock_paths)}, "
-                f"missing nodes={len(expected_tiptap_lock_paths - actual_tiptap_lock_paths)}, "
+                f"(unexpected nodes={len(actual_tiptap_lock_nodes - expected_tiptap_lock_nodes)}, "
+                f"missing nodes={len(expected_tiptap_lock_nodes - actual_tiptap_lock_nodes)}, "
                 f"unexpected edges={len(actual_tiptap_lock_edges - expected_tiptap_lock_edges)}, "
                 f"missing edges={len(expected_tiptap_lock_edges - actual_tiptap_lock_edges)})"
             ),

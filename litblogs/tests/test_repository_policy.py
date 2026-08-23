@@ -151,6 +151,24 @@ def _validate_tiptap_policy(
     return policy_validator.failures
 
 
+def _validate_real_tiptap_lock(policy_validator, tmp_path, package_lock):
+    package = json.loads(
+        (BACKEND_ROOT / "package.json").read_text(encoding="utf-8")
+    )
+    frontend_root = tmp_path / "litblogs"
+    frontend_root.mkdir(parents=True)
+    (frontend_root / "package.json").write_text(
+        json.dumps(package), encoding="utf-8"
+    )
+    (frontend_root / "package-lock.json").write_text(
+        json.dumps(package_lock), encoding="utf-8"
+    )
+    policy_validator.ROOT = tmp_path
+    policy_validator.failures.clear()
+    policy_validator.validate_tiptap_editor_policy()
+    return policy_validator.failures
+
+
 def test_tiptap_editor_policy_accepts_reviewed_oss_runtime_dependencies(
     policy_validator,
 ):
@@ -294,6 +312,68 @@ def test_tiptap_editor_policy_rejects_unapproved_transitive_lock_closure(
         "audited Tiptap package-lock closure" in failure
         for failure in policy_validator.failures
     )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "alias_spec"),
+    (
+        (
+            "node-and-edge",
+            "npm:@tiptap/extension-collaboration@3.30.2",
+        ),
+        ("node", None),
+        ("edge", "npm:@tiptap/extension-collaboration@3.30.2"),
+        ("edge", "npm:@tiptap/extension-collaboration"),
+        ("edge", "npm:@tiptap/extension-collaboration@"),
+    ),
+)
+def test_tiptap_editor_policy_rejects_transitive_tiptap_alias_identity(
+    policy_validator, tmp_path, mutation, alias_spec
+):
+    package_lock = json.loads(
+        (BACKEND_ROOT / "package-lock.json").read_text(encoding="utf-8")
+    )
+    if mutation in {"node", "node-and-edge"}:
+        package_lock["packages"]["node_modules/collaboration-extension"] = {
+            "name": "@tiptap/extension-collaboration",
+            "version": "3.30.2",
+            "license": "MIT",
+        }
+    if mutation in {"edge", "node-and-edge"}:
+        package_lock["packages"]["node_modules/@tiptap/starter-kit"][
+            "dependencies"
+        ]["collaboration-extension"] = alias_spec
+
+    failures = _validate_real_tiptap_lock(
+        policy_validator, tmp_path, package_lock
+    )
+
+    assert any(
+        "audited Tiptap package-lock closure" in failure
+        for failure in failures
+    )
+
+
+def test_tiptap_editor_policy_allows_non_tiptap_transitive_aliases(
+    policy_validator, tmp_path
+):
+    package_lock = json.loads(
+        (BACKEND_ROOT / "package-lock.json").read_text(encoding="utf-8")
+    )
+    package_lock["packages"]["node_modules/@tiptap/starter-kit"][
+        "dependencies"
+    ]["floating-engine"] = "npm:@floating-ui/dom@1.8.0"
+    package_lock["packages"]["node_modules/floating-engine"] = {
+        "name": "@floating-ui/dom",
+        "version": "1.8.0",
+        "license": "MIT",
+    }
+
+    failures = _validate_real_tiptap_lock(
+        policy_validator, tmp_path, package_lock
+    )
+
+    assert failures == []
 
 
 @pytest.mark.parametrize(
