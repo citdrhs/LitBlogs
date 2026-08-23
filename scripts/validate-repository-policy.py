@@ -77,6 +77,52 @@ BROWSER_E2E_ARTIFACT_PATH = (
 )
 NODE_MAJOR = "24"
 NODE_ENGINE = "24.x"
+TIPTAP_VERSION = "^3.30.2"
+TIPTAP_LOCK_VERSION = "3.30.2"
+REVIEWED_TIPTAP_RUNTIME_PACKAGES = frozenset(
+    {
+        "@tiptap/core",
+        "@tiptap/extension-character-count",
+        "@tiptap/extension-color",
+        "@tiptap/extension-font-family",
+        "@tiptap/extension-highlight",
+        "@tiptap/extension-image",
+        "@tiptap/extension-link",
+        "@tiptap/extension-placeholder",
+        "@tiptap/extension-table",
+        "@tiptap/extension-text-align",
+        "@tiptap/extension-text-style",
+        "@tiptap/extension-underline",
+        "@tiptap/pm",
+        "@tiptap/react",
+        "@tiptap/starter-kit",
+    }
+)
+TIPTAP_SERVICE_PACKAGE_PREFIXES = (
+    "@hocuspocus/",
+    "@tiptap-cloud/",
+    "@tiptap-pro/",
+)
+TIPTAP_SERVICE_PACKAGES = frozenset({"y-webrtc", "y-websocket"})
+TIPTAP_API_KEY = re.compile(
+    r"\b(?:(?:VITE|REACT_APP)_)?TIPTAP(?:_CLOUD)?_(?:API_KEY|SECRET|TOKEN)\b"
+    r"|\btiptap(?:Cloud)?(?:ApiKey|Secret|Token)\b",
+    re.IGNORECASE,
+)
+EXTERNAL_EDITOR_RUNTIME = re.compile(
+    r"(?:(?:https?|wss):)?//[^\s\"'`<>]*(?:tiptap|tinymce|prosemirror)"
+    r"[^\s\"'`<>]*",
+    re.IGNORECASE,
+)
+EXTERNAL_SCRIPT_SRC = re.compile(
+    r"<script\b[^>]*\bsrc\s*=\s*(?:[\"']\s*)?(?:https?:)?//",
+    re.IGNORECASE,
+)
+TIPTAP_PACKAGE_REFERENCE = re.compile(r"@tiptap/[a-z0-9][a-z0-9._-]*", re.IGNORECASE)
+FRONTEND_RUNTIME_SUFFIXES = frozenset(
+    {".css", ".html", ".js", ".jsx", ".mjs", ".ts", ".tsx"}
+)
+EDITOR_POLICY_EXCLUDED_DIRECTORIES = frozenset({"__tests__", "test", "tests"})
 SECURITY_ADVISORY_URL = (
     "https://github.com/citdrhs/LitBlogs/security/advisories/new"
 )
@@ -1369,6 +1415,210 @@ def validate_security_reporting() -> None:
     )
 
 
+def editor_runtime_policy_paths() -> list[Path]:
+    frontend_root = ROOT / "litblogs"
+    paths = [
+        frontend_root / "index.html",
+        frontend_root / ".env.example",
+    ]
+    paths.extend(frontend_root.glob("vite.config.*"))
+    paths.extend(frontend_root.glob("*.py"))
+    for directory_name in ("public", "src"):
+        directory = frontend_root / directory_name
+        if not directory.is_dir():
+            continue
+        paths.extend(
+            path
+            for path in directory.rglob("*")
+            if path.is_file()
+            and path.suffix.lower() in FRONTEND_RUNTIME_SUFFIXES
+            and not EDITOR_POLICY_EXCLUDED_DIRECTORIES.intersection(path.parts)
+            and ".test." not in path.name
+            and ".spec." not in path.name
+        )
+    return sorted({path for path in paths if path.is_file()})
+
+
+def validate_tiptap_editor_policy() -> None:
+    try:
+        package = json.loads(read_text("litblogs/package.json"))
+        package_lock = json.loads(read_text("litblogs/package-lock.json"))
+    except (json.JSONDecodeError, TypeError):
+        fail("Tiptap editor package metadata must be valid JSON")
+        return
+
+    dependencies = package.get("dependencies", {})
+    expect(
+        isinstance(dependencies, dict),
+        "litblogs/package.json must declare runtime dependencies as a mapping",
+    )
+    if not isinstance(dependencies, dict):
+        dependencies = {}
+
+    expected_tiptap_dependencies = {
+        package_name: TIPTAP_VERSION
+        for package_name in REVIEWED_TIPTAP_RUNTIME_PACKAGES
+    }
+    declared_reviewed_dependencies = {
+        package_name: version
+        for package_name, version in dependencies.items()
+        if package_name in REVIEWED_TIPTAP_RUNTIME_PACKAGES
+    }
+    expect(
+        declared_reviewed_dependencies == expected_tiptap_dependencies,
+        (
+            "Tiptap OSS runtime dependencies must contain the reviewed package set "
+            f"at {TIPTAP_VERSION}"
+        ),
+    )
+
+    aliased_tiptap_dependencies = []
+    for section_name in (
+        "dependencies",
+        "devDependencies",
+        "optionalDependencies",
+        "peerDependencies",
+    ):
+        section = package.get(section_name, {})
+        if not isinstance(section, dict):
+            continue
+        for dependency_name, dependency_spec in section.items():
+            for package_name in TIPTAP_PACKAGE_REFERENCE.findall(
+                str(dependency_spec)
+            ):
+                if dependency_name.casefold() != package_name.casefold():
+                    aliased_tiptap_dependencies.append(
+                        f"{section_name}.{dependency_name} -> {package_name}"
+                    )
+    expect(
+        not aliased_tiptap_dependencies,
+        (
+            "Tiptap package aliases must use the canonical dependency key: "
+            f"{', '.join(sorted(aliased_tiptap_dependencies))}"
+        ),
+    )
+
+    package_source = json.dumps(package, sort_keys=True)
+    referenced_tiptap_packages = {
+        package_name.casefold()
+        for package_name in TIPTAP_PACKAGE_REFERENCE.findall(package_source)
+    }
+    unreviewed_tiptap_packages = sorted(
+        package_name
+        for package_name in referenced_tiptap_packages
+        if package_name not in REVIEWED_TIPTAP_RUNTIME_PACKAGES
+    )
+    expect(
+        not unreviewed_tiptap_packages,
+        (
+            "unreviewed Tiptap package is forbidden: "
+            f"{', '.join(unreviewed_tiptap_packages)}"
+        ),
+    )
+
+    service_packages = sorted(
+        marker
+        for marker in (*TIPTAP_SERVICE_PACKAGE_PREFIXES, *TIPTAP_SERVICE_PACKAGES)
+        if marker.casefold() in package_source.casefold()
+    )
+    expect(
+        not service_packages,
+        (
+            "Tiptap Cloud or service package is forbidden: "
+            f"{', '.join(service_packages)}"
+        ),
+    )
+
+    locked_packages = package_lock.get("packages", {})
+    package_lock_source = json.dumps(package_lock, sort_keys=True)
+    locked_root = locked_packages.get("", {}) if isinstance(locked_packages, dict) else {}
+    locked_dependencies = (
+        locked_root.get("dependencies", {}) if isinstance(locked_root, dict) else {}
+    )
+    locked_reviewed_dependencies = {
+        package_name: version
+        for package_name, version in locked_dependencies.items()
+        if package_name in REVIEWED_TIPTAP_RUNTIME_PACKAGES
+    } if isinstance(locked_dependencies, dict) else {}
+    expect(
+        locked_reviewed_dependencies == expected_tiptap_dependencies,
+        (
+            "package-lock root metadata must preserve the reviewed Tiptap OSS "
+            f"runtime dependencies at {TIPTAP_VERSION}"
+        ),
+    )
+    expect(
+        isinstance(locked_dependencies, dict) and locked_dependencies == dependencies,
+        "package-lock root dependencies must match package.json runtime dependencies",
+    )
+
+    if isinstance(locked_packages, dict):
+        locked_service_packages = sorted(
+            package_path
+            for package_path in locked_packages
+            if (
+                any(
+                    f"node_modules/{prefix}" in package_path.replace("\\", "/")
+                    for prefix in TIPTAP_SERVICE_PACKAGE_PREFIXES
+                )
+                or any(
+                    package_path.replace("\\", "/").endswith(
+                        f"node_modules/{package_name}"
+                    )
+                    for package_name in TIPTAP_SERVICE_PACKAGES
+                )
+            )
+        )
+        expect(
+            not locked_service_packages,
+            "package-lock must not contain Tiptap Cloud or service packages",
+        )
+        expect(
+            not any(
+                marker.casefold() in package_lock_source.casefold()
+                for marker in TIPTAP_SERVICE_PACKAGE_PREFIXES
+            ),
+            "package-lock must not reference Tiptap Cloud or service packages",
+        )
+        for package_name in REVIEWED_TIPTAP_RUNTIME_PACKAGES:
+            locked_package = locked_packages.get(f"node_modules/{package_name}", {})
+            expect(
+                isinstance(locked_package, dict)
+                and locked_package.get("version") == TIPTAP_LOCK_VERSION,
+                (
+                    "package-lock must resolve reviewed Tiptap package "
+                    f"{package_name} to {TIPTAP_LOCK_VERSION}"
+                ),
+            )
+            expect(
+                isinstance(locked_package, dict)
+                and locked_package.get("license") == "MIT",
+                f"package-lock must preserve the MIT license for {package_name}",
+            )
+
+    expect(
+        TIPTAP_API_KEY.search(package_source) is None,
+        "litblogs/package.json must not contain a Tiptap API key",
+    )
+    expect(
+        EXTERNAL_EDITOR_RUNTIME.search(package_source) is None,
+        "litblogs/package.json must not load an external editor runtime",
+    )
+
+    for path in editor_runtime_policy_paths():
+        source = path.read_text(encoding="utf-8")
+        relative_path = path.relative_to(ROOT).as_posix()
+        expect(
+            TIPTAP_API_KEY.search(source) is None,
+            f"{relative_path} must not contain a Tiptap API key",
+        )
+        expect(
+            EXTERNAL_EDITOR_RUNTIME.search(source) is None
+            and EXTERNAL_SCRIPT_SRC.search(source) is None,
+            f"{relative_path} must not load an external editor runtime",
+        )
+
+
 def validate_node_runtime_contract() -> None:
     try:
         package = json.loads(read_text("litblogs/package.json"))
@@ -1876,6 +2126,7 @@ def main() -> int:
     validate_browser_e2e_contract()
     validate_dependabot()
     validate_repository_documents()
+    validate_tiptap_editor_policy()
     validate_node_runtime_contract()
     validate_python_dependency_locks()
     validate_privacy_ignores()

@@ -5,6 +5,24 @@ import { describe, expect, it } from "vitest";
 const projectRoot = globalThis.process.cwd();
 const sourceRoot = join(projectRoot, "src");
 
+const REVIEWED_TIPTAP_RUNTIME_DEPENDENCIES = {
+  "@tiptap/core": "^3.30.2",
+  "@tiptap/extension-character-count": "^3.30.2",
+  "@tiptap/extension-color": "^3.30.2",
+  "@tiptap/extension-font-family": "^3.30.2",
+  "@tiptap/extension-highlight": "^3.30.2",
+  "@tiptap/extension-image": "^3.30.2",
+  "@tiptap/extension-link": "^3.30.2",
+  "@tiptap/extension-placeholder": "^3.30.2",
+  "@tiptap/extension-table": "^3.30.2",
+  "@tiptap/extension-text-align": "^3.30.2",
+  "@tiptap/extension-text-style": "^3.30.2",
+  "@tiptap/extension-underline": "^3.30.2",
+  "@tiptap/pm": "^3.30.2",
+  "@tiptap/react": "^3.30.2",
+  "@tiptap/starter-kit": "^3.30.2",
+};
+
 const readProjectFile = (relativePath) => (
   readFileSync(join(projectRoot, relativePath), "utf8")
 );
@@ -17,7 +35,15 @@ const collectRuntimeSource = (directory) => readdirSync(directory, { withFileTyp
       return entry.name === "test" ? [] : collectRuntimeSource(path);
     }
 
-    const isRuntimeSource = [".css", ".js", ".jsx"].includes(extname(entry.name));
+    const isRuntimeSource = [
+      ".cjs",
+      ".css",
+      ".js",
+      ".jsx",
+      ".mjs",
+      ".ts",
+      ".tsx",
+    ].includes(extname(entry.name));
     const isTest = entry.name.includes(".test.");
     return isRuntimeSource && !isTest ? [readFileSync(path, "utf8")] : [];
   })
@@ -29,12 +55,28 @@ const getCsp = (html) => {
 };
 
 describe("third-party privacy policy", () => {
+  it("pins only the reviewed Tiptap OSS packages as runtime dependencies", () => {
+    const { dependencies } = JSON.parse(readProjectFile("package.json"));
+    const declaredTiptapDependencies = Object.fromEntries(
+      Object.entries(dependencies)
+        .filter(([packageName]) => packageName.startsWith("@tiptap")),
+    );
+
+    expect(declaredTiptapDependencies).toEqual(REVIEWED_TIPTAP_RUNTIME_DEPENDENCIES);
+    expect(dependencies).toMatchObject({
+      "@tinymce/tinymce-react": "^6.3.0",
+      tinymce: "^8.5.1",
+    });
+  });
+
   it("keeps runtime source free of Tiny Cloud, Google Fonts, and Unsplash origins", () => {
     const runtimeSource = `${readProjectFile("index.html")}\n${collectRuntimeSource(sourceRoot)}`;
 
     for (const forbiddenOrigin of [
       "cdn.tiny.cloud",
       "sp.tinymce.com",
+      "api.tiptap.dev",
+      "tiptap.cloud",
       "fonts.googleapis.com",
       "fonts.gstatic.com",
       "images.unsplash.com",
@@ -44,6 +86,13 @@ describe("third-party privacy policy", () => {
     }
 
     expect(runtimeSource).not.toMatch(/\bapiKey\s*=/);
+    expect(runtimeSource).not.toMatch(/@(?:hocuspocus|tiptap-(?:cloud|pro))\//i);
+    expect(runtimeSource).not.toMatch(
+      /\b(?:(?:(?:VITE|REACT_APP)_)?TIPTAP(?:_CLOUD)?_(?:API_KEY|SECRET|TOKEN)|tiptap(?:Cloud)?(?:ApiKey|Secret|Token))\b/i,
+    );
+    expect(readProjectFile("index.html")).not.toMatch(
+      /<script\b[^>]*\bsrc=["'](?:https?:)?\/\//i,
+    );
   });
 
   it("bundles TinyMCE and every configured community plugin from npm", () => {
@@ -107,6 +156,17 @@ describe("third-party privacy policy", () => {
   it("narrows CSP without breaking Google or Microsoft OAuth", () => {
     const csp = getCsp(readProjectFile("index.html"));
 
+    expect(csp).toBe(
+      "default-src 'self'; base-uri 'self'; object-src 'none'; form-action 'self'; "
+      + "script-src 'self' https://accounts.google.com https://apis.google.com; "
+      + "style-src 'self' 'unsafe-inline' https://accounts.google.com; "
+      + "style-src-elem 'self' 'unsafe-inline' https://accounts.google.com; "
+      + "font-src 'self' data:; img-src 'self' data: blob: https://*.googleusercontent.com; "
+      + "media-src 'self' data: blob:; connect-src 'self' https://accounts.google.com "
+      + "https://login.microsoftonline.com https://graph.microsoft.com; frame-src 'self' "
+      + "https://accounts.google.com https://login.microsoftonline.com; "
+      + "worker-src 'self' blob:; manifest-src 'self';",
+    );
     expect(csp).toContain("script-src 'self' https://accounts.google.com https://apis.google.com");
     expect(csp).toContain("connect-src 'self' https://accounts.google.com https://login.microsoftonline.com https://graph.microsoft.com");
     expect(csp).not.toContain("%VITE_CSP_CONNECT_SRC%");

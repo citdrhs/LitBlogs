@@ -14,6 +14,24 @@ MAIN_PATH = BACKEND_ROOT / "main.py"
 IDENTITY_MIGRATION_PATH = BACKEND_ROOT / "migrations" / "0003_add_identity_controls.sql"
 IDENTITY_RUNBOOK_PATH = BACKEND_ROOT / "migrations" / "README-identity-controls.md"
 
+REVIEWED_TIPTAP_RUNTIME_DEPENDENCIES = {
+    "@tiptap/core": "^3.30.2",
+    "@tiptap/extension-character-count": "^3.30.2",
+    "@tiptap/extension-color": "^3.30.2",
+    "@tiptap/extension-font-family": "^3.30.2",
+    "@tiptap/extension-highlight": "^3.30.2",
+    "@tiptap/extension-image": "^3.30.2",
+    "@tiptap/extension-link": "^3.30.2",
+    "@tiptap/extension-placeholder": "^3.30.2",
+    "@tiptap/extension-table": "^3.30.2",
+    "@tiptap/extension-text-align": "^3.30.2",
+    "@tiptap/extension-text-style": "^3.30.2",
+    "@tiptap/extension-underline": "^3.30.2",
+    "@tiptap/pm": "^3.30.2",
+    "@tiptap/react": "^3.30.2",
+    "@tiptap/starter-kit": "^3.30.2",
+}
+
 SQLITE_PYTEST_STEP = """      - name: Run isolated backend tests
         working-directory: litblogs
         env:
@@ -75,6 +93,236 @@ def _validate_release_workflow(policy_validator, tmp_path, workflow):
     policy_validator.failures.clear()
     policy_validator.validate_release()
     return policy_validator.failures
+
+
+def _validate_tiptap_policy(
+    policy_validator,
+    tmp_path,
+    *,
+    dependencies=None,
+    runtime_source="",
+    backend_source="",
+    index_source="",
+    package_updates=None,
+    lock_root_dependencies=None,
+    lock_package_updates=None,
+):
+    if dependencies is None:
+        dependencies = REVIEWED_TIPTAP_RUNTIME_DEPENDENCIES
+    frontend_root = tmp_path / "litblogs"
+    source_root = frontend_root / "src"
+    source_root.mkdir(parents=True)
+    package = {"dependencies": dependencies}
+    package.update(package_updates or {})
+    locked_packages = {
+        f"node_modules/{package_name}": {
+            "version": "3.30.2",
+            "license": "MIT",
+        }
+        for package_name in REVIEWED_TIPTAP_RUNTIME_DEPENDENCIES
+    }
+    locked_packages.update(lock_package_updates or {})
+    package_lock = {
+        "lockfileVersion": 3,
+        "packages": {
+            "": {
+                "dependencies": (
+                    dependencies
+                    if lock_root_dependencies is None
+                    else lock_root_dependencies
+                ),
+            },
+            **locked_packages,
+        },
+    }
+    (frontend_root / "package.json").write_text(
+        json.dumps(package), encoding="utf-8"
+    )
+    (frontend_root / "package-lock.json").write_text(
+        json.dumps(package_lock), encoding="utf-8"
+    )
+    (source_root / "editor.js").write_text(runtime_source, encoding="utf-8")
+    (frontend_root / "config.py").write_text(backend_source, encoding="utf-8")
+    (frontend_root / "index.html").write_text(index_source, encoding="utf-8")
+
+    policy_validator.ROOT = tmp_path
+    policy_validator.failures.clear()
+    policy_validator.validate_tiptap_editor_policy()
+    return policy_validator.failures
+
+
+def test_tiptap_editor_policy_accepts_reviewed_oss_runtime_dependencies(
+    policy_validator,
+):
+    package = json.loads(
+        (BACKEND_ROOT / "package.json").read_text(encoding="utf-8")
+    )
+    declared = {
+        package_name: version
+        for package_name, version in package["dependencies"].items()
+        if package_name.startswith("@tiptap")
+    }
+
+    assert declared == REVIEWED_TIPTAP_RUNTIME_DEPENDENCIES
+
+    policy_validator.failures.clear()
+    policy_validator.validate_tiptap_editor_policy()
+    assert policy_validator.failures == []
+
+
+def test_tiptap_editor_policy_rejects_unreviewed_tiptap_packages(
+    policy_validator, tmp_path
+):
+    dependencies = {
+        **REVIEWED_TIPTAP_RUNTIME_DEPENDENCIES,
+        "@tiptap/extension-collaboration": "^3.30.2",
+    }
+
+    failures = _validate_tiptap_policy(
+        policy_validator, tmp_path, dependencies=dependencies
+    )
+
+    assert any("unreviewed Tiptap package" in failure for failure in failures)
+
+
+@pytest.mark.parametrize(
+    "package_name",
+    (
+        "@tiptap-pro/provider",
+        "@tiptap-cloud/provider",
+        "@hocuspocus/provider",
+    ),
+)
+def test_tiptap_editor_policy_rejects_cloud_and_service_packages(
+    policy_validator, tmp_path, package_name
+):
+    dependencies = {
+        **REVIEWED_TIPTAP_RUNTIME_DEPENDENCIES,
+        package_name: "^3.30.2",
+    }
+
+    failures = _validate_tiptap_policy(
+        policy_validator, tmp_path, dependencies=dependencies
+    )
+
+    assert any("Tiptap Cloud or service package" in failure for failure in failures)
+
+
+def test_tiptap_editor_policy_rejects_service_package_aliases(
+    policy_validator, tmp_path
+):
+    dependencies = {
+        **REVIEWED_TIPTAP_RUNTIME_DEPENDENCIES,
+        "editor-provider": "npm:@tiptap-pro/provider@^3.30.2",
+    }
+
+    failures = _validate_tiptap_policy(
+        policy_validator, tmp_path, dependencies=dependencies
+    )
+
+    assert any("Tiptap Cloud or service package" in failure for failure in failures)
+
+
+def test_tiptap_editor_policy_rejects_reviewed_packages_under_alias_keys(
+    policy_validator, tmp_path
+):
+    dependencies = {
+        **REVIEWED_TIPTAP_RUNTIME_DEPENDENCIES,
+        "editor-core": "npm:@tiptap/core@^3.30.2",
+    }
+
+    failures = _validate_tiptap_policy(
+        policy_validator, tmp_path, dependencies=dependencies
+    )
+
+    assert any("canonical dependency key" in failure for failure in failures)
+
+
+def test_tiptap_editor_policy_rejects_unreviewed_lock_root_packages(
+    policy_validator, tmp_path
+):
+    lock_root_dependencies = {
+        **REVIEWED_TIPTAP_RUNTIME_DEPENDENCIES,
+        "@tiptap/extension-collaboration": "^3.30.2",
+    }
+
+    failures = _validate_tiptap_policy(
+        policy_validator,
+        tmp_path,
+        lock_root_dependencies=lock_root_dependencies,
+    )
+
+    assert any("package-lock root" in failure for failure in failures)
+
+
+@pytest.mark.parametrize(
+    ("metadata", "expected_failure"),
+    (
+        ({"version": "3.30.1", "license": "MIT"}, "resolve reviewed Tiptap"),
+        ({"version": "3.30.2", "license": "SEE LICENSE"}, "MIT license"),
+    ),
+)
+def test_tiptap_editor_policy_rejects_unreviewed_lock_metadata(
+    policy_validator, tmp_path, metadata, expected_failure
+):
+    failures = _validate_tiptap_policy(
+        policy_validator,
+        tmp_path,
+        lock_package_updates={"node_modules/@tiptap/core": metadata},
+    )
+
+    assert any(expected_failure in failure for failure in failures)
+
+
+@pytest.mark.parametrize(
+    ("runtime_source", "expected_failure"),
+    (
+        (
+            "const apiKey = import.meta.env.VITE_TIPTAP_API_KEY;",
+            "Tiptap API key",
+        ),
+        (
+            "import { Editor } from 'https://esm.sh/@tiptap/core';",
+            "external editor runtime",
+        ),
+        (
+            "const script = 'https://cdn.tiny.cloud/1/key/tinymce/8/tinymce.min.js';",
+            "external editor runtime",
+        ),
+    ),
+)
+def test_tiptap_editor_policy_rejects_keys_and_external_editor_runtimes(
+    policy_validator, tmp_path, runtime_source, expected_failure
+):
+    failures = _validate_tiptap_policy(
+        policy_validator, tmp_path, runtime_source=runtime_source
+    )
+
+    assert any(expected_failure in failure for failure in failures)
+
+
+def test_tiptap_editor_policy_rejects_any_remote_editor_script(
+    policy_validator, tmp_path
+):
+    failures = _validate_tiptap_policy(
+        policy_validator,
+        tmp_path,
+        index_source='<script src="https://cdn.example.test/editor.js"></script>',
+    )
+
+    assert any("external editor runtime" in failure for failure in failures)
+
+
+def test_tiptap_editor_policy_rejects_backend_tiptap_credentials(
+    policy_validator, tmp_path
+):
+    failures = _validate_tiptap_policy(
+        policy_validator,
+        tmp_path,
+        backend_source="TIPTAP_CLOUD_SECRET = 'test-placeholder'",
+    )
+
+    assert any("Tiptap API key" in failure for failure in failures)
 
 
 def test_policy_validator_accepts_guarded_postgresql_backend_pytest(
