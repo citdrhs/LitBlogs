@@ -88,7 +88,6 @@ const LitBlogsEditor = ({
   const imageInputRef = useRef(null);
   const imageDialogRef = useRef(null);
   const imageDialogInvokerRef = useRef(null);
-  const imageUrlInputRef = useRef(null);
   const videoInputRef = useRef(null);
   const pdfInputRef = useRef(null);
   const activeUploadsRef = useRef(new Set());
@@ -286,10 +285,6 @@ const LitBlogsEditor = ({
   }, [closeImageDialog, disabled, imageDialogOpen]);
 
   useEffect(() => {
-    if (imageDialogOpen) imageUrlInputRef.current?.focus();
-  }, [imageDialogOpen]);
-
-  useEffect(() => {
     if (!editor) return;
     const incomingHtml = sanitizeImportedHtml(value);
     const currentHtml = sanitizeSerializedHtml(editor.getHTML());
@@ -412,7 +407,7 @@ const LitBlogsEditor = ({
           <label>
             <span>School image URL</span>
             <input
-              ref={imageUrlInputRef}
+              autoFocus
               type="text"
               inputMode="url"
               value={imageUrl}

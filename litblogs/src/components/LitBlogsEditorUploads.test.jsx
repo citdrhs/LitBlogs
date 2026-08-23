@@ -1,3 +1,4 @@
+import { useLayoutEffect, useState } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -149,6 +150,27 @@ describe("LitBlogsEditor uploads", () => {
     const url = screen.getByRole("textbox", { name: "School image URL" });
     expect(url).toHaveAttribute("type", "text");
     expect(url).toHaveAttribute("inputmode", "url");
+  });
+
+  it("focuses the school image URL before the dialog commit completes", () => {
+    const focusedAtCommit = vi.fn();
+    const FocusProbe = () => {
+      const [dialogRequested, setDialogRequested] = useState(false);
+      useLayoutEffect(() => {
+        if (dialogRequested) focusedAtCommit(document.activeElement);
+      }, [dialogRequested]);
+      return (
+        <div onClickCapture={() => setDialogRequested(true)}>
+          <LitBlogsEditor value="" onChange={vi.fn()} />
+        </div>
+      );
+    };
+    render(<FocusProbe />);
+    fireEvent.click(screen.getByRole("button", { name: "Choose image" }));
+
+    const url = screen.getByRole("textbox", { name: "School image URL" });
+    expect(focusedAtCommit).toHaveBeenLastCalledWith(url);
+    expect(url).toHaveFocus();
   });
 
   it("does not insert or publish while Enter belongs to an IME composition", () => {
