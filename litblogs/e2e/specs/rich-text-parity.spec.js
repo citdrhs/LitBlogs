@@ -326,20 +326,57 @@ const expectRichText = async (
   return snapshot;
 };
 
-const assertFitsViewport = async (locator, page) => {
+const VIEWPORT_FIT = Object.freeze({
+  fits: 'fits',
+  leftOverflow: 'left-overflow',
+  missing: 'missing-or-unmeasurable',
+  rightOverflow: 'right-overflow',
+});
+const MOBILE_COMPOSER_MEASUREMENT_CHECKPOINT = Object.freeze({
+  [VIEWPORT_FIT.fits]: 'mobile-edit-composer-measurement-fits',
+  [VIEWPORT_FIT.leftOverflow]: 'mobile-edit-composer-measurement-left-overflow',
+  [VIEWPORT_FIT.missing]: 'mobile-edit-composer-measurement-missing-or-unmeasurable',
+  [VIEWPORT_FIT.rightOverflow]: 'mobile-edit-composer-measurement-right-overflow',
+});
+
+const classifyViewportFit = (bounds, viewport) => {
+  if (
+    !viewport
+    || !bounds
+    || ![bounds.left, bounds.right, bounds.width, bounds.height].every(Number.isFinite)
+    || bounds.width <= 0
+    || bounds.height <= 0
+  ) return VIEWPORT_FIT.missing;
+  if (bounds.left < -1) return VIEWPORT_FIT.leftOverflow;
+  if (bounds.right > viewport.width + 1) return VIEWPORT_FIT.rightOverflow;
+  return VIEWPORT_FIT.fits;
+};
+
+const measureDomViewportFit = async (locator, page) => {
   const viewport = page.viewportSize();
-  await expect.poll(async () => {
-    const bounds = await locator.boundingBox({ timeout: 500 }).catch(() => null);
-    return Boolean(
-      viewport
-      && bounds
-      && bounds.x >= -1
-      && bounds.x + bounds.width <= viewport.width + 1
-    );
-  }, {
-    intervals: [50, 100, 250],
-    timeout: 5_000,
-  }).toBe(true);
+  const bounds = await locator.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      height: rect.height,
+      left: rect.left,
+      right: rect.right,
+      width: rect.width,
+    };
+  }, undefined, { timeout: 500 }).catch(() => null);
+  return classifyViewportFit(bounds, viewport);
+};
+
+const assertFitsViewport = async (locator, page, { onFinalMeasurement } = {}) => {
+  try {
+    await expect.poll(() => measureDomViewportFit(locator, page), {
+      intervals: [50, 100, 250],
+      timeout: 5_000,
+    }).toBe(VIEWPORT_FIT.fits);
+  } catch (error) {
+    onFinalMeasurement?.(await measureDomViewportFit(locator, page));
+    throw error;
+  }
+  onFinalMeasurement?.(VIEWPORT_FIT.fits);
 };
 
 test('the LitBlogs editor preserves one rich post across every author and course view', async ({
@@ -772,7 +809,11 @@ test('the LitBlogs editor preserves one rich post across every author and course
   const editComposer = author.page.getByRole('dialog', { name: 'Edit post' });
   await expect(editComposer).toBeVisible();
   checkpoint('mobile-edit-composer-ready');
-  await assertFitsViewport(editComposer, author.page);
+  await assertFitsViewport(editComposer, author.page, {
+    onFinalMeasurement: (measurement) => checkpoint(
+      MOBILE_COMPOSER_MEASUREMENT_CHECKPOINT[measurement],
+    ),
+  });
   checkpoint('mobile-edit-composer-fit-ready');
   const editEditorRoot = editComposer.getByTestId('litblogs-editor');
   await expect(editEditorRoot).toBeVisible();
