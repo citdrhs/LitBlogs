@@ -139,6 +139,45 @@ AUDITED_TIPTAP_LOCK_PACKAGES = frozenset(
         "@tiptap/starter-kit",
     }
 )
+AUDITED_TIPTAP_LOCK_INTEGRITIES = {
+    "@tiptap/core": "sha512-QbZC/s1OOqcoUdkhIY16TjR/gCtR0qAk9e4bJwUqOJqZuv5ozqCL5hzWm22jjTPp6c6Ei2tPd6t30VwfIKW4lQ==",
+    "@tiptap/extension-blockquote": "sha512-BOkwhZenek7vzXBOgKppSrlx4YryBdAYu1p1MXKn0R9A9eNmE2HVhmm0gG49+E8BhsE/TG8wKVclwET42JJiIg==",
+    "@tiptap/extension-bold": "sha512-MsvJhPgYejY2D9MhwYJv8AmscozvLBI8qtJ7YLdYZBWkMR4bgmxHq5+xqEfBsao9bOMMwBon9p3+P+/Tq5ReWA==",
+    "@tiptap/extension-bubble-menu": "sha512-oS0WiWNXHKpiPYMkcnHm1j7iEvufTGGtLFtcJJd3olb5OS6V2acoXVDL0nNJDmRQ32K3QXut3fbRcMseMxT+lw==",
+    "@tiptap/extension-bullet-list": "sha512-+awIL/TUz4aB3rL68igU1rWfaaoBIAkPcakkktkRq8gYf0bd9eSb48P6kHkpx/3q+JyK7g9vsnltLNHNh6twnA==",
+    "@tiptap/extension-character-count": "sha512-9Mnej4qOLf2/kFPAmGxkxwdpFNRq8+D9nQVnyFF50x32myaKl/BXcCftsm+EiKpnH9JNT5mhZA0nh4JoH7OwrA==",
+    "@tiptap/extension-code": "sha512-r8EZk3R9yGpF6v5xxafAU1HwrD/e+RpbfnmVi2TeB/ZHAsVO62fW96E32G0t6IdaCtOFtAd85hkDAaOfCT4yGg==",
+    "@tiptap/extension-code-block": "sha512-9otGKaQZmePHrLXFtCtz+BYDn5z4sSumTkUqQIQHz0gVxwPoTi7g51RedwxvViTb/zu2XV5ROXYLHIxKxypMPg==",
+    "@tiptap/extension-color": "sha512-VNct6qKePIoruJZ4PR30JtA3YfENOqESrUtDLF1YMJYf/oU26Bx4ePJGTy428IA0mouyE+uHruyUGfZXnT73Iw==",
+    "@tiptap/extension-document": "sha512-+xIv67V+/2L1uvz98FAT5W7kWEfHwfNV3MD7b4UsKPU0lhcCWuVOXy0JB8yYmdNExqpI7xT9g3MWzREoBvBQSg==",
+    "@tiptap/extension-dropcursor": "sha512-nyRKUmItATnKI9AiRChmjhcBbCEsNxRu+AaCz+cx8EvnAcNHsVRdNYL5PmBs3WlNA/Et4Eb2DG0hVQDnNF61eg==",
+    "@tiptap/extension-floating-menu": "sha512-A8PLvvh8W6PUMrqh+EpBerxm+Ucr0irGxJvwAnzYQmNGNIJ9U4OVgw4OcEU+9JH0gMmEzDcHzMPP2s/s1lIcyw==",
+    "@tiptap/extension-font-family": "sha512-syg9Gfo+TN3rhxPxACgHSKRjcpl08enBHNinjCQI2pg8BMGDLG7DTrSAlIK/uEhTxxzSqBUOBaGrue+Q0oJQmg==",
+    "@tiptap/extension-gapcursor": "sha512-7Xk0ut6FM+RAsvKxDN3bAtk7zvYZ6Aa8pawJ6s7dLAmLR9JwrZevlcL4FSrj4bR7rqKOj92RYCFxzgTEbWimag==",
+    "@tiptap/extension-hard-break": "sha512-IxSNgmG3d4OZdUTeebrOI7SxdIWXXJqlcGiSNDabWqxipUitfy3mZ3gDDE6G01koKxZRbhz4KIplAZlpxnTFSg==",
+    "@tiptap/extension-heading": "sha512-PblDvgSJ05p1t6hzyPi02xeiBjB0M2abReoGEImqSWCy79UqnAGacgsZo4EeEawtJV1NEP8chhvmX+nRtzdT1A==",
+    "@tiptap/extension-highlight": "sha512-LY1/LTEluP/z82JkoPVE3ffCVO7Bt6ltVeBMXsfb6S7GLS8eXput2KU1XlyLqTCQADvjaS1oTMfaplH+tS7Meg==",
+    "@tiptap/extension-horizontal-rule": "sha512-j8aswLTsuEdJKC62DF+kw0EgvIRL7QMUyAVp2fdjR0qgM0ZVlEwCC4qIEq3kK9tFVU4kRtQ5BSj/jn6QwrlbCA==",
+    "@tiptap/extension-image": "sha512-K/BPlWauHXI6Y4s7se2A1BLcZ2pnWmRQTEDkPJYe/8kmv1GyJzPu34sZed5Mvfu5chUH8u6aNZ/utZbvSbI/0Q==",
+    "@tiptap/extension-italic": "sha512-pp8uaiuXsUbLm5rYzR1jlWbwm1mAahRajdHwAKBtthFRB2rDvC7ZWhKaCSoKhZvfIDRmu9/B67+uAHoutL0dCA==",
+    "@tiptap/extension-link": "sha512-jwdcymKcrbFpj5hRAuGVLCq8FieVkGFnENyroYmvkad+XAt8ZLy/MTFYRN6SK3ukH6PZMY7H4iObGtciQaC5nw==",
+    "@tiptap/extension-list": "sha512-MIUpo1Bd9Rf1Qg+TNYNwDZ4xsfFeQahjU9Xhy6UcaszKQzbAM7KCzn5BObNytK1NdcqNHsC8Wj5vFvMKEzrXdw==",
+    "@tiptap/extension-list-item": "sha512-HWgRCRlGxulE+hN1VUcnWD6P2NE08VBgGtcaxOfdXVqaI93BCK6AhRQZGpLsfKgajLk+5DXTBraaitwnBqzCxg==",
+    "@tiptap/extension-list-keymap": "sha512-TTve3WOlQaYu1ahMqsQ/T0wzaxfgZvcOl3/OuPyInOi8QtxXhqGhFjmYe5jOr56G9W2QDuFWVsZecVwfDte9zg==",
+    "@tiptap/extension-ordered-list": "sha512-Z7OO1HcF0idda1n6vodXeQ3h2ylN9JR4IfIGUYkar5Xl9JusK8PDETTBQZQn//96p49I2d+GoWsD2LXPtjHXXg==",
+    "@tiptap/extension-paragraph": "sha512-ulEu3LNt+kPVAWEnrhoz13Fs8Q/v/8NUxQbAeteuBchQ8joxJXuWExhpy1fUfZir5+b+W5z7/NesgPjZQfv47w==",
+    "@tiptap/extension-placeholder": "sha512-Bj1seUvPCoRrD/LpzMoKD+jQIjxuc+oq931GpPq4wobSUUbD4pF/0NMwpCLpiHO19QnTQz8+9p2dqPdlc44LHA==",
+    "@tiptap/extension-strike": "sha512-fBLxMXz6hYIURzLOD+/L6aVATztsKham00ANWmGi13vN0hx2lQMYZffN+gR+QqiCDfMQxBXzrf5a7tJuDiQHLQ==",
+    "@tiptap/extension-table": "sha512-zWp0ehZnx6N5lwRa8anSTn17GBEF3wxHXfOJGbBugf4Vwmp5keUEAXrgeIS4j7gIdxjN3XawdwjuMImG93N+Fg==",
+    "@tiptap/extension-text": "sha512-n/iZnirgRmXet6f97kolAnP3j8DsgLSiTbz/KLWc8eBYiFmkjRzkuisOm5xuGdfGIxwpB4x3tlSF4ef4DLnbRg==",
+    "@tiptap/extension-text-align": "sha512-zexiz0uJlX2KzeAyYI/uEoBsl0Zw3Ua0CTV/kRKTnk7K9vCOnwvJXtXdkHA4WC12ACqUsPnyc4yMTwDR22fKFw==",
+    "@tiptap/extension-text-style": "sha512-o3YMN3JNHg/rCCLZB3PUcAfl4bkrsXDoYoHRXvrbE9cl/RT+qAEFAAssI8kBC1fp9en9V2F4Z7Uy2uuzkbecKw==",
+    "@tiptap/extension-underline": "sha512-SZiTMnvqXcnrtJX+X25ZbYsuDO83haGOVMBD/O+mAWYNYXhaSc5Rkph5czzItxrd+Yyp/vs4PiwD7XTNbfqmpA==",
+    "@tiptap/extensions": "sha512-2LqAHXk26QDsryW+beECxYeBzv5Ylk4GuB3cOmfghS7/G37R2W+Te3TkUK7BT0EWoDryvBT57/5q0DEFIhfZZg==",
+    "@tiptap/pm": "sha512-BJN8tUx4ppFN3R3cV/FJfrJbJkvo1lj4uciq+nwpjwzdRvFzqIuglWf+HLcJ6CwlYpLOHp7ArgkBg4Q5e60Gog==",
+    "@tiptap/react": "sha512-7hGaTstpUeTmQ008mCPkjz+GSlChWhucgy+PeX0z93v4+nh7qM5F+0lh+kJ9zo6Os5abO7v36GtgHRZdQI6+FQ==",
+    "@tiptap/starter-kit": "sha512-fJSrhW1CyD4sjYA20evSP4Cp13B/HhbxCdM974K0xpHOVqvCtNU9w2s9hfq9mg2yGoU7MSNHKNYMkJjIi2/Xyw==",
+}
 TIPTAP_STARTER_KIT_LOCK_DEPENDENCIES = frozenset(
     {
         "@tiptap/core",
@@ -1849,8 +1888,18 @@ def validate_tiptap_editor_policy() -> None:
             ),
             "package-lock must not reference Tiptap Cloud or service packages",
         )
+        expect(
+            frozenset(AUDITED_TIPTAP_LOCK_INTEGRITIES)
+            == AUDITED_TIPTAP_LOCK_PACKAGES,
+            "audited Tiptap integrity policy must cover the exact package set",
+        )
         for package_name in AUDITED_TIPTAP_LOCK_PACKAGES:
             locked_package = locked_packages.get(f"node_modules/{package_name}", {})
+            explicit_name = (
+                locked_package.get("name")
+                if isinstance(locked_package, dict)
+                else None
+            )
             expect(
                 isinstance(locked_package, dict)
                 and locked_package.get("version") == TIPTAP_LOCK_VERSION,
@@ -1863,6 +1912,36 @@ def validate_tiptap_editor_policy() -> None:
                 isinstance(locked_package, dict)
                 and locked_package.get("license") == "MIT",
                 f"package-lock must preserve the MIT license for {package_name}",
+            )
+            expect(
+                isinstance(locked_package, dict)
+                and (explicit_name is None or explicit_name == package_name),
+                (
+                    "package-lock must preserve the canonical package identity "
+                    f"for {package_name}"
+                ),
+            )
+            package_slug = package_name.removeprefix("@tiptap/")
+            expected_resolved = (
+                f"https://registry.npmjs.org/{package_name}/-/"
+                f"{package_slug}-{TIPTAP_LOCK_VERSION}.tgz"
+            )
+            expect(
+                isinstance(locked_package, dict)
+                and locked_package.get("resolved") == expected_resolved,
+                (
+                    "package-lock must preserve the exact npm resolved artifact "
+                    f"for {package_name}"
+                ),
+            )
+            expect(
+                isinstance(locked_package, dict)
+                and locked_package.get("integrity")
+                == AUDITED_TIPTAP_LOCK_INTEGRITIES.get(package_name),
+                (
+                    "package-lock must preserve the audited sha512 integrity "
+                    f"for {package_name}"
+                ),
             )
 
     expect(

@@ -377,6 +377,57 @@ def test_tiptap_editor_policy_allows_non_tiptap_transitive_aliases(
 
 
 @pytest.mark.parametrize(
+    ("mutation", "expected_failure"),
+    (
+        ("explicit-name", "canonical package identity"),
+        ("resolved", "resolved artifact"),
+        ("integrity", "sha512 integrity"),
+        ("missing-integrity", "sha512 integrity"),
+    ),
+)
+def test_tiptap_editor_policy_rejects_audited_node_metadata_substitution(
+    policy_validator, tmp_path, mutation, expected_failure
+):
+    package_lock = json.loads(
+        (BACKEND_ROOT / "package-lock.json").read_text(encoding="utf-8")
+    )
+    locked_core = package_lock["packages"]["node_modules/@tiptap/core"]
+    if mutation == "explicit-name":
+        locked_core["name"] = "innocent-editor-core"
+    elif mutation == "resolved":
+        locked_core["resolved"] = (
+            "https://registry.npmjs.org/@tiptap/core/-/core-3.30.2-repacked.tgz"
+        )
+    elif mutation == "integrity":
+        locked_core["integrity"] = "sha512-dGVzdC1wbGFjZWhvbGRlcg=="
+    else:
+        locked_core.pop("integrity")
+
+    failures = _validate_real_tiptap_lock(
+        policy_validator, tmp_path, package_lock
+    )
+
+    assert any(expected_failure in failure for failure in failures)
+
+
+def test_tiptap_editor_policy_accepts_matching_explicit_lock_node_name(
+    policy_validator, tmp_path
+):
+    package_lock = json.loads(
+        (BACKEND_ROOT / "package-lock.json").read_text(encoding="utf-8")
+    )
+    package_lock["packages"]["node_modules/@tiptap/core"][
+        "name"
+    ] = "@tiptap/core"
+
+    failures = _validate_real_tiptap_lock(
+        policy_validator, tmp_path, package_lock
+    )
+
+    assert failures == []
+
+
+@pytest.mark.parametrize(
     ("metadata", "expected_failure"),
     (
         ({"version": "3.30.1", "license": "MIT"}, "resolve reviewed Tiptap"),
