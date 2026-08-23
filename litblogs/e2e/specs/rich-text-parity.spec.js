@@ -846,13 +846,14 @@ test('the LitBlogs editor preserves one rich post across every author and course
   await expect(editComposer).toBeVisible();
   checkpoint('mobile-edit-composer-ready');
   const editComposerSelector = '[role="dialog"][aria-labelledby="post-composer-dialog-title"]';
+  const editComposerDom = author.page.locator(editComposerSelector);
   await assertFitsViewport(author.page, editComposerSelector, {
     onFinalMeasurement: (measurement) => checkpoint(
       MOBILE_COMPOSER_MEASUREMENT_CHECKPOINT[measurement],
     ),
   });
   checkpoint('mobile-edit-composer-fit-ready');
-  const editEditorRoot = editComposer.getByTestId('litblogs-editor');
+  const editEditorRoot = editComposerDom.locator('[data-testid="litblogs-editor"]');
   await expect(editEditorRoot).toBeVisible({ timeout: 30_000 });
   checkpoint('mobile-edit-editor-root-visible');
   await assertFitsViewport(
@@ -866,7 +867,7 @@ test('the LitBlogs editor preserves one rich post across every author and course
   );
   checkpoint('mobile-edit-editor-fit-ready');
   checkpoint('mobile-edit-layout-ready');
-  const reopenedEditor = editComposer.getByRole('textbox', { name: 'Post content' });
+  const reopenedEditor = editEditorRoot.locator('[role="textbox"][aria-label="Post content"]');
   await expect(reopenedEditor).toBeVisible({ timeout: 30_000 });
   checkpoint('mobile-edit-editor-visible');
   const reopenedProbe = await reopenedEditor.evaluate((root, heading) => ({
@@ -887,14 +888,15 @@ test('the LitBlogs editor preserves one rich post across every author and course
   checkpoint('reopened');
   await takeLocalVisual(author.page, 'editor-mobile-reopened');
   checkpoint('reopened-visual-ready');
-  await editComposer.getByPlaceholder('Enter a descriptive title for your post').fill(finalTitle);
+  await editComposerDom.locator('#post-title').fill(finalTitle);
   checkpoint('edit-title-ready');
   const updatedResponse = waitForApiResponse(
     author.page,
     'PUT',
     `/api/classes/${classroom.id}/posts/${published.id}`,
   );
-  const updateButton = editComposer.getByRole('button', { name: 'Update Post', exact: true });
+  const updateButton = editComposerDom.locator('button[type="submit"]');
+  await expect(updateButton).toHaveText('Update Post');
   await expect(updateButton).toBeEnabled();
   checkpoint('update-button-ready');
   await updateButton.click();
@@ -904,7 +906,7 @@ test('the LitBlogs editor preserves one rich post across every author and course
   const updated = await responseJson(rawUpdatedResponse);
   checkpoint('update-response-ready');
   expect(updated.title).toBe(finalTitle);
-  await expect(editComposer).toHaveCount(0);
+  await expect(editComposerDom).toHaveCount(0);
   checkpoint('edit-composer-closed');
   const updatedPreview = author.page.getByTestId(`class-feed-post-preview-${published.id}`);
   await expect(updatedPreview).toBeVisible();
