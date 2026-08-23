@@ -545,19 +545,30 @@ test('the LitBlogs editor preserves one rich post across every author and course
   await author.page.keyboard.press('Enter');
   await expect(editor.locator('h2')).toHaveText(FIXTURE.heading);
   checkpoint('heading-ready-after-image-placement-enter');
-  const imageChooserPromise = author.page.waitForEvent('filechooser');
   await toolbar.getByRole('button', { name: 'Insert image' }).click();
+  checkpoint('image-dialog-requested');
   const imageDialog = composer.getByRole('dialog', { name: 'Insert image' });
   await expect(imageDialog).toBeVisible();
+  checkpoint('image-dialog-visible');
   await expect(imageDialog.getByRole('textbox', { name: 'School image URL' })).toBeFocused();
-  await imageDialog.getByRole('button', { name: 'Upload from computer' }).click();
-  const imageChooser = await imageChooserPromise;
+  checkpoint('image-dialog-focus-ready');
+  const [imageChooser] = await Promise.all([
+    author.page.waitForEvent('filechooser'),
+    imageDialog.getByRole('button', { name: 'Upload from computer' }).click().then(() => {
+      checkpoint('image-upload-button-clicked');
+    }),
+  ]);
+  checkpoint('image-filechooser-acquired');
   const imageUploaded = waitForApiResponse(author.page, 'POST', '/api/upload/image');
   await imageChooser.setFiles(IMAGE);
+  checkpoint('image-file-selected');
   const imageAsset = await responseJson(await imageUploaded);
+  checkpoint('image-upload-response');
   await expect(composer.getByTestId('litblogs-editor')).not.toHaveAttribute('aria-busy', 'true');
+  checkpoint('image-upload-idle');
   const editorImage = editor.locator(`img[alt="${IMAGE.name}"]`);
   await expect(editorImage).toBeVisible();
+  checkpoint('image-editor-node-ready');
   await expect(editor.locator('h2')).toHaveText(FIXTURE.heading);
   checkpoint('heading-ready-after-image-upload');
   await editorImage.click();
