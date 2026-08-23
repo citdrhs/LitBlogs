@@ -432,9 +432,9 @@ const LitBlogsEditorToolbar = ({
     }
   };
 
-  const invokeMediaCallback = (callback) => {
+  const invokeMediaCallback = (callback, { restoreEditorFocus = true } = {}) => {
     if (globallyDisabled || typeof callback !== "function") return;
-    editor.chain().focus().run();
+    if (restoreEditorFocus) editor.chain().focus().run();
     callback(editor);
   };
 
@@ -640,7 +640,7 @@ const LitBlogsEditorToolbar = ({
         <ToolbarButton
           label="Insert image"
           disabled={globallyDisabled || typeof onInsertImage !== "function"}
-          onClick={() => invokeMediaCallback(onInsertImage)}
+          onClick={() => invokeMediaCallback(onInsertImage, { restoreEditorFocus: false })}
         >
           <FaImage aria-hidden="true" focusable="false" />
         </ToolbarButton>

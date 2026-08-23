@@ -496,6 +496,34 @@ describe("LitBlogsEditorToolbar", () => {
     expect(onInsertPdf).toHaveBeenCalledWith(editor);
   });
 
+  it("opens the image dialog without scheduling editor focus and preserves file-picker focus", () => {
+    const editor = createFakeEditor();
+    const onInsertImage = vi.fn();
+    const onInsertVideo = vi.fn();
+    const onInsertPdf = vi.fn();
+    render(
+      <LitBlogsEditorToolbar
+        editor={editor}
+        onInsertImage={onInsertImage}
+        onInsertVideo={onInsertVideo}
+        onInsertPdf={onInsertPdf}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Insert image" }));
+    expect(onInsertImage).toHaveBeenCalledWith(editor);
+    expect(editor.calls).not.toContainEqual({ name: "focus", args: [] });
+
+    fireEvent.click(screen.getByRole("button", { name: "Insert video" }));
+    expect(onInsertVideo).toHaveBeenCalledWith(editor);
+    expect(editor.calls).toContainEqual({ name: "focus", args: [] });
+    editor.calls.splice(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Insert PDF attachment" }));
+    expect(onInsertPdf).toHaveBeenCalledWith(editor);
+    expect(editor.calls).toContainEqual({ name: "focus", args: [] });
+  });
+
   it("updates selection state and word count from editor events", () => {
     const editor = createFakeEditor({ words: 1 });
     render(<LitBlogsEditorToolbar editor={editor} />);
