@@ -327,65 +327,69 @@ const expectRichText = async (
 };
 
 const VIEWPORT_FIT = Object.freeze({
+  detached: 'detached',
+  evaluateError: 'evaluate-error',
   fits: 'fits',
+  hidden: 'hidden',
+  invalid: 'invalid-rect',
   leftOverflow: 'left-overflow',
-  missing: 'missing-or-unmeasurable',
+  noClientRect: 'no-client-rect',
+  notSampled: 'unavailable-or-not-sampled',
   rightOverflow: 'right-overflow',
+  zeroHeight: 'zero-height',
+  zeroWidth: 'zero-width',
 });
 const MOBILE_COMPOSER_MEASUREMENT_CHECKPOINT = Object.freeze({
+  [VIEWPORT_FIT.detached]: 'mobile-edit-composer-measurement-detached',
+  [VIEWPORT_FIT.evaluateError]: 'mobile-edit-composer-measurement-evaluate-error',
   [VIEWPORT_FIT.fits]: 'mobile-edit-composer-measurement-fits',
+  [VIEWPORT_FIT.hidden]: 'mobile-edit-composer-measurement-hidden',
+  [VIEWPORT_FIT.invalid]: 'mobile-edit-composer-measurement-invalid-rect',
   [VIEWPORT_FIT.leftOverflow]: 'mobile-edit-composer-measurement-left-overflow',
-  [VIEWPORT_FIT.missing]: 'mobile-edit-composer-measurement-missing-or-unmeasurable',
+  [VIEWPORT_FIT.noClientRect]: 'mobile-edit-composer-measurement-no-client-rect',
+  [VIEWPORT_FIT.notSampled]: 'mobile-edit-composer-measurement-unavailable-or-not-sampled',
   [VIEWPORT_FIT.rightOverflow]: 'mobile-edit-composer-measurement-right-overflow',
+  [VIEWPORT_FIT.zeroHeight]: 'mobile-edit-composer-measurement-zero-height',
+  [VIEWPORT_FIT.zeroWidth]: 'mobile-edit-composer-measurement-zero-width',
 });
 
-const classifyViewportFit = (bounds, viewport) => {
+const measureDomViewportFit = async (locator) => locator.evaluate((element, categories) => {
+  if (!element.isConnected) return categories.detached;
+  const style = window.getComputedStyle(element);
   if (
-    !viewport
-    || !bounds
-    || ![bounds.left, bounds.right, bounds.width, bounds.height].every(Number.isFinite)
-    || bounds.width <= 0
-    || bounds.height <= 0
-  ) return VIEWPORT_FIT.missing;
-  if (bounds.left < -1) return VIEWPORT_FIT.leftOverflow;
-  if (bounds.right > viewport.width + 1) return VIEWPORT_FIT.rightOverflow;
-  return VIEWPORT_FIT.fits;
-};
+    style.display === 'none'
+    || style.visibility === 'hidden'
+    || style.visibility === 'collapse'
+  ) return categories.hidden;
+  if (element.getClientRects().length === 0) return categories.noClientRect;
+  const rect = element.getBoundingClientRect();
+  const geometry = [rect.left, rect.right, rect.width, rect.height, window.innerWidth];
+  if (
+    !geometry.every(Number.isFinite)
+    || rect.width < 0
+    || rect.height < 0
+    || window.innerWidth <= 0
+  ) return categories.invalid;
+  if (rect.width === 0) return categories.zeroWidth;
+  if (rect.height === 0) return categories.zeroHeight;
+  if (rect.left < -1) return categories.leftOverflow;
+  if (rect.right > window.innerWidth + 1) return categories.rightOverflow;
+  return categories.fits;
+}, VIEWPORT_FIT, { timeout: 10_000 }).catch(() => VIEWPORT_FIT.evaluateError);
 
-const measureDomViewportFit = async (handle, viewport) => {
-  if (!handle) return VIEWPORT_FIT.missing;
-  const bounds = await handle.evaluate((element) => {
-    const rect = element.getBoundingClientRect();
-    return {
-      height: rect.height,
-      left: rect.left,
-      right: rect.right,
-      width: rect.width,
-    };
-  }).catch(() => null);
-  return classifyViewportFit(bounds, viewport);
-};
-
-const assertFitsViewport = async (locator, page, { onFinalMeasurement } = {}) => {
-  const viewport = page.viewportSize();
-  const handle = await locator.elementHandle({ timeout: 10_000 }).catch(() => null);
-  if (!handle) {
-    onFinalMeasurement?.(VIEWPORT_FIT.missing);
-    expect(handle).not.toBeNull();
-    return;
-  }
+const assertFitsViewport = async (locator, { onFinalMeasurement } = {}) => {
+  let lastMeasurement = VIEWPORT_FIT.notSampled;
   try {
-    await expect.poll(() => measureDomViewportFit(handle, viewport), {
+    await expect.poll(async () => {
+      lastMeasurement = await measureDomViewportFit(locator);
+      return lastMeasurement;
+    }, {
       intervals: [50, 100, 250],
-      timeout: 5_000,
+      timeout: 15_000,
     }).toBe(VIEWPORT_FIT.fits);
-  } catch (error) {
-    onFinalMeasurement?.(await measureDomViewportFit(handle, viewport));
-    throw error;
   } finally {
-    await handle.dispose();
+    onFinalMeasurement?.(lastMeasurement);
   }
-  onFinalMeasurement?.(VIEWPORT_FIT.fits);
 };
 
 test('the LitBlogs editor preserves one rich post across every author and course view', async ({
@@ -818,7 +822,7 @@ test('the LitBlogs editor preserves one rich post across every author and course
   const editComposer = author.page.getByRole('dialog', { name: 'Edit post' });
   await expect(editComposer).toBeVisible();
   checkpoint('mobile-edit-composer-ready');
-  await assertFitsViewport(editComposer, author.page, {
+  await assertFitsViewport(editComposer, {
     onFinalMeasurement: (measurement) => checkpoint(
       MOBILE_COMPOSER_MEASUREMENT_CHECKPOINT[measurement],
     ),
@@ -827,7 +831,7 @@ test('the LitBlogs editor preserves one rich post across every author and course
   const editEditorRoot = editComposer.getByTestId('litblogs-editor');
   await expect(editEditorRoot).toBeVisible();
   checkpoint('mobile-edit-editor-root-visible');
-  await assertFitsViewport(editEditorRoot, author.page);
+  await assertFitsViewport(editEditorRoot);
   checkpoint('mobile-edit-editor-fit-ready');
   checkpoint('mobile-edit-layout-ready');
   const reopenedEditor = editComposer.getByRole('textbox', { name: 'Post content' });
@@ -923,7 +927,7 @@ test('the LitBlogs editor preserves one rich post across every author and course
   await expect(pdfModal).toHaveCount(0);
   await peer.page.setViewportSize({ width: 390, height: 844 });
   await expectRichText(desktopPost, media);
-  await assertFitsViewport(desktopPost, peer.page);
+  await assertFitsViewport(desktopPost);
   await takeLocalVisual(peer.page, 'post-view-mobile');
   checkpoint('post-view-ready');
 
