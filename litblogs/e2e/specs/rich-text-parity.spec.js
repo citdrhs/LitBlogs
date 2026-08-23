@@ -327,11 +327,19 @@ const expectRichText = async (
 };
 
 const assertFitsViewport = async (locator, page) => {
-  const bounds = await locator.boundingBox();
   const viewport = page.viewportSize();
-  expect(bounds).not.toBeNull();
-  expect(bounds.x).toBeGreaterThanOrEqual(-1);
-  expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width + 1);
+  await expect.poll(async () => {
+    const bounds = await locator.boundingBox({ timeout: 500 }).catch(() => null);
+    return Boolean(
+      viewport
+      && bounds
+      && bounds.x >= -1
+      && bounds.x + bounds.width <= viewport.width + 1
+    );
+  }, {
+    intervals: [50, 100, 250],
+    timeout: 5_000,
+  }).toBe(true);
 };
 
 test('the LitBlogs editor preserves one rich post across every author and course view', async ({
@@ -765,7 +773,12 @@ test('the LitBlogs editor preserves one rich post across every author and course
   await expect(editComposer).toBeVisible();
   checkpoint('mobile-edit-composer-ready');
   await assertFitsViewport(editComposer, author.page);
-  await assertFitsViewport(editComposer.getByTestId('litblogs-editor'), author.page);
+  checkpoint('mobile-edit-composer-fit-ready');
+  const editEditorRoot = editComposer.getByTestId('litblogs-editor');
+  await expect(editEditorRoot).toBeVisible();
+  checkpoint('mobile-edit-editor-root-visible');
+  await assertFitsViewport(editEditorRoot, author.page);
+  checkpoint('mobile-edit-editor-fit-ready');
   checkpoint('mobile-edit-layout-ready');
   const reopenedEditor = editComposer.getByRole('textbox', { name: 'Post content' });
   await expect(reopenedEditor).toBeVisible();
