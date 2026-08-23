@@ -107,6 +107,24 @@ describe("third-party privacy policy", () => {
     expect(runtimeSource).not.toMatch(/@tinymce|tinymce|\.tox-|\.mce-/i);
   });
 
+  it("bundles the authoring editor with ClassFeed instead of loading it after a composer opens", () => {
+    const appSource = readProjectFile("src/App.jsx");
+    const classFeedSource = readProjectFile("src/ClassFeed.jsx");
+    expect(appSource).toMatch(
+      /const\s+ClassFeed\s*=\s*lazy\(\(\)\s*=>\s*import\(["']\.\/ClassFeed["']\)\);/,
+    );
+    expect(appSource).not.toMatch(
+      /import\s+ClassFeed\s+from\s+["']\.\/ClassFeed["'];/,
+    );
+    expect(classFeedSource).toMatch(
+      /import\s+LitBlogsEditor\s+from\s+["']\.\/components\/LitBlogsEditor["'];/,
+    );
+    expect(classFeedSource).not.toMatch(
+      /lazy\s*\(\s*\(\)\s*=>\s*import\(["']\.\/components\/LitBlogsEditor["']\)\s*\)/,
+    );
+    expect(classFeedSource).not.toContain("Loading the editor&hellip;");
+  });
+
   it("uses same-origin profile cover choices", () => {
     const profileSource = readProjectFile("src/Profile.jsx");
 

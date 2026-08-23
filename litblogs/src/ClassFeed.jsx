@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import axios from 'axios';
@@ -27,6 +27,7 @@ import {
   MAX_POST_HTML_LENGTH,
 } from './utils/postRequestContract';
 import RichTextContent from './components/RichTextContent';
+import LitBlogsEditor from './components/LitBlogsEditor';
 import {
   clonePrivatePostContent,
   loadAssignmentDraft,
@@ -42,8 +43,6 @@ import {
   normalizeUserSettings,
   saveLocalUserSettings,
 } from './utils/userSettings';
-
-const LitBlogsEditor = lazy(() => import('./components/LitBlogsEditor'));
 
 const DIALOG_FOCUSABLE_SELECTOR = [
   'a[href]',
@@ -2464,25 +2463,17 @@ const ClassFeed = () => {
 
                 {/* Content Input */}
                 <div className="relative">
-                  <Suspense
-                    fallback={(
-                      <div className="flex h-32 items-center justify-center rounded-lg border border-gray-200 bg-gray-50 text-sm text-gray-600">
-                        Loading the editor&hellip;
-                      </div>
-                    )}
-                  >
-                    <LitBlogsEditor
-                      value={content}
-                      editorFontSize={userSettings.editorFontSize}
-                      disabled={loading}
-                      onUploadStateChange={setEditorUploadBusy}
-                      onContentLimitChange={({ length }) => setPostHtmlLength(length)}
-                      onChange={(nextContent) => {
-                        setContent(nextContent);
-                        setPostComposerDirty(true);
-                      }}
-                    />
-                  </Suspense>
+                  <LitBlogsEditor
+                    value={content}
+                    editorFontSize={userSettings.editorFontSize}
+                    disabled={loading}
+                    onUploadStateChange={setEditorUploadBusy}
+                    onContentLimitChange={({ length }) => setPostHtmlLength(length)}
+                    onChange={(nextContent) => {
+                      setContent(nextContent);
+                      setPostComposerDirty(true);
+                    }}
+                  />
                   {postHtmlLength > MAX_POST_HTML_LENGTH && (
                     <div
                       className="mt-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"

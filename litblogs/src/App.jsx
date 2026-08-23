@@ -4,7 +4,6 @@ import Help from "./Help";
 import SignIn from "./Sign-in";
 import SignUp from "./Sign-up";
 import TeacherDashboard from "./TeacherDashboard";
-import ClassFeed from "./ClassFeed";
 import AdminDashboard from "./AdminDashboard";
 import PostView from "./PostView";
 import StudentHub from "./StudentHub";
@@ -17,9 +16,11 @@ import StudentDetails from "./components/StudentDetails";
 import ProtectedRoute from "./components/ProtectedRoute";
 import PrivacyPolicy from './PrivacyPolicy';
 import TermsOfService from './TermsOfService';
-import { useState, useEffect } from 'react';
+import { lazy, Suspense, useState, useEffect } from 'react';
 import { applyGlobalUserSettings, getLocalUserSettings } from './utils/userSettings';
 import { PrivateDraftProvider } from './context/PrivateDraftContext';
+
+const ClassFeed = lazy(() => import('./ClassFeed'));
 
 function App() {
   const [darkMode, setDarkMode] = useState(() => {
@@ -59,7 +60,16 @@ function App() {
         <Route path="/sign-up" element={<SignUp />} />
         <Route path="/teacher-dashboard" element={<ProtectedRoute allowedRoles={["TEACHER"]}><TeacherDashboard /></ProtectedRoute>} />
         <Route path="/class-feed" element={<Navigate to="/" replace />} />
-        <Route path="/class-feed/:classId" element={<ProtectedRoute><ClassFeed /></ProtectedRoute>} />
+        <Route
+          path="/class-feed/:classId"
+          element={(
+            <ProtectedRoute>
+              <Suspense fallback={<div role="status">Loading class&hellip;</div>}>
+                <ClassFeed />
+              </Suspense>
+            </ProtectedRoute>
+          )}
+        />
         <Route path="/class/:classId/assignment/:assignmentId/submissions" element={<ProtectedRoute allowedRoles={["TEACHER", "ADMIN"]}><AssignmentSubmissions /></ProtectedRoute>} />
         <Route path="/admin-dashboard" element={<ProtectedRoute allowedRoles={["ADMIN"]}><AdminDashboard /></ProtectedRoute>} />
         <Route path="/class/:classId/post/:postId" element={<ProtectedRoute><PostView /></ProtectedRoute>} />

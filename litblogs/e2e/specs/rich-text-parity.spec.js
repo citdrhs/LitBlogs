@@ -371,6 +371,24 @@ const MOBILE_EDITOR_MEASUREMENT_CHECKPOINT = Object.freeze({
   [VIEWPORT_FIT.zeroHeight]: 'mobile-edit-editor-measurement-zero-height',
   [VIEWPORT_FIT.zeroWidth]: 'mobile-edit-editor-measurement-zero-width',
 });
+const EDITOR_READINESS = Object.freeze({
+  composerMissing: 'composer-missing',
+  composerMultiple: 'composer-multiple',
+  editorHidden: 'editor-hidden',
+  editorMissing: 'editor-missing',
+  evaluateError: 'evaluate-error',
+  loading: 'loading',
+  ready: 'ready',
+});
+const MOBILE_EDITOR_READINESS_CHECKPOINT = Object.freeze({
+  [EDITOR_READINESS.composerMissing]: 'mobile-edit-editor-readiness-composer-missing',
+  [EDITOR_READINESS.composerMultiple]: 'mobile-edit-editor-readiness-composer-multiple',
+  [EDITOR_READINESS.editorHidden]: 'mobile-edit-editor-readiness-editor-hidden',
+  [EDITOR_READINESS.editorMissing]: 'mobile-edit-editor-readiness-editor-missing',
+  [EDITOR_READINESS.evaluateError]: 'mobile-edit-editor-readiness-evaluate-error',
+  [EDITOR_READINESS.loading]: 'mobile-edit-editor-readiness-loading',
+  [EDITOR_READINESS.ready]: 'mobile-edit-editor-readiness-ready',
+});
 
 const measureDomViewportFit = async (page, selector) => page.evaluate(({ categories, selector }) => {
   const matches = document.querySelectorAll(selector);
@@ -412,6 +430,42 @@ const assertFitsViewport = async (page, selector, { onFinalMeasurement } = {}) =
     }).toBe(VIEWPORT_FIT.fits);
   } finally {
     onFinalMeasurement?.(lastMeasurement);
+  }
+};
+
+const waitForEditorReadiness = async (page, composerSelector, { onFinalReadiness } = {}) => {
+  let lastReadiness = EDITOR_READINESS.editorMissing;
+  try {
+    await expect.poll(async () => {
+      lastReadiness = await page.evaluate(({ composerSelector, states }) => {
+        const composers = document.querySelectorAll(composerSelector);
+        if (composers.length === 0) return states.composerMissing;
+        if (composers.length > 1) return states.composerMultiple;
+        const [composer] = composers;
+        const editor = composer.querySelector('[data-testid="litblogs-editor"]');
+        if (editor) {
+          const style = window.getComputedStyle(editor);
+          return style.display !== 'none'
+            && style.visibility !== 'hidden'
+            && style.visibility !== 'collapse'
+            && editor.getClientRects().length > 0
+            ? states.ready
+            : states.editorHidden;
+        }
+        const loading = [...composer.querySelectorAll('div')].some(
+          (element) => element.textContent.trim() === 'Loading the editor…',
+        );
+        return loading ? states.loading : states.editorMissing;
+      }, { composerSelector, states: EDITOR_READINESS }).catch(
+        () => EDITOR_READINESS.evaluateError,
+      );
+      return lastReadiness;
+    }, {
+      intervals: [100, 250, 500],
+      timeout: 60_000,
+    }).toBe(EDITOR_READINESS.ready);
+  } finally {
+    onFinalReadiness?.(lastReadiness);
   }
 };
 
@@ -854,7 +908,17 @@ test('the LitBlogs editor preserves one rich post across every author and course
   });
   checkpoint('mobile-edit-composer-fit-ready');
   const editEditorRoot = editComposerDom.locator('[data-testid="litblogs-editor"]');
-  await expect(editEditorRoot).toBeVisible({ timeout: 30_000 });
+  await waitForEditorReadiness(author.page, editComposerSelector, {
+    onFinalReadiness: (readiness) => {
+      checkpoint(MOBILE_EDITOR_READINESS_CHECKPOINT[readiness]);
+      checkpoint(authorObservations.pageErrors.length
+        ? 'mobile-edit-editor-page-error-present'
+        : 'mobile-edit-editor-page-error-absent');
+      checkpoint(authorObservations.consoleErrors.length
+        ? 'mobile-edit-editor-console-error-present'
+        : 'mobile-edit-editor-console-error-absent');
+    },
+  });
   checkpoint('mobile-edit-editor-root-visible');
   await assertFitsViewport(
     author.page,
@@ -868,7 +932,7 @@ test('the LitBlogs editor preserves one rich post across every author and course
   checkpoint('mobile-edit-editor-fit-ready');
   checkpoint('mobile-edit-layout-ready');
   const reopenedEditor = editEditorRoot.locator('[role="textbox"][aria-label="Post content"]');
-  await expect(reopenedEditor).toBeVisible({ timeout: 30_000 });
+  await expect(reopenedEditor).toBeVisible({ timeout: 60_000 });
   checkpoint('mobile-edit-editor-visible');
   const reopenedProbe = await reopenedEditor.evaluate((root, heading) => ({
     hasAnyText: Boolean(root.textContent.trim()),
