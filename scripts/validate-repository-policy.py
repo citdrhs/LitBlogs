@@ -1211,6 +1211,7 @@ def validate_release() -> None:
         "validate-repository-policy.py",
         (
             "git archive --format=tar HEAD -- deploy docs/operations litblogs/*.py "
+            "litblogs/rich_text_contract.json "
             "litblogs/alembic.ini litblogs/migrations/env.py "
             "litblogs/migrations/sqlite_contract.py "
             "litblogs/migrations/script.py.mako litblogs/migrations/versions "
@@ -2261,6 +2262,8 @@ def validate_maintenance_release_contract() -> None:
     )
     for path in (
         "litblogs/password_reset_delivery.py",
+        "litblogs/rich_text_contract.json",
+        "litblogs/rich_text_contract.py",
         "litblogs/runtime_database_identity.py",
         "litblogs/migrations/sqlite_contract.py",
     ):

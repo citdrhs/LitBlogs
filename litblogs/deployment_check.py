@@ -66,6 +66,8 @@ REQUIRED_RELEASE_FILES = (
     "litblogs/operator_runtime.py",
     "litblogs/password_reset_delivery.py",
     "litblogs/password_reset_job.py",
+    "litblogs/rich_text_contract.json",
+    "litblogs/rich_text_contract.py",
     "litblogs/reminder_job.py",
     "litblogs/requirements.in",
     "litblogs/requirements-lock.in",
@@ -87,6 +89,14 @@ class _DeploymentFailure(Exception):
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
+
+
+def validate_rich_text_contract(path: Path) -> object:
+    """Load the contract lazily so import failures remain bounded preflight errors."""
+
+    from rich_text_contract import validate_rich_text_contract as validate
+
+    return validate(path)
 
 
 def _safe_release_file(root: Path, relative_path: str) -> Path:
@@ -121,6 +131,12 @@ def _validate_release_manifest(root: Path) -> None:
 
     for relative_path in REQUIRED_RELEASE_FILES:
         _safe_release_file(root, relative_path)
+
+    contract_path = _safe_release_file(root, "litblogs/rich_text_contract.json")
+    try:
+        validate_rich_text_contract(contract_path)
+    except Exception:
+        raise _DeploymentFailure("manifest_invalid") from None
 
     versions_dir = root / "litblogs" / "migrations" / "versions"
     try:

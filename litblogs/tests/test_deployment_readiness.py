@@ -643,6 +643,8 @@ def test_release_admission_requires_every_shipped_runtime_module():
         "litblogs/oauth_security.py",
         "litblogs/operator_runtime.py",
         "litblogs/password_reset_delivery.py",
+        "litblogs/rich_text_contract.json",
+        "litblogs/rich_text_contract.py",
         "litblogs/reminder_job.py",
         "litblogs/runtime_database_identity.py",
         "litblogs/schemas.py",
@@ -697,7 +699,13 @@ def _write_deployment_release(tmp_path):
     for relative_path in required_files:
         path = release_root / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("reviewed release file\n", encoding="utf-8")
+        if relative_path == "litblogs/rich_text_contract.json":
+            path.write_text(
+                (BACKEND_DIR / "rich_text_contract.json").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+        else:
+            path.write_text("reviewed release file\n", encoding="utf-8")
     dist = release_root / "litblogs" / "dist"
     (dist / "assets").mkdir(parents=True, exist_ok=True)
     (dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
@@ -712,11 +720,22 @@ def _write_deployment_release(tmp_path):
     return release_root
 
 
-def test_pretraffic_deployment_check_requires_manifest_assets_and_database(tmp_path, capsys):
+def test_pretraffic_deployment_check_requires_manifest_assets_and_database(
+    tmp_path, capsys, monkeypatch
+):
     import deployment_check
 
     release_root = _write_deployment_release(tmp_path)
     calls = []
+    real_contract_validator = deployment_check.validate_rich_text_contract
+    monkeypatch.setattr(
+        deployment_check,
+        "validate_rich_text_contract",
+        lambda path: (
+            calls.append(("contract", Path(path).relative_to(release_root).as_posix())),
+            real_contract_validator(path),
+        )[1],
+    )
 
     result = deployment_check.run(
         app_settings=SimpleNamespace(
@@ -730,8 +749,38 @@ def test_pretraffic_deployment_check_requires_manifest_assets_and_database(tmp_p
     )
 
     assert result == 0
-    assert calls == ["ca", "database", "drift"]
+    assert calls == [
+        "ca",
+        ("contract", "litblogs/rich_text_contract.json"),
+        "database",
+        "drift",
+    ]
     assert capsys.readouterr().out.strip() == "deployment-check: ready"
+
+
+def test_deployment_check_rejects_an_invalid_rich_text_contract(tmp_path, capsys):
+    import deployment_check
+
+    release_root = _write_deployment_release(tmp_path)
+    (release_root / "litblogs" / "rich_text_contract.json").write_text(
+        '{"schemaVersion":1,"schemaVersion":1}', encoding="utf-8"
+    )
+
+    result = deployment_check.run(
+        app_settings=SimpleNamespace(
+            app_env="production", database_url="postgresql://validated"
+        ),
+        release_root=release_root,
+        database_check=lambda: None,
+        migration_drift_check=lambda: None,
+        ca_custody_check=lambda _database_url: None,
+        interpreter_version=(3, 13),
+    )
+
+    assert result == 1
+    assert capsys.readouterr().err.strip() == (
+        "deployment-check: failed code=manifest_invalid"
+    )
 
 
 def test_artifact_preflight_does_not_require_database_at_migration_head(tmp_path, capsys):
@@ -992,6 +1041,7 @@ def test_release_artifact_uses_a_runtime_allowlist_instead_of_shipping_the_repos
 
     assert (
         "git archive --format=tar HEAD -- deploy docs/operations litblogs/*.py "
+        "litblogs/rich_text_contract.json "
         "litblogs/alembic.ini litblogs/migrations/env.py "
         "litblogs/migrations/sqlite_contract.py "
         "litblogs/migrations/script.py.mako litblogs/migrations/versions "
@@ -1000,6 +1050,8 @@ def test_release_artifact_uses_a_runtime_allowlist_instead_of_shipping_the_repos
         "litblogs/requirements-lock.in" in release
     )
     assert "git archive --format=tar HEAD |" not in release
+    assert 'test -f "$staging/tree/litblogs/rich_text_contract.json"' in release
+    assert 'test -f "$staging/tree/litblogs/rich_text_contract.py"' in release
     assert "litblogs/migrations/0001_create_federated_identities.sql" not in release
     assert "litblogs/alembic.ini litblogs/migrations litblogs/requirements" not in release
 
