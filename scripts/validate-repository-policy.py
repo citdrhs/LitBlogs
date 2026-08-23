@@ -98,6 +98,135 @@ REVIEWED_TIPTAP_RUNTIME_PACKAGES = frozenset(
         "@tiptap/starter-kit",
     }
 )
+AUDITED_TIPTAP_LOCK_PACKAGES = frozenset(
+    {
+        "@tiptap/core",
+        "@tiptap/extension-blockquote",
+        "@tiptap/extension-bold",
+        "@tiptap/extension-bubble-menu",
+        "@tiptap/extension-bullet-list",
+        "@tiptap/extension-character-count",
+        "@tiptap/extension-code",
+        "@tiptap/extension-code-block",
+        "@tiptap/extension-color",
+        "@tiptap/extension-document",
+        "@tiptap/extension-dropcursor",
+        "@tiptap/extension-floating-menu",
+        "@tiptap/extension-font-family",
+        "@tiptap/extension-gapcursor",
+        "@tiptap/extension-hard-break",
+        "@tiptap/extension-heading",
+        "@tiptap/extension-highlight",
+        "@tiptap/extension-horizontal-rule",
+        "@tiptap/extension-image",
+        "@tiptap/extension-italic",
+        "@tiptap/extension-link",
+        "@tiptap/extension-list",
+        "@tiptap/extension-list-item",
+        "@tiptap/extension-list-keymap",
+        "@tiptap/extension-ordered-list",
+        "@tiptap/extension-paragraph",
+        "@tiptap/extension-placeholder",
+        "@tiptap/extension-strike",
+        "@tiptap/extension-table",
+        "@tiptap/extension-text",
+        "@tiptap/extension-text-align",
+        "@tiptap/extension-text-style",
+        "@tiptap/extension-underline",
+        "@tiptap/extensions",
+        "@tiptap/pm",
+        "@tiptap/react",
+        "@tiptap/starter-kit",
+    }
+)
+TIPTAP_STARTER_KIT_LOCK_DEPENDENCIES = frozenset(
+    {
+        "@tiptap/core",
+        "@tiptap/extension-blockquote",
+        "@tiptap/extension-bold",
+        "@tiptap/extension-bullet-list",
+        "@tiptap/extension-code",
+        "@tiptap/extension-code-block",
+        "@tiptap/extension-document",
+        "@tiptap/extension-dropcursor",
+        "@tiptap/extension-gapcursor",
+        "@tiptap/extension-hard-break",
+        "@tiptap/extension-heading",
+        "@tiptap/extension-horizontal-rule",
+        "@tiptap/extension-italic",
+        "@tiptap/extension-link",
+        "@tiptap/extension-list",
+        "@tiptap/extension-list-item",
+        "@tiptap/extension-list-keymap",
+        "@tiptap/extension-ordered-list",
+        "@tiptap/extension-paragraph",
+        "@tiptap/extension-strike",
+        "@tiptap/extension-text",
+        "@tiptap/extension-underline",
+        "@tiptap/extensions",
+        "@tiptap/pm",
+    }
+)
+TIPTAP_CORE_ONLY_LOCK_PEERS = frozenset(
+    {
+        "@tiptap/extension-bold",
+        "@tiptap/extension-code",
+        "@tiptap/extension-document",
+        "@tiptap/extension-hard-break",
+        "@tiptap/extension-heading",
+        "@tiptap/extension-highlight",
+        "@tiptap/extension-image",
+        "@tiptap/extension-italic",
+        "@tiptap/extension-paragraph",
+        "@tiptap/extension-strike",
+        "@tiptap/extension-text",
+        "@tiptap/extension-text-align",
+        "@tiptap/extension-text-style",
+        "@tiptap/extension-underline",
+    }
+)
+TIPTAP_CORE_PM_LOCK_PEERS = frozenset(
+    {
+        "@tiptap/extension-blockquote",
+        "@tiptap/extension-bubble-menu",
+        "@tiptap/extension-code-block",
+        "@tiptap/extension-floating-menu",
+        "@tiptap/extension-horizontal-rule",
+        "@tiptap/extension-link",
+        "@tiptap/extension-list",
+        "@tiptap/extension-table",
+        "@tiptap/extensions",
+        "@tiptap/react",
+    }
+)
+TIPTAP_LIST_LOCK_PEERS = frozenset(
+    {
+        "@tiptap/extension-bullet-list",
+        "@tiptap/extension-list-item",
+        "@tiptap/extension-list-keymap",
+        "@tiptap/extension-ordered-list",
+    }
+)
+TIPTAP_EXTENSIONS_LOCK_PEERS = frozenset(
+    {
+        "@tiptap/extension-character-count",
+        "@tiptap/extension-dropcursor",
+        "@tiptap/extension-gapcursor",
+        "@tiptap/extension-placeholder",
+    }
+)
+TIPTAP_TEXT_STYLE_LOCK_PEERS = frozenset(
+    {
+        "@tiptap/extension-color",
+        "@tiptap/extension-font-family",
+    }
+)
+TIPTAP_LOCK_DEPENDENCY_SECTIONS = (
+    "dependencies",
+    "devDependencies",
+    "optionalDependencies",
+    "peerDependencies",
+)
 TIPTAP_SERVICE_PACKAGE_PREFIXES = (
     "@hocuspocus/",
     "@tiptap-cloud/",
@@ -1439,6 +1568,84 @@ def editor_runtime_policy_paths() -> list[Path]:
     return sorted({path for path in paths if path.is_file()})
 
 
+def audited_tiptap_lock_edges() -> frozenset[tuple[str, str, str, str]]:
+    edges = {
+        ("", "dependencies", package_name, TIPTAP_VERSION)
+        for package_name in REVIEWED_TIPTAP_RUNTIME_PACKAGES
+    }
+    edges.update(
+        (
+            "@tiptap/starter-kit",
+            "dependencies",
+            package_name,
+            TIPTAP_LOCK_VERSION,
+        )
+        for package_name in TIPTAP_STARTER_KIT_LOCK_DEPENDENCIES
+    )
+    edges.add(
+        (
+            "@tiptap/core",
+            "peerDependencies",
+            "@tiptap/pm",
+            TIPTAP_LOCK_VERSION,
+        )
+    )
+    edges.update(
+        (
+            package_name,
+            "peerDependencies",
+            "@tiptap/core",
+            TIPTAP_LOCK_VERSION,
+        )
+        for package_name in TIPTAP_CORE_ONLY_LOCK_PEERS
+    )
+    edges.update(
+        (package_name, "peerDependencies", peer_name, TIPTAP_LOCK_VERSION)
+        for package_name in TIPTAP_CORE_PM_LOCK_PEERS
+        for peer_name in ("@tiptap/core", "@tiptap/pm")
+    )
+    edges.update(
+        (
+            package_name,
+            "peerDependencies",
+            "@tiptap/extension-list",
+            TIPTAP_LOCK_VERSION,
+        )
+        for package_name in TIPTAP_LIST_LOCK_PEERS
+    )
+    edges.update(
+        (
+            package_name,
+            "peerDependencies",
+            "@tiptap/extensions",
+            TIPTAP_LOCK_VERSION,
+        )
+        for package_name in TIPTAP_EXTENSIONS_LOCK_PEERS
+    )
+    edges.update(
+        (
+            package_name,
+            "peerDependencies",
+            "@tiptap/extension-text-style",
+            TIPTAP_LOCK_VERSION,
+        )
+        for package_name in TIPTAP_TEXT_STYLE_LOCK_PEERS
+    )
+    edges.update(
+        (
+            "@tiptap/react",
+            "optionalDependencies",
+            package_name,
+            TIPTAP_VERSION,
+        )
+        for package_name in (
+            "@tiptap/extension-bubble-menu",
+            "@tiptap/extension-floating-menu",
+        )
+    )
+    return frozenset(edges)
+
+
 def validate_tiptap_editor_policy() -> None:
     try:
         package = json.loads(read_text("litblogs/package.json"))
@@ -1553,6 +1760,45 @@ def validate_tiptap_editor_policy() -> None:
     )
 
     if isinstance(locked_packages, dict):
+        expected_tiptap_lock_paths = {
+            f"node_modules/{package_name}"
+            for package_name in AUDITED_TIPTAP_LOCK_PACKAGES
+        }
+        actual_tiptap_lock_paths = set()
+        actual_tiptap_lock_edges = set()
+        for package_path, locked_package in locked_packages.items():
+            normalized_path = str(package_path).replace("\\", "/")
+            package_name = (
+                ""
+                if not normalized_path
+                else normalized_path.rsplit("node_modules/", 1)[-1]
+            )
+            if package_name.startswith("@tiptap/"):
+                actual_tiptap_lock_paths.add(normalized_path)
+            if not isinstance(locked_package, dict):
+                continue
+            for section_name in TIPTAP_LOCK_DEPENDENCY_SECTIONS:
+                section = locked_package.get(section_name, {})
+                if not isinstance(section, dict):
+                    continue
+                actual_tiptap_lock_edges.update(
+                    (package_name, section_name, target_name, str(target_version))
+                    for target_name, target_version in section.items()
+                    if isinstance(target_name, str)
+                    and target_name.startswith("@tiptap/")
+                )
+        expected_tiptap_lock_edges = audited_tiptap_lock_edges()
+        expect(
+            actual_tiptap_lock_paths == expected_tiptap_lock_paths
+            and actual_tiptap_lock_edges == expected_tiptap_lock_edges,
+            (
+                "package-lock must match the audited Tiptap package-lock closure "
+                f"(unexpected nodes={len(actual_tiptap_lock_paths - expected_tiptap_lock_paths)}, "
+                f"missing nodes={len(expected_tiptap_lock_paths - actual_tiptap_lock_paths)}, "
+                f"unexpected edges={len(actual_tiptap_lock_edges - expected_tiptap_lock_edges)}, "
+                f"missing edges={len(expected_tiptap_lock_edges - actual_tiptap_lock_edges)})"
+            ),
+        )
         locked_service_packages = sorted(
             package_path
             for package_path in locked_packages
@@ -1580,7 +1826,7 @@ def validate_tiptap_editor_policy() -> None:
             ),
             "package-lock must not reference Tiptap Cloud or service packages",
         )
-        for package_name in REVIEWED_TIPTAP_RUNTIME_PACKAGES:
+        for package_name in AUDITED_TIPTAP_LOCK_PACKAGES:
             locked_package = locked_packages.get(f"node_modules/{package_name}", {})
             expect(
                 isinstance(locked_package, dict)

@@ -255,6 +255,47 @@ def test_tiptap_editor_policy_rejects_unreviewed_lock_root_packages(
     assert any("package-lock root" in failure for failure in failures)
 
 
+@pytest.mark.parametrize("mutation", ("node", "edge"))
+def test_tiptap_editor_policy_rejects_unapproved_transitive_lock_closure(
+    policy_validator, tmp_path, mutation
+):
+    package = json.loads(
+        (BACKEND_ROOT / "package.json").read_text(encoding="utf-8")
+    )
+    package_lock = json.loads(
+        (BACKEND_ROOT / "package-lock.json").read_text(encoding="utf-8")
+    )
+    if mutation == "node":
+        package_lock["packages"][
+            "node_modules/@tiptap/extension-collaboration"
+        ] = {
+            "version": "3.30.2",
+            "license": "MIT",
+            "peerDependencies": {"@tiptap/core": "3.30.2"},
+        }
+    else:
+        package_lock["packages"]["node_modules/@tiptap/starter-kit"][
+            "dependencies"
+        ]["@tiptap/extension-collaboration"] = "3.30.2"
+
+    frontend_root = tmp_path / "litblogs"
+    frontend_root.mkdir(parents=True)
+    (frontend_root / "package.json").write_text(
+        json.dumps(package), encoding="utf-8"
+    )
+    (frontend_root / "package-lock.json").write_text(
+        json.dumps(package_lock), encoding="utf-8"
+    )
+    policy_validator.ROOT = tmp_path
+    policy_validator.failures.clear()
+    policy_validator.validate_tiptap_editor_policy()
+
+    assert any(
+        "audited Tiptap package-lock closure" in failure
+        for failure in policy_validator.failures
+    )
+
+
 @pytest.mark.parametrize(
     ("metadata", "expected_failure"),
     (
