@@ -480,6 +480,19 @@ describe("ClassFeed private draft lifecycle", () => {
     ).toHaveFocus();
   });
 
+  it("lets a rich edit composer shrink within the mobile modal flex container", async () => {
+    renderFeed();
+    await flushPromises();
+
+    fireEvent.click(screen.getByRole("button", { name: "Post actions for Baseline Post" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit Post" }));
+    await flushPromises();
+
+    const dialog = screen.getByRole("dialog", { name: "Edit post" });
+    expect(dialog).toHaveClass("w-full", "max-w-4xl", "min-w-0", "overflow-y-auto");
+    expect(dialog).not.toHaveClass("overflow-hidden");
+  });
+
   it("renders the class feed preview through the shared compact rich-text surface", async () => {
     const defaultGet = mocks.axios.get.getMockImplementation();
     mocks.axios.get.mockImplementation(async (url, config) => {

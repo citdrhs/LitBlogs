@@ -2388,7 +2388,7 @@ const ClassFeed = () => {
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-white rounded-lg p-6 max-w-4xl w-full shadow-xl max-h-[90vh] overflow-y-auto text-gray-900"
+              className="bg-white rounded-lg p-6 max-w-4xl min-w-0 w-full shadow-xl max-h-[90vh] overflow-y-auto text-gray-900"
               role="dialog"
               aria-modal="true"
               aria-labelledby="post-composer-dialog-title"
