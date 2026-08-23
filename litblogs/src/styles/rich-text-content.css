@@ -1,0 +1,331 @@
+.rich-text-content {
+  --rich-text-border: #cbd5e1;
+  --rich-text-muted-surface: #f8fafc;
+  --rich-text-code-surface: #0f172a;
+  --rich-text-code-ink: #f8fafc;
+  color: inherit;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 1rem;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  text-align: start;
+  word-break: normal;
+}
+
+.rich-text-content > :first-child {
+  margin-block-start: 0;
+}
+
+.rich-text-content > :last-child {
+  margin-block-end: 0;
+}
+
+.rich-text-content p {
+  margin-block: 0 0.9em;
+}
+
+.rich-text-content h1,
+.rich-text-content h2,
+.rich-text-content h3,
+.rich-text-content h4,
+.rich-text-content h5,
+.rich-text-content h6 {
+  color: inherit;
+  font-family: inherit;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.24;
+  margin-block: 1.15em 0.45em;
+}
+
+.rich-text-content h1 {
+  font-size: 2.1em;
+}
+
+.rich-text-content h2 {
+  font-size: 1.72em;
+}
+
+.rich-text-content h3 {
+  font-size: 1.42em;
+}
+
+.rich-text-content h4 {
+  font-size: 1.2em;
+}
+
+.rich-text-content h5 {
+  font-size: 1.06em;
+}
+
+.rich-text-content h6 {
+  font-size: 0.94em;
+  letter-spacing: 0.025em;
+  text-transform: uppercase;
+}
+
+.rich-text-content blockquote {
+  background: var(--rich-text-muted-surface);
+  border-inline-start: 0.3rem solid #2563eb;
+  border-radius: 0.25rem;
+  margin: 1rem 0;
+  padding: 0.8rem 1rem;
+}
+
+.rich-text-content ul,
+.rich-text-content ol {
+  margin-block: 0.7rem 1rem;
+  padding-inline-start: 1.65rem;
+}
+
+.rich-text-content ul {
+  list-style: disc outside;
+}
+
+.rich-text-content ol {
+  list-style: decimal outside;
+}
+
+.rich-text-content li {
+  margin-block: 0.2rem;
+}
+
+.rich-text-content li > p {
+  margin-block: 0;
+}
+
+.rich-text-content a {
+  color: #1d4ed8;
+  text-decoration: underline;
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.15em;
+}
+
+.rich-text-content a:hover {
+  color: #1e40af;
+}
+
+.rich-text-content hr {
+  border: 0;
+  border-block-start: 1px solid var(--rich-text-border);
+  margin-block: 1.4rem;
+}
+
+.rich-text-content pre {
+  background: var(--rich-text-code-surface);
+  border-radius: 0.55rem;
+  color: var(--rich-text-code-ink);
+  margin-block: 1rem;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 0.9rem 1rem;
+  white-space: pre;
+}
+
+.rich-text-content code {
+  background: #e2e8f0;
+  border-radius: 0.25rem;
+  font-family: "Courier New", Courier, monospace;
+  font-size: 0.9em;
+  padding: 0.12em 0.3em;
+}
+
+.rich-text-content pre code {
+  background: transparent;
+  border-radius: 0;
+  color: inherit;
+  padding: 0;
+}
+
+.rich-text-content table {
+  border-collapse: collapse;
+  display: block;
+  margin-block: 1rem;
+  max-width: 100%;
+  overflow-x: auto;
+  width: max-content;
+}
+
+.rich-text-content th,
+.rich-text-content td {
+  border: 1px solid var(--rich-text-border);
+  min-width: 5rem;
+  padding: 0.5rem 0.65rem;
+  text-align: start;
+  vertical-align: top;
+}
+
+.rich-text-content th {
+  background: var(--rich-text-muted-surface);
+  font-weight: 700;
+}
+
+.rich-text-content img,
+.rich-text-content video {
+  border-radius: 0.45rem;
+  height: auto;
+  max-width: 100%;
+}
+
+.rich-text-content img.post-image,
+.rich-text-content img.img-fluid {
+  display: block;
+}
+
+.rich-text-content .alignleft,
+.rich-text-content .float-left {
+  float: left;
+  margin: 0.25rem 1rem 0.75rem 0;
+}
+
+.rich-text-content .alignright,
+.rich-text-content .float-right {
+  float: right;
+  margin: 0.25rem 0 0.75rem 1rem;
+}
+
+.rich-text-content .aligncenter,
+.rich-text-content .mx-auto {
+  display: block;
+  margin-inline: auto;
+}
+
+.rich-text-content figure.video-container {
+  clear: both;
+  margin: 1rem 0;
+  max-width: 100%;
+}
+
+.rich-text-content figure.video-container video {
+  background: #000000;
+  display: block;
+  width: 100%;
+}
+
+.rich-text-content .file-attachment {
+  align-items: center;
+  background: var(--rich-text-muted-surface);
+  border: 1px solid var(--rich-text-border);
+  border-radius: 0.6rem;
+  clear: both;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.75rem;
+  margin-block: 0.85rem;
+  max-width: 100%;
+  padding: 0.75rem 0.9rem;
+}
+
+.rich-text-content .file-icon {
+  align-items: center;
+  background: #fee2e2;
+  border: 1px solid #fecaca;
+  border-radius: 0.4rem;
+  color: #991b1b;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 0.68rem;
+  font-weight: 800;
+  justify-content: center;
+  letter-spacing: 0.035em;
+  min-height: 2rem;
+  min-width: 2.4rem;
+  padding: 0.3rem;
+}
+
+.rich-text-content .file-info {
+  display: grid;
+  flex: 1 1 12rem;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.rich-text-content .file-name {
+  color: inherit;
+  font-weight: 700;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.rich-text-content .file-size {
+  color: #64748b;
+  font-size: 0.86em;
+}
+
+.rich-text-content::after {
+  clear: both;
+  content: "";
+  display: table;
+}
+
+.rich-text-content--compact {
+  max-height: 11rem;
+  overflow: hidden;
+  position: relative;
+}
+
+.rich-text-content--compact::before {
+  background: linear-gradient(to bottom, transparent, #ffffff);
+  block-size: 2rem;
+  content: "";
+  inset-block-end: 0;
+  inset-inline: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 1;
+}
+
+.dark .rich-text-content {
+  --rich-text-border: #475569;
+  --rich-text-muted-surface: #1e293b;
+  --rich-text-code-surface: #020617;
+  color: #e5e7eb;
+}
+
+.dark .rich-text-content a {
+  color: #93c5fd;
+}
+
+.dark .rich-text-content a:hover {
+  color: #bfdbfe;
+}
+
+.dark .rich-text-content code {
+  background: #334155;
+}
+
+.dark .rich-text-content .file-size {
+  color: #cbd5e1;
+}
+
+.dark .rich-text-content .file-icon {
+  background: #450a0a;
+  border-color: #7f1d1d;
+  color: #fecaca;
+}
+
+.dark .rich-text-content--compact::before {
+  background: linear-gradient(to bottom, transparent, #0f172a);
+}
+
+@media (max-width: 640px) {
+  .rich-text-content {
+    font-size: 0.96rem;
+  }
+
+  .rich-text-content h1 {
+    font-size: 1.75em;
+  }
+
+  .rich-text-content h2 {
+    font-size: 1.48em;
+  }
+
+  .rich-text-content .alignleft,
+  .rich-text-content .alignright,
+  .rich-text-content .float-left,
+  .rich-text-content .float-right {
+    float: none;
+    margin-inline: auto;
+  }
+}
