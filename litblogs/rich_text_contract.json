@@ -51,15 +51,12 @@
   "html": {
     "tags": [
       "a",
-      "b",
       "blockquote",
       "br",
       "code",
-      "del",
       "div",
       "em",
       "figure",
-      "font",
       "h1",
       "h2",
       "h3",
@@ -67,7 +64,6 @@
       "h5",
       "h6",
       "hr",
-      "i",
       "img",
       "li",
       "mark",
@@ -77,7 +73,6 @@
       "s",
       "source",
       "span",
-      "strike",
       "strong",
       "table",
       "tbody",
@@ -93,7 +88,6 @@
     "tagAttributes": {
       "a": ["href", "rel", "target", "title"],
       "div": ["data-file-name", "data-file-size", "data-file-type", "data-file-url"],
-      "font": ["color", "face", "size"],
       "img": ["alt", "height", "src", "title", "width"],
       "source": ["src", "type"],
       "td": ["colspan", "rowspan"],
@@ -165,7 +159,7 @@
     "pdfTypes": ["pdf", "application/pdf"]
   },
   "importOnly": {
-    "tags": ["button"],
+    "tags": ["b", "button", "del", "font", "i", "strike"],
     "tagAttributes": {
       "button": ["data-file-url", "data-video-url", "type"],
       "div": [
@@ -178,7 +172,7 @@
         "data-video-url"
       ],
       "figure": ["contenteditable"],
-      "font": ["data-font-family"],
+      "font": ["color", "face", "size", "data-font-family"],
       "h1": ["data-heading"],
       "h2": ["data-heading"],
       "h3": ["data-heading"],

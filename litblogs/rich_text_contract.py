@@ -60,15 +60,12 @@ EXPECTED_FONT_SIZES = (
 )
 EXPECTED_TAGS = (
     "a",
-    "b",
     "blockquote",
     "br",
     "code",
-    "del",
     "div",
     "em",
     "figure",
-    "font",
     "h1",
     "h2",
     "h3",
@@ -76,7 +73,6 @@ EXPECTED_TAGS = (
     "h5",
     "h6",
     "hr",
-    "i",
     "img",
     "li",
     "mark",
@@ -86,7 +82,6 @@ EXPECTED_TAGS = (
     "s",
     "source",
     "span",
-    "strike",
     "strong",
     "table",
     "tbody",
@@ -102,7 +97,6 @@ EXPECTED_GLOBAL_ATTRIBUTES = ("class", "style")
 EXPECTED_TAG_ATTRIBUTES = {
     "a": ("href", "rel", "target", "title"),
     "div": ("data-file-name", "data-file-size", "data-file-type", "data-file-url"),
-    "font": ("color", "face", "size"),
     "img": ("alt", "height", "src", "title", "width"),
     "source": ("src", "type"),
     "td": ("colspan", "rowspan"),
@@ -186,7 +180,7 @@ EXPECTED_VIDEO_MIME_TYPES = (
     "video/x-matroska",
 )
 EXPECTED_PDF_TYPES = ("pdf", "application/pdf")
-EXPECTED_IMPORT_TAGS = ("button",)
+EXPECTED_IMPORT_TAGS = ("b", "button", "del", "font", "i", "strike")
 EXPECTED_IMPORT_TAG_ATTRIBUTES = {
     "button": ("data-file-url", "data-video-url", "type"),
     "div": (
@@ -199,7 +193,7 @@ EXPECTED_IMPORT_TAG_ATTRIBUTES = {
         "data-video-url",
     ),
     "figure": ("contenteditable",),
-    "font": ("data-font-family",),
+    "font": ("color", "face", "size", "data-font-family"),
     "h1": ("data-heading",),
     "h2": ("data-heading",),
     "h3": ("data-heading",),

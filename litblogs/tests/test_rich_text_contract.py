@@ -98,11 +98,19 @@ def test_html_policy_is_referentially_sound_and_separates_import_only_metadata()
     html = contract["html"]
     imported = contract["importOnly"]
     tags = set(html["tags"])
+    legacy_aliases = {"b", "i", "del", "strike", "font"}
     assert set(html["tagAttributes"]).issubset(tags)
     assert set(html["cssKeywords"]).issubset(html["styleProperties"])
-    assert {"h5", "h6", "font", "strike", "figure", "source", "video"}.issubset(tags)
-    assert "button" not in tags
-    assert "button" in imported["tags"]
+    assert {"h5", "h6", "figure", "source", "video"}.issubset(tags)
+    assert legacy_aliases.isdisjoint(tags)
+    assert "font" not in html["tagAttributes"]
+    assert {"button", *legacy_aliases}.issubset(imported["tags"])
+    assert imported["tagAttributes"]["font"] == (
+        "color",
+        "face",
+        "size",
+        "data-font-family",
+    )
     assert set(imported["tags"]).isdisjoint(tags)
     assert html["tagAttributes"]["div"] == (
         "data-file-name",

@@ -30,16 +30,15 @@ const EXPECTED_FONT_SIZES = [
   ["48 pt", "48pt", "64px"],
 ];
 const EXPECTED_TAGS = [
-  "a", "b", "blockquote", "br", "code", "del", "div", "em", "figure",
-  "font", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "img",
-  "li", "mark", "ol", "p", "pre", "s", "source", "span", "strike",
+  "a", "blockquote", "br", "code", "div", "em", "figure", "h1", "h2",
+  "h3", "h4", "h5", "h6", "hr", "img", "li", "mark", "ol", "p",
+  "pre", "s", "source", "span",
   "strong", "table", "tbody", "td", "th", "thead", "tr", "u", "ul", "video",
 ];
 const EXPECTED_GLOBAL_ATTRIBUTES = ["class", "style"];
 const EXPECTED_TAG_ATTRIBUTES = {
   a: ["href", "rel", "target", "title"],
   div: ["data-file-name", "data-file-size", "data-file-type", "data-file-url"],
-  font: ["color", "face", "size"],
   img: ["alt", "height", "src", "title", "width"],
   source: ["src", "type"],
   td: ["colspan", "rowspan"],
@@ -77,7 +76,7 @@ const EXPECTED_VIDEO_MIME_TYPES = [
   "video/x-matroska",
 ];
 const EXPECTED_PDF_TYPES = ["pdf", "application/pdf"];
-const EXPECTED_IMPORT_TAGS = ["button"];
+const EXPECTED_IMPORT_TAGS = ["b", "button", "del", "font", "i", "strike"];
 const EXPECTED_IMPORT_TAG_ATTRIBUTES = {
   button: ["data-file-url", "data-video-url", "type"],
   div: [
@@ -85,7 +84,7 @@ const EXPECTED_IMPORT_TAG_ATTRIBUTES = {
     "data-pdf-url", "data-video-type", "data-video-url",
   ],
   figure: ["contenteditable"],
-  font: ["data-font-family"],
+  font: ["color", "face", "size", "data-font-family"],
   h1: ["data-heading"],
   h2: ["data-heading"],
   h3: ["data-heading"],

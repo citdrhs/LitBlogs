@@ -69,11 +69,18 @@ describe("canonical rich-text contract", () => {
 
   it("keeps canonical HTML and import-only metadata disjoint and referentially sound", () => {
     const html = RICH_TEXT_CONTRACT.html;
+    const legacyAliases = ["b", "i", "del", "strike", "font"];
     expect(Object.keys(html.tagAttributes).every((tag) => html.tags.includes(tag))).toBe(true);
     expect(Object.keys(html.cssKeywords).every((property) => html.styleProperties.includes(property))).toBe(true);
-    expect(html.tags).toEqual(expect.arrayContaining(["font", "h5", "h6", "strike", "video"]));
-    expect(html.tags).not.toContain("button");
-    expect(RICH_TEXT_CONTRACT.importOnly.tags).toContain("button");
+    expect(html.tags).toEqual(expect.arrayContaining(["h5", "h6", "figure", "source", "video"]));
+    expect(legacyAliases.every((tag) => !html.tags.includes(tag))).toBe(true);
+    expect(html.tagAttributes).not.toHaveProperty("font");
+    expect(RICH_TEXT_CONTRACT.importOnly.tags).toEqual(
+      expect.arrayContaining(["button", ...legacyAliases]),
+    );
+    expect(RICH_TEXT_CONTRACT.importOnly.tagAttributes.font).toEqual([
+      "color", "face", "size", "data-font-family",
+    ]);
     expect(html.tagAttributes.div).toEqual([
       "data-file-name", "data-file-size", "data-file-type", "data-file-url",
     ]);
