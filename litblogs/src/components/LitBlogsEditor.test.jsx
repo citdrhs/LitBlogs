@@ -2,6 +2,7 @@ import { act, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { sanitizeRichText } from "../utils/richTextSecurity.js";
+import { MAX_POST_HTML_LENGTH } from "../utils/postRequestContract.js";
 import LitBlogsEditor from "./LitBlogsEditor.jsx";
 
 const mocks = vi.hoisted(() => ({
@@ -178,5 +179,42 @@ describe("LitBlogsEditor", () => {
     act(() => mocks.options.onUpdate({ editor: mocks.editor }));
 
     expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports the raw serialized HTML limit before an oversized document is sanitized empty", () => {
+    const onChange = vi.fn();
+    const onContentLimitChange = vi.fn();
+    render(
+      <LitBlogsEditor
+        value="<p>Initial</p>"
+        onChange={onChange}
+        onContentLimitChange={onContentLimitChange}
+        editorFontSize="medium"
+      />,
+    );
+
+    onContentLimitChange.mockClear();
+    const rawHtml = `<p>${"x".repeat(1_000_001)}</p>`;
+    mocks.editor.setHtml(rawHtml);
+    act(() => mocks.options.onUpdate({ editor: mocks.editor }));
+
+    expect(rawHtml.length).toBeGreaterThan(1_000_000);
+    expect(onContentLimitChange).toHaveBeenLastCalledWith({
+      length: rawHtml.length,
+      limit: MAX_POST_HTML_LENGTH,
+      overLimit: true,
+    });
+    expect(onChange).not.toHaveBeenCalled();
+
+    const recoveredHtml = "<p>Recovered</p>";
+    mocks.editor.setHtml(recoveredHtml);
+    act(() => mocks.options.onUpdate({ editor: mocks.editor }));
+    expect(onContentLimitChange).toHaveBeenLastCalledWith({
+      length: recoveredHtml.length,
+      limit: MAX_POST_HTML_LENGTH,
+      overLimit: false,
+    });
+    expect(onChange).toHaveBeenCalledOnce();
+    expect(onChange).toHaveBeenLastCalledWith(recoveredHtml);
   });
 });

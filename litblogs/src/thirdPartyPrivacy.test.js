@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { extname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -63,10 +63,9 @@ describe("third-party privacy policy", () => {
     );
 
     expect(declaredTiptapDependencies).toEqual(REVIEWED_TIPTAP_RUNTIME_DEPENDENCIES);
-    expect(dependencies).toMatchObject({
-      "@tinymce/tinymce-react": "^6.3.0",
-      tinymce: "^8.5.1",
-    });
+    expect(Object.keys(dependencies)).not.toContain("@tinymce/tinymce-react");
+    expect(Object.keys(dependencies)).not.toContain("tinymce");
+    expect(readProjectFile("package-lock.json")).not.toMatch(/tinymce/i);
   });
 
   it("keeps runtime source free of Tiny Cloud, Google Fonts, and Unsplash origins", () => {
@@ -95,49 +94,17 @@ describe("third-party privacy policy", () => {
     );
   });
 
-  it("bundles TinyMCE and every configured community plugin from npm", () => {
-    const editorSource = readProjectFile("src/components/SelfHostedEditor.jsx");
+  it("uses the local Tiptap editor without the retired TinyMCE wrapper", () => {
+    const editorSource = readProjectFile("src/components/LitBlogsEditor.jsx");
     const classFeedSource = readProjectFile("src/ClassFeed.jsx");
+    const runtimeSource = collectRuntimeSource(sourceRoot);
 
-    expect(editorSource).toContain("import 'tinymce/tinymce'");
-    expect(editorSource).toContain("licenseKey=\"gpl\"");
-    expect(editorSource).toContain("tinymceScriptSrc={NO_EXTERNAL_EDITOR_SCRIPTS}");
-
-    for (const plugin of [
-      "advlist",
-      "anchor",
-      "autolink",
-      "charmap",
-      "code",
-      "fullscreen",
-      "help",
-      "image",
-      "insertdatetime",
-      "link",
-      "lists",
-      "preview",
-      "quickbars",
-      "searchreplace",
-      "table",
-      "visualblocks",
-      "wordcount",
-    ]) {
-      expect(editorSource).toContain(`import 'tinymce/plugins/${plugin}'`);
-    }
-
-    expect(classFeedSource).toContain("lazy(() => import('./components/SelfHostedEditor'))");
-    expect(classFeedSource).not.toContain("@tinymce/tinymce-react");
-    expect(classFeedSource).toContain("help_tabs: ['shortcuts', 'keyboardnav']");
-    expect(classFeedSource).toContain("branding: false");
-    expect(classFeedSource).toContain("promotion: false");
-  });
-
-  it("does not load editor plugins with remote asset defaults", () => {
-    const editorSource = readProjectFile("src/components/SelfHostedEditor.jsx");
-    const classFeedSource = readProjectFile("src/ClassFeed.jsx");
-
-    expect(editorSource).not.toContain("tinymce/plugins/emoticons");
-    expect(classFeedSource).not.toMatch(/["']emoticons["']/);
+    expect(existsSync(join(sourceRoot, "components", "SelfHostedEditor.jsx"))).toBe(false);
+    expect(editorSource).toMatch(/from ["']@tiptap\/react["']/);
+    expect(editorSource).not.toMatch(/\bapiKey\b|tiptap\.cloud|api\.tiptap\.dev/i);
+    expect(classFeedSource).toContain("<LitBlogsEditor");
+    expect(classFeedSource).not.toMatch(/SelfHostedEditor|@tinymce\/tinymce-react/i);
+    expect(runtimeSource).not.toMatch(/@tinymce|tinymce|\.tox-|\.mce-/i);
   });
 
   it("uses same-origin profile cover choices", () => {

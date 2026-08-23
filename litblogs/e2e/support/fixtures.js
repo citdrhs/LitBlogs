@@ -98,6 +98,18 @@ export const test = base.extend({
         status: testInfo.status,
         roles: [...new Set(sessions.map(({ role }) => role))],
         error_count: testInfo.errors.length,
+        checkpoints: testInfo.annotations
+          .filter(({ type }) => type === 'checkpoint')
+          .map(({ description }) => description),
+        error_locations: testInfo.errors.map(({ location }) => (
+          location
+            ? {
+                file: String(location.file || '').split(/[\\/]/).slice(-3).join('/'),
+                line: location.line,
+                column: location.column,
+              }
+            : null
+        )),
       };
       await testInfo.attach('sanitized-failure.json', {
         body: Buffer.from(JSON.stringify(summary, null, 2)),

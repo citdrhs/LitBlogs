@@ -34,6 +34,9 @@ const mocks = vi.hoisted(() => {
       post: vi.fn(),
       delete: vi.fn(),
     },
+    editorProps: null,
+    editorPopupOpen: false,
+    editorUsesContentEditable: false,
     toast,
   };
 });
@@ -55,14 +58,42 @@ vi.mock("./utils/timeUtils", () => ({
   formatRelativeTime: () => "recently",
   setupTimeUpdater: () => undefined,
 }));
-vi.mock("./components/SelfHostedEditor", () => ({
-  default: ({ value, onEditorChange }) => (
-    <textarea
-      aria-label="Post content"
-      value={value}
-      onChange={(event) => onEditorChange(event.target.value)}
-    />
-  ),
+vi.mock("./components/LitBlogsEditor", () => ({
+  default: (props) => {
+    mocks.editorProps = props;
+    return (
+      <>
+        {mocks.editorUsesContentEditable ? (
+          <div
+            contentEditable
+            data-testid="litblogs-editor-double"
+            role="textbox"
+            aria-label="Post content"
+            suppressContentEditableWarning
+          />
+        ) : (
+          <textarea
+            data-testid="litblogs-editor-double"
+            aria-label="Post content"
+            value={props.value}
+            onChange={(event) => props.onChange(event.target.value)}
+          />
+        )}
+        {mocks.editorPopupOpen && (
+          <div role="dialog" aria-label="Editor popup">
+            <button
+              type="button"
+              onKeyDown={(event) => {
+                if (event.key === "Escape") event.preventDefault();
+              }}
+            >
+              Close editor popup
+            </button>
+          </div>
+        )}
+      </>
+    );
+  },
 }));
 vi.mock("framer-motion", async () => {
   const ReactModule = await import("react");
@@ -117,6 +148,11 @@ const BASELINE_POST = {
   created_at: "2026-08-22T10:00:00Z",
   comments: 0,
 };
+const RICH_POST_HTML = [
+  '<h2>Visual heading</h2>',
+  '<p><span style="color: #1d4ed8"><mark style="background-color: #fef08a">Highlighted text</mark></span></p>',
+  '<ul><li>List item</li></ul>',
+].join("");
 
 const flushPromises = async () => {
   await act(async () => {
@@ -204,10 +240,10 @@ const installDefaultHttpResponses = () => {
       return { data: assignmentServerPayload() };
     }
     if (url === "/classes/1/posts/99") return { data: BASELINE_POST };
-    if (url === "/classes/1/posts/99/likes") {
+    if (/^\/classes\/\d+\/posts\/\d+\/likes$/.test(url)) {
       return { data: { like_count: 0, user_liked: false } };
     }
-    if (url === "/classes/1/posts/99/comments?limit=1") {
+    if (/^\/classes\/\d+\/posts\/\d+\/comments\?limit=1$/.test(url)) {
       return { data: { total: 0 } };
     }
     throw new Error(`Unexpected GET ${url}`);
@@ -231,6 +267,9 @@ describe("ClassFeed private draft lifecycle", () => {
       role: "STUDENT",
     }));
     vi.clearAllMocks();
+    mocks.editorProps = null;
+    mocks.editorPopupOpen = false;
+    mocks.editorUsesContentEditable = false;
     installDefaultHttpResponses();
   });
 
@@ -245,6 +284,225 @@ describe("ClassFeed private draft lifecycle", () => {
 
     expect(screen.getByRole("button", { name: "Submit" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Open Submissions" })).not.toBeInTheDocument();
+  });
+
+  it("uses the native LitBlogs editor contract and publishes its canonical HTML unchanged", async () => {
+    renderFeed();
+    await flushPromises();
+
+    fireEvent.click(screen.getByRole("button", { name: "Create New Post" }));
+    await flushPromises();
+
+    expect(screen.getByTestId("litblogs-editor-double")).toBeInTheDocument();
+    expect(mocks.editorProps).toMatchObject({
+      value: "",
+      editorFontSize: "medium",
+    });
+    mocks.axios.post.mockResolvedValueOnce({
+      data: { ...BASELINE_POST, id: 100, title: "Formatted post", content: RICH_POST_HTML },
+    });
+
+    fireEvent.change(screen.getByLabelText("Post Title (Required)"), {
+      target: { value: "Formatted post" },
+    });
+    fireEvent.change(screen.getByLabelText("Post content"), {
+      target: { value: RICH_POST_HTML },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+    await flushPromises();
+
+    expect(mocks.axios.post).toHaveBeenCalledWith("/classes/1/posts", {
+      title: "Formatted post",
+      content: RICH_POST_HTML,
+    });
+  });
+
+  it("blocks publishing and composer teardown until an editor upload finishes", async () => {
+    renderFeed();
+    await flushPromises();
+    fireEvent.click(screen.getByRole("button", { name: "Create New Post" }));
+    await flushPromises();
+    fireEvent.change(screen.getByLabelText("Post Title (Required)"), {
+      target: { value: "Upload-safe post" },
+    });
+    fireEvent.change(screen.getByLabelText("Post content"), {
+      target: { value: "<p>Text before media</p>" },
+    });
+
+    act(() => mocks.editorProps.onUploadStateChange(true));
+    const publish = screen.getByRole("button", { name: "Uploading media…" });
+    expect(publish).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save Draft" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Discard Draft" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Create post" }), {
+      key: "Escape",
+    });
+    expect(screen.getByRole("dialog", { name: "Create post" })).toBeInTheDocument();
+    fireEvent.submit(publish.closest("form"));
+    await flushPromises();
+    expect(mocks.axios.post).not.toHaveBeenCalled();
+    expect(mocks.toast.error).toHaveBeenCalledWith(
+      "Wait for the media upload to finish before publishing.",
+    );
+
+    act(() => mocks.editorProps.onUploadStateChange(false));
+    const readyPublish = screen.getByRole("button", { name: "Publish" });
+    expect(readyPublish).toBeEnabled();
+    fireEvent.click(readyPublish);
+    await flushPromises();
+    expect(mocks.axios.post).toHaveBeenCalledWith("/classes/1/posts", {
+      title: "Upload-safe post",
+      content: "<p>Text before media</p>",
+    });
+  });
+
+  it("blocks oversized editor HTML without an API call and resets after edits or reopening", async () => {
+    renderFeed();
+    await flushPromises();
+    fireEvent.click(screen.getByRole("button", { name: "Create New Post" }));
+    await flushPromises();
+    fireEvent.change(screen.getByLabelText("Post Title (Required)"), {
+      target: { value: "Oversized post" },
+    });
+
+    act(() => mocks.editorProps.onContentLimitChange({
+      length: 100001,
+      limit: 100000,
+      overLimit: true,
+    }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Remove some text or formatting",
+    );
+    const publish = screen.getByRole("button", { name: "Publish" });
+    expect(publish).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save Draft" })).toBeDisabled();
+    fireEvent.submit(publish.closest("form"));
+    await flushPromises();
+    expect(mocks.axios.post).not.toHaveBeenCalled();
+    expect(mocks.toast.error).toHaveBeenCalledWith(
+      "This post is too large to publish. Remove some text or formatting and try again.",
+    );
+
+    act(() => mocks.editorProps.onContentLimitChange({
+      length: 99999,
+      limit: 100000,
+      overLimit: false,
+    }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Publish" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save Draft" })).toBeEnabled();
+
+    act(() => mocks.editorProps.onContentLimitChange({
+      length: 100001,
+      limit: 100000,
+      overLimit: true,
+    }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create New Post" }));
+    await flushPromises();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Publish" })).toBeEnabled();
+  });
+
+  it("keeps busy-state Tab focus inside the composer after its footer actions disable", async () => {
+    mocks.editorUsesContentEditable = true;
+    renderFeed();
+    await flushPromises();
+    fireEvent.click(screen.getByRole("button", { name: "Create New Post" }));
+    await flushPromises();
+
+    act(() => mocks.editorProps.onUploadStateChange(true));
+    const editor = screen.getByRole("textbox", { name: "Post content" });
+    editor.focus();
+    fireEvent.keyDown(editor, { key: "Tab" });
+
+    expect(screen.getByLabelText("Post Title (Required)")).toHaveFocus();
+  });
+
+  it("contains focus in the create-post dialog and restores it after Escape", async () => {
+    renderFeed();
+    await flushPromises();
+    const invoker = screen.getByRole("button", { name: "Create New Post" });
+    invoker.focus();
+    fireEvent.click(invoker);
+    await flushPromises();
+
+    const dialog = screen.getByRole("dialog", { name: "Create post" });
+    const title = screen.getByLabelText("Post Title (Required)");
+    const publish = screen.getByRole("button", { name: "Publish" });
+    expect(title).toHaveFocus();
+
+    publish.focus();
+    fireEvent.keyDown(publish, { key: "Tab" });
+    expect(title).toHaveFocus();
+
+    title.focus();
+    fireEvent.keyDown(title, { key: "Tab", shiftKey: true });
+    expect(publish).toHaveFocus();
+
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Create post" })).not.toBeInTheDocument();
+    expect(invoker).toHaveFocus();
+  });
+
+  it("keeps the composer open when a descendant editor dialog consumes Escape", async () => {
+    mocks.editorPopupOpen = true;
+    renderFeed();
+    await flushPromises();
+    fireEvent.click(screen.getByRole("button", { name: "Create New Post" }));
+    await flushPromises();
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Close editor popup" }), {
+      key: "Escape",
+    });
+
+    expect(screen.getByRole("dialog", { name: "Create post" })).toBeInTheDocument();
+  });
+
+  it("restores focus to a post's actions after closing its edit dialog", async () => {
+    renderFeed();
+    await flushPromises();
+
+    const actions = screen.getByRole("button", { name: "Post actions for Baseline Post" });
+    fireEvent.click(actions);
+    const edit = screen.getByRole("menuitem", { name: "Edit Post" });
+    edit.focus();
+    fireEvent.click(edit);
+    await flushPromises();
+
+    const dialog = screen.getByRole("dialog", { name: "Edit post" });
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Edit post" })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Post actions for Baseline Post" }),
+    ).toHaveFocus();
+  });
+
+  it("renders the class feed preview through the shared compact rich-text surface", async () => {
+    const defaultGet = mocks.axios.get.getMockImplementation();
+    mocks.axios.get.mockImplementation(async (url, config) => {
+      if (url === "/classes/1/posts") {
+        return { data: [{ ...BASELINE_POST, content: RICH_POST_HTML }] };
+      }
+      return defaultGet(url, config);
+    });
+
+    renderFeed();
+    await flushPromises();
+
+    const preview = screen.getByTestId("class-feed-post-preview-99");
+    expect(preview).toHaveClass("rich-text-content", "rich-text-content--compact");
+    expect(preview.querySelector("h2")).toHaveTextContent("Visual heading");
+    expect(preview.querySelector("mark")).toHaveTextContent("Highlighted text");
+    expect(preview.querySelector("mark")).toHaveStyle({
+      "background-color": "rgb(254, 240, 138)",
+    });
+    expect(preview.querySelector("span")).toHaveStyle({
+      color: "rgb(29, 78, 216)",
+    });
+    expect(preview.querySelector("li")).toHaveTextContent("List item");
   });
 
   it("labels assignment audience without promising peer-visible submissions", async () => {

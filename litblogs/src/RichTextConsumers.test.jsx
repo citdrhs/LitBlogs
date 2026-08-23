@@ -191,6 +191,7 @@ describe("shared rich-text consumer integration", () => {
     renderRoute(<PostView />, "/class/4/post/9", "/class/:classId/post/:postId");
 
     const content = await screen.findByLabelText("Post content");
+    expect(content).toHaveAttribute("data-testid", "post-view-content");
     expectRichMatrix(content, { compact: false });
   });
 
@@ -204,6 +205,7 @@ describe("shared rich-text consumer integration", () => {
     fireEvent.click(screen.getByRole("button", { name: "Post History" }));
 
     const content = await screen.findByLabelText("Preview of Hub post");
+    expect(content).toHaveAttribute("data-testid", "student-hub-post-preview-10");
     expectRichMatrix(content, { compact: true });
   });
 
@@ -220,6 +222,7 @@ describe("shared rich-text consumer integration", () => {
     );
 
     const content = await screen.findByLabelText("Preview of Class post");
+    expect(content).toHaveAttribute("data-testid", "class-details-post-preview-11");
     expectRichMatrix(content, { compact: true });
   });
 
@@ -233,6 +236,7 @@ describe("shared rich-text consumer integration", () => {
     fireEvent.click(screen.getByRole("button", { name: "Posts" }));
 
     const content = await screen.findByLabelText("Preview of Student post");
+    expect(content).toHaveAttribute("data-testid", "student-details-post-preview-12");
     expectRichMatrix(content, { compact: true });
   });
 });

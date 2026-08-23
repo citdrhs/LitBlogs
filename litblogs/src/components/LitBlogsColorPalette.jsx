@@ -87,6 +87,7 @@ const LitBlogsColorPalette = ({
         break;
       case "Escape":
         event.preventDefault();
+        event.stopPropagation();
         closePalette();
         return;
       default:
@@ -102,8 +103,18 @@ const LitBlogsColorPalette = ({
     closePalette();
   };
 
+  const handleContainerBlur = (event) => {
+    if (!event.currentTarget.contains(event.relatedTarget)) {
+      closePalette({ restoreFocus: false });
+    }
+  };
+
   return (
-    <div className="litblogs-color-picker" ref={containerRef}>
+    <div
+      className="litblogs-color-picker"
+      ref={containerRef}
+      onBlur={handleContainerBlur}
+    >
       <button
         ref={triggerRef}
         type="button"

@@ -79,6 +79,51 @@ NODE_MAJOR = "24"
 NODE_ENGINE = "24.x"
 TIPTAP_VERSION = "^3.30.2"
 TIPTAP_LOCK_VERSION = "3.30.2"
+TIPTAP_EDITOR_LICENSE = "MIT"
+TIPTAP_EDITOR_NOTICE_PATH = "litblogs/THIRD_PARTY_EDITOR_NOTICES.md"
+TIPTAP_EDITOR_COPYRIGHT = "Copyright (c) 2025, Tiptap GmbH"
+PROSEMIRROR_COPYRIGHT = (
+    "Copyright (C) 2015-2017 by Marijn Haverbeke "
+    "<marijn@haverbeke.berlin> and others"
+)
+REVIEWED_PROSEMIRROR_PACKAGES = frozenset(
+    {
+        "prosemirror-changeset",
+        "prosemirror-commands",
+        "prosemirror-dropcursor",
+        "prosemirror-gapcursor",
+        "prosemirror-history",
+        "prosemirror-inputrules",
+        "prosemirror-keymap",
+        "prosemirror-model",
+        "prosemirror-schema-list",
+        "prosemirror-state",
+        "prosemirror-tables",
+        "prosemirror-transform",
+        "prosemirror-view",
+    }
+)
+MIT_PERMISSION_GRANT = (
+    "Permission is hereby granted, free of charge, to any person obtaining a copy "
+    'of this software and associated documentation files (the "Software"), to deal '
+    "in the Software without restriction, including without limitation the rights "
+    "to use, copy, modify, merge, publish, distribute, sublicense, and/or sell "
+    "copies of the Software, and to permit persons to whom the Software is "
+    "furnished to do so, subject to the following conditions:"
+)
+MIT_NOTICE_CONDITION = (
+    "The above copyright notice and this permission notice shall be included in all "
+    "copies or substantial portions of the Software."
+)
+MIT_WARRANTY_DISCLAIMER = (
+    'THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR '
+    "IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, "
+    "FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE "
+    "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER "
+    "LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, "
+    "OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE "
+    "SOFTWARE."
+)
 REVIEWED_TIPTAP_RUNTIME_PACKAGES = frozenset(
     {
         "@tiptap/core",
@@ -545,6 +590,7 @@ def validate_browser_job(relative_path: str, job: Any) -> None:
         HASHED_BACKEND_INSTALL,
         "npm ci",
         "python -m pytest -q e2e/support/test_database.py",
+        "node --test e2e/support/availability.test.mjs",
         "node --test e2e/support/sanitized-reporter.test.mjs",
         "npx playwright install --with-deps chromium",
         "npm run test:e2e",
@@ -584,17 +630,18 @@ def validate_browser_job(relative_path: str, job: Any) -> None:
     journey_steps = [
         step
         for step in steps
-        if isinstance(step, dict) and step.get("name") == "Run seven browser journeys"
+        if isinstance(step, dict) and step.get("name") == "Run eight browser journeys"
     ]
     expected_journey_environment = {
         "CI": "true",
         "E2E_ADMIN_DATABASE_URL": BROWSER_E2E_ADMIN_URL,
         "E2E_DISPOSABLE_DATABASE_CONFIRMED": BROWSER_E2E_CONFIRMATION,
+        "E2E_REQUIRE_AVAILABLE": "true",
     }
     expect(
         len(journey_steps) == 1
         and str(journey_steps[0].get("run", "")).strip() == "npm run test:e2e",
-        f"{label} must run the seven-journey suite exactly once",
+        f"{label} must run the eight-journey suite exactly once",
     )
     journey_environment = journey_steps[0].get("env", {}) if len(journey_steps) == 1 else {}
     expect(
@@ -629,6 +676,8 @@ def validate_browser_e2e_contract() -> None:
     global_setup = read_text("litblogs/e2e/global-setup.mjs")
     fixtures = read_text("litblogs/e2e/support/fixtures.js")
     database_harness = read_text("litblogs/e2e/support/database.py")
+    availability = read_text("litblogs/e2e/support/availability.mjs")
+    availability_test = read_text("litblogs/e2e/support/availability.test.mjs")
     reporter = read_text("litblogs/e2e/support/sanitized-reporter.mjs")
     reporter_test = read_text("litblogs/e2e/support/sanitized-reporter.test.mjs")
 
@@ -700,11 +749,12 @@ def validate_browser_e2e_contract() -> None:
         "pending uploads bind to a class post without escaping class ACLs",
         "admin disable revokes a live session and enable restores only sign-in",
         "logout revokes the cookie session and purges legacy durable private state",
+        "the LitBlogs editor preserves one rich post across every author and course view",
     )
     expect(
         len(re.findall(r"(?m)^\s*test\(", spec_source)) == len(journey_titles)
         and all(title in spec_source for title in journey_titles),
-        "browser release suite must contain exactly the seven reviewed journeys",
+        "browser release suite must contain exactly the eight reviewed journeys",
     )
 
     for marker in (
@@ -725,9 +775,23 @@ def validate_browser_e2e_contract() -> None:
     ):
         expect(marker in global_setup, f"browser harness must retain {marker}")
     expect(
-        "if (process.env.CI) throw new Error(reason)" in global_setup,
-        "browser harness must fail rather than skip when CI prerequisites are absent",
+        "if (requiresAvailableEnvironment()) throw new Error(reason)" in global_setup,
+        "browser harness must fail rather than skip when required prerequisites are absent",
     )
+    expect(
+        "Boolean(environment.CI)" in availability
+        and "environment.E2E_REQUIRE_AVAILABLE === 'true'" in availability,
+        "browser availability must fail closed for CI and exact local opt-in",
+    )
+    for marker in (
+        "CI: 'false'",
+        "E2E_REQUIRE_AVAILABLE: 'true'",
+        "E2E_REQUIRE_AVAILABLE: 'TRUE'",
+    ):
+        expect(
+            marker in availability_test,
+            f"browser availability regression must retain {marker}",
+        )
 
     for marker in (
         "SHOW server_version_num",
@@ -749,10 +813,23 @@ def validate_browser_e2e_contract() -> None:
         "attachment.name === 'sanitized-failure.json'" in reporter
         and "fs.rmSync(attachment.path, { force: true })" in reporter
         and "mode: 0o600" in reporter
+        and "safeFailureSummary(content)" in reporter
+        and "title: 'browser journey'" in reporter
         and "test-results/e2e/sanitized-failures" in reporter,
         "browser reporter must publish only mode-0600 sanitized files and delete raw files",
     )
-    for redaction_probe in ("password", "draftCanary", "stdout", "stderr"):
+    expect(
+        "E2E summary: total=${total} passed=${passed} failed=${failed} skipped=${skipped}"
+        in reporter,
+        "browser reporter must emit only fixed aggregate run counts",
+    )
+    for redaction_probe in (
+        "password",
+        "draftCanary",
+        "unknownSessionCanary",
+        "stdout",
+        "stderr",
+    ):
         expect(
             redaction_probe in reporter_test,
             f"browser reporter regression must cover {redaction_probe} redaction",
@@ -1210,9 +1287,10 @@ def validate_release() -> None:
         "check-generic-secrets.py",
         "validate-repository-policy.py",
         'test -f "$staging/tree/litblogs/rich_text_security.py"',
+        'test -f "$staging/tree/litblogs/THIRD_PARTY_EDITOR_NOTICES.md"',
         (
             "git archive --format=tar HEAD -- deploy docs/operations litblogs/*.py "
-            "litblogs/rich_text_contract.json "
+            "litblogs/rich_text_contract.json litblogs/THIRD_PARTY_EDITOR_NOTICES.md "
             "litblogs/alembic.ini litblogs/migrations/env.py "
             "litblogs/migrations/sqlite_contract.py "
             "litblogs/migrations/script.py.mako litblogs/migrations/versions "
@@ -1702,6 +1780,47 @@ def validate_tiptap_editor_policy() -> None:
         fail("Tiptap editor package metadata must be valid JSON")
         return
 
+    editor_notice = read_text(TIPTAP_EDITOR_NOTICE_PATH)
+    normalized_editor_notice = " ".join(editor_notice.split())
+    expected_notice_identity = (
+        f"Tiptap {TIPTAP_LOCK_VERSION} packages under the "
+        f"{TIPTAP_EDITOR_LICENSE} License"
+    )
+    for required_notice_fragment in (
+        expected_notice_identity,
+        TIPTAP_EDITOR_COPYRIGHT,
+        PROSEMIRROR_COPYRIGHT,
+    ):
+        expect(
+            required_notice_fragment in normalized_editor_notice,
+            (
+                "editor third-party notices must preserve reviewed Tiptap and "
+                f"ProseMirror MIT attribution: {required_notice_fragment}"
+            ),
+        )
+    for required_mit_term in (
+        MIT_PERMISSION_GRANT,
+        MIT_NOTICE_CONDITION,
+        MIT_WARRANTY_DISCLAIMER,
+    ):
+        expect(
+            normalized_editor_notice.count(required_mit_term) == 2,
+            (
+                "editor third-party notices must include the complete MIT terms "
+                "for both Tiptap and ProseMirror"
+            ),
+        )
+    notice_prosemirror_packages = frozenset(
+        re.findall(r"(?m)^- (prosemirror-[a-z-]+)$", editor_notice)
+    )
+    expect(
+        notice_prosemirror_packages == REVIEWED_PROSEMIRROR_PACKAGES,
+        (
+            "editor third-party notices must list the exact reviewed "
+            "ProseMirror package set"
+        ),
+    )
+
     dependencies = package.get("dependencies", {})
     expect(
         isinstance(dependencies, dict),
@@ -1808,6 +1927,35 @@ def validate_tiptap_editor_policy() -> None:
     )
 
     if isinstance(locked_packages, dict):
+        locked_tiptap_pm = locked_packages.get("node_modules/@tiptap/pm", {})
+        declared_prosemirror_dependencies = (
+            locked_tiptap_pm.get("dependencies", {})
+            if isinstance(locked_tiptap_pm, dict)
+            else {}
+        )
+        expect(
+            isinstance(declared_prosemirror_dependencies, dict)
+            and frozenset(declared_prosemirror_dependencies)
+            == REVIEWED_PROSEMIRROR_PACKAGES,
+            (
+                "@tiptap/pm lock metadata must declare the exact reviewed "
+                "ProseMirror package set"
+            ),
+        )
+        for package_name in REVIEWED_PROSEMIRROR_PACKAGES:
+            locked_prosemirror_package = locked_packages.get(
+                f"node_modules/{package_name}", {}
+            )
+            expect(
+                isinstance(locked_prosemirror_package, dict)
+                and locked_prosemirror_package.get("license")
+                == TIPTAP_EDITOR_LICENSE,
+                (
+                    f"package-lock must preserve the {TIPTAP_EDITOR_LICENSE} "
+                    "license for ProseMirror editor dependency "
+                    f"{package_name}"
+                ),
+            )
         expected_tiptap_lock_nodes = {
             (f"node_modules/{package_name}", package_name)
             for package_name in AUDITED_TIPTAP_LOCK_PACKAGES
@@ -1912,8 +2060,11 @@ def validate_tiptap_editor_policy() -> None:
             )
             expect(
                 isinstance(locked_package, dict)
-                and locked_package.get("license") == "MIT",
-                f"package-lock must preserve the MIT license for {package_name}",
+                and locked_package.get("license") == TIPTAP_EDITOR_LICENSE,
+                (
+                    "package-lock must preserve the "
+                    f"{TIPTAP_EDITOR_LICENSE} license for {package_name}"
+                ),
             )
             expect(
                 isinstance(locked_package, dict)

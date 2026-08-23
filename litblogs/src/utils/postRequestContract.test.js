@@ -3,9 +3,14 @@ import { describe, expect, it } from "vitest";
 import {
   buildPostRequestPayload,
   canonicalizePostUploadReferences,
+  MAX_POST_HTML_LENGTH,
 } from "./postRequestContract";
 
 describe("post request contract", () => {
+  it("shares the backend post HTML boundary exactly", () => {
+    expect(MAX_POST_HTML_LENGTH).toBe(100000);
+  });
+
   it("keeps route-scoped class identity out of the request body", () => {
     expect(buildPostRequestPayload({
       title: "A title",

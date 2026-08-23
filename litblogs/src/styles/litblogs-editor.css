@@ -32,8 +32,8 @@
   border-radius: 0.75rem 0.75rem 0 0;
   display: flex;
   flex-wrap: wrap;
-  gap: 0.45rem;
-  padding: 0.6rem;
+  gap: 0.35rem;
+  padding: 0.5rem;
   position: sticky;
   top: 0;
   z-index: 30;
@@ -43,12 +43,12 @@
   align-items: center;
   display: inline-flex;
   flex-wrap: wrap;
-  gap: 0.28rem;
+  gap: 0.22rem;
 }
 
 .litblogs-toolbar-group + .litblogs-toolbar-group {
   border-inline-start: 1px solid #dbe3ec;
-  padding-inline-start: 0.45rem;
+  padding-inline-start: 0.35rem;
 }
 
 .litblogs-toolbar-field {
@@ -65,6 +65,21 @@
   min-height: 2.25rem;
   max-width: 9.5rem;
   padding: 0.35rem 1.75rem 0.35rem 0.55rem;
+}
+
+.litblogs-toolbar-field--block select {
+  max-width: 6rem;
+  width: 6rem;
+}
+
+.litblogs-toolbar-field--font-family select {
+  max-width: 8.75rem;
+  width: 8.75rem;
+}
+
+.litblogs-toolbar-field--font-size select {
+  max-width: 5.75rem;
+  width: 5.75rem;
 }
 
 .litblogs-toolbar-field select:focus-visible {
@@ -125,6 +140,86 @@
   opacity: 0.5;
 }
 
+.litblogs-toolbar-button--icon {
+  padding: 0.35rem;
+}
+
+.litblogs-toolbar-button--icon svg {
+  display: block;
+  flex: 0 0 auto;
+  height: 1rem;
+  width: 1rem;
+}
+
+.litblogs-toolbar-button--dropdown {
+  gap: 0.05rem;
+  padding-inline: 0.2rem;
+}
+
+.litblogs-toolbar-button--dropdown svg:last-child {
+  height: 0.5rem;
+  width: 0.5rem;
+}
+
+.litblogs-alignment-picker {
+  display: inline-flex;
+  position: relative;
+}
+
+.litblogs-alignment-menu {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.6rem;
+  box-shadow: 0 12px 28px rgb(15 23 42 / 18%);
+  color: #1f2937;
+  display: grid;
+  gap: 0.18rem;
+  inset-block-start: calc(100% + 0.35rem);
+  inset-inline-start: 0;
+  min-width: 9rem;
+  padding: 0.35rem;
+  position: absolute;
+  z-index: 52;
+}
+
+.litblogs-alignment-menu button {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid transparent;
+  border-radius: 0.4rem;
+  color: #1f2937;
+  cursor: pointer;
+  display: flex;
+  font-size: 0.8rem;
+  gap: 0.55rem;
+  min-height: 2.15rem;
+  padding: 0.35rem 0.5rem;
+  text-align: start;
+  width: 100%;
+}
+
+.litblogs-alignment-menu button:hover:not(:disabled),
+.litblogs-alignment-menu button[aria-checked="true"] {
+  background: #eff6ff;
+  border-color: #93c5fd;
+}
+
+.litblogs-alignment-menu button:focus-visible {
+  outline: 3px solid #2563eb;
+  outline-offset: 1px;
+}
+
+.litblogs-alignment-menu button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.litblogs-alignment-menu svg {
+  flex: 0 0 auto;
+  height: 0.95rem;
+  width: 0.95rem;
+}
+
 .litblogs-color-trigger {
   flex-direction: column;
   gap: 0.08rem;
@@ -175,6 +270,99 @@
   white-space: nowrap;
 }
 
+.litblogs-editor__upload-status,
+.litblogs-editor__upload-error {
+  border-block-end: 1px solid var(--editor-border);
+  font-size: 0.82rem;
+  font-weight: 650;
+  padding: 0.5rem 0.8rem;
+}
+
+.litblogs-editor__upload-status {
+  background: #eff6ff;
+  color: #1e40af;
+}
+
+.litblogs-editor__upload-error {
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.litblogs-editor__image-dialog {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.75rem;
+  box-shadow: 0 16px 40px rgb(15 23 42 / 22%);
+  color: #111827;
+  display: grid;
+  gap: 0.65rem;
+  inset-block-start: 3.9rem;
+  inset-inline-start: 0.65rem;
+  max-width: calc(100% - 1.3rem);
+  padding: 0.9rem;
+  position: absolute;
+  width: 28rem;
+  z-index: 55;
+}
+
+.litblogs-editor__image-dialog h3,
+.litblogs-editor__image-dialog p {
+  margin: 0;
+}
+
+.litblogs-editor__image-dialog p {
+  color: #475569;
+  font-size: 0.82rem;
+}
+
+.litblogs-editor__image-dialog label {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.litblogs-editor__image-dialog label > span {
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.litblogs-editor__image-dialog button,
+.litblogs-editor__image-dialog input {
+  background: #ffffff;
+  border: 1px solid #94a3b8;
+  border-radius: 0.45rem;
+  color: #1f2937;
+  min-height: 2.35rem;
+  padding: 0.42rem 0.65rem;
+}
+
+.litblogs-editor__image-dialog button {
+  cursor: pointer;
+  justify-self: start;
+}
+
+.litblogs-editor__image-dialog input {
+  width: 100%;
+}
+
+.litblogs-editor__image-dialog button:focus-visible,
+.litblogs-editor__image-dialog input:focus-visible {
+  outline: 3px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.litblogs-editor__image-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  justify-content: flex-end;
+}
+
+.litblogs-editor__image-dialog-actions button:last-child {
+  background: var(--editor-accent);
+  border-color: var(--editor-accent);
+  color: #ffffff;
+}
+
 .litblogs-link-dialog {
   background: #ffffff;
   border: 1px solid #cbd5e1;
@@ -190,7 +378,7 @@
   z-index: 50;
 }
 
-.litblogs-link-dialog form,
+.litblogs-link-dialog__fields,
 .litblogs-link-dialog label {
   display: grid;
   gap: 0.4rem;
@@ -294,6 +482,75 @@
   position: relative;
 }
 
+.litblogs-media-node {
+  border-radius: 0.65rem;
+  margin: 0;
+  margin-inline: 0;
+  max-width: 100%;
+  position: relative;
+}
+
+.rich-text-content .litblogs-media-node.is-selected {
+  box-shadow: 0 0 0 3px rgb(37 99 235 / 14%);
+  outline: 2px solid #2563eb;
+  outline-offset: 3px;
+}
+
+.litblogs-media-node img,
+.litblogs-media-node video {
+  display: block;
+  max-width: 100%;
+}
+
+.litblogs-media-node__controls {
+  align-items: end;
+  background: #ffffff;
+  border: 1px solid #bfdbfe;
+  border-radius: 0.55rem;
+  box-shadow: 0 8px 20px rgb(15 23 42 / 12%);
+  color: #1f2937;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-block-start: 0.5rem;
+  padding: 0.55rem;
+}
+
+.litblogs-media-node__controls label {
+  display: grid;
+  font-size: 0.75rem;
+  font-weight: 650;
+  gap: 0.2rem;
+}
+
+.litblogs-media-node__controls button,
+.litblogs-media-node__controls input,
+.litblogs-media-node__controls select {
+  background: #ffffff;
+  border: 1px solid #94a3b8;
+  border-radius: 0.4rem;
+  color: #1f2937;
+  min-height: 2.15rem;
+  padding: 0.35rem 0.5rem;
+}
+
+.litblogs-media-node__controls button {
+  cursor: pointer;
+}
+
+.litblogs-media-node__controls button:focus-visible,
+.litblogs-media-node__controls input:focus-visible,
+.litblogs-media-node__controls select:focus-visible {
+  outline: 3px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.litblogs-media-node__alignment {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
 .dark .litblogs-editor {
   --editor-border: #475569;
   --editor-toolbar-surface: #1e293b;
@@ -373,16 +630,16 @@
 
 @media (max-width: 480px) {
   .litblogs-editor-toolbar {
-    align-items: stretch;
-    max-height: 13rem;
+    align-items: center;
+    gap: 0.28rem;
+    max-height: 9rem;
     overflow-y: auto;
+    padding: 0.4rem;
     position: static;
   }
 
   .litblogs-toolbar-group {
-    border-block-end: 1px solid #dbe3ec;
-    padding-block-end: 0.4rem;
-    width: 100%;
+    width: auto;
   }
 
   .litblogs-toolbar-group + .litblogs-toolbar-group {
@@ -391,12 +648,34 @@
   }
 
   .litblogs-toolbar-field select {
-    max-width: 8.25rem;
+    min-height: 2.15rem;
+  }
+
+  .litblogs-toolbar-field--block select {
+    max-width: 5.25rem;
+    width: 5.25rem;
+  }
+
+  .litblogs-toolbar-field--font-family select {
+    max-width: 6.5rem;
+    width: 6.5rem;
+  }
+
+  .litblogs-toolbar-field--font-size select {
+    max-width: 4.75rem;
+    width: 4.75rem;
+  }
+
+  .litblogs-link-dialog {
+    inset: auto;
+    max-width: none;
+    position: static;
+    width: 100%;
   }
 
   .litblogs-editor-word-count {
     margin-inline-start: 0;
-    width: 100%;
+    width: auto;
   }
 
   .litblogs-editor__canvas {

@@ -29,7 +29,6 @@
     "@react-oauth/google": "^0.12.1",
     "@tailwindcss/forms": "^0.5.10",
     "@tailwindcss/typography": "^0.5.16",
-    "@tinymce/tinymce-react": "^6.3.0",
     "@tiptap/core": "^3.30.2",
     "@tiptap/extension-character-count": "^3.30.2",
     "@tiptap/extension-color": "^3.30.2",
@@ -56,8 +55,7 @@
     "react-hot-toast": "^2.5.2",
     "react-icons": "^5.5.0",
     "react-router-dom": "^7.18.2",
-    "styled-components": "^6.5.3",
-    "tinymce": "^8.5.1"
+    "styled-components": "^6.5.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.19.0",

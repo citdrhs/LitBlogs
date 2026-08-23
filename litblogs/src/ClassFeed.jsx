@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, useEffect, useMemo, useRef } from "react";
+import { lazy, Suspense, useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import axios from 'axios';
@@ -22,8 +22,11 @@ import CommentThread from './components/CommentThread';
 import { formatRelativeTime, setupTimeUpdater } from './utils/timeUtils';
 import { mediaPath } from './utils/urlUtils';
 import { logoutBrowserSession } from './utils/auth';
-import { buildPostRequestPayload } from './utils/postRequestContract';
-import { openPdfViewerModal } from './components/PdfViewerModal';
+import {
+  buildPostRequestPayload,
+  MAX_POST_HTML_LENGTH,
+} from './utils/postRequestContract';
+import RichTextContent from './components/RichTextContent';
 import {
   clonePrivatePostContent,
   loadAssignmentDraft,
@@ -31,12 +34,7 @@ import {
   submitAssignment,
 } from './utils/privateDrafts';
 import { usePrivateDrafts } from './context/PrivateDraftContext';
-import {
-  createSanitizedRichTextContainer,
-  normalizeRichTextUrl,
-  sanitizeRichText,
-  serializeSanitizedRichText,
-} from './utils/richTextSecurity';
+import { sanitizeRichText } from './utils/richTextSecurity';
 import {
   applyGlobalUserSettings,
   getEditorFontSizePx,
@@ -45,154 +43,38 @@ import {
   saveLocalUserSettings,
 } from './utils/userSettings';
 
-const SelfHostedEditor = lazy(() => import('./components/SelfHostedEditor'));
+const LitBlogsEditor = lazy(() => import('./components/LitBlogsEditor'));
 
-const expandableListStyles = `
-  .expandable-list {
-    margin: 8px 0;
-  }
+const DIALOG_FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled]):not([type="hidden"])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[contenteditable="true"]',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
 
-  .expandable-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    cursor: pointer;
-    padding: 8px;
-    border-radius: 4px;
-    background: rgba(0, 0, 0, 0.05);
-  }
-
-  .dark .expandable-header {
-    background: rgba(255, 255, 255, 0.05);
-  }
-
-  .expandable-header .arrow {
-    transition: transform 0.2s;
-    display: inline-block;
-    font-size: 12px;
+const containDialogFocus = (event, dialog) => {
+  if (event.key !== 'Tab' || !dialog) return;
+  const focusable = [...dialog.querySelectorAll(DIALOG_FOCUSABLE_SELECTOR)]
+    .filter((element) => !element.hidden && element.getAttribute('aria-hidden') !== 'true');
+  if (!focusable.length) {
+    event.preventDefault();
+    dialog.focus();
+    return;
   }
 
-  .expandable-header.collapsed .arrow {
-    transform: rotate(-90deg);
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
   }
-
-  .expandable-content {
-    padding: 8px 8px 8px 24px;
-    margin-top: 4px;
-    display: block;
-  }
-
-  .expandable-header.collapsed + .expandable-content {
-    display: none;
-  }
-
-  .expandable-header .title {
-    font-weight: 500;
-  }
-`;
-
-const codeStyles = `
-  .code-snippet {
-    margin: 1rem 0;
-    border-radius: 0.5rem;
-    overflow: hidden;
-    background: #2d2d2d;
-  }
-
-  .code-header {
-    padding: 0.5rem 1rem;
-    background: rgba(255,255,255,0.1);
-    color: #fff;
-  }
-
-  .code-snippet pre {
-    margin: 0;
-    padding: 1rem;
-  }
-
-  .code-snippet code {
-    font-family: 'Fira Code', monospace;
-    font-size: 0.9em;
-  }
-`;
-
-const glassStyles = `
-  .glass-card {
-    background: rgba(255, 255, 255, 0.05);
-    backdrop-filter: blur(10px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    transition: all 0.3s ease;
-  }
-
-  .glass-card:hover {
-    background: rgba(255, 255, 255, 0.1);
-    transform: translateY(-2px);
-  }
-
-  .dark .glass-card {
-    background: rgba(0, 0, 0, 0.2);
-    border: 1px solid rgba(255, 255, 255, 0.05);
-  }
-
-  .dark .glass-card:hover {
-    background: rgba(0, 0, 0, 0.3);
-  }
-
-  @keyframes shimmer {
-    0% {
-      background-position: -1000px 0;
-    }
-    100% {
-      background-position: 1000px 0;
-    }
-  }
-
-  .animate-shimmer {
-    background: linear-gradient(
-      90deg,
-      rgba(255, 255, 255, 0) 0%,
-      rgba(255, 255, 255, 0.05) 50%,
-      rgba(255, 255, 255, 0) 100%
-    );
-    background-size: 1000px 100%;
-    animation: shimmer 2s infinite linear;
-  }
-`;
-
-const richTextStyles = `
-  .prose {
-    max-width: none;
-  }
-  
-  .prose p {
-    margin: 1em 0;
-  }
-  
-  .prose h1, .prose h2, .prose h3, .prose h4 {
-    margin: 1.5em 0 0.5em;
-    font-weight: 600;
-  }
-  
-  .prose ul, .prose ol {
-    margin: 1em 0;
-    padding-left: 1.5em;
-  }
-  
-  .prose li {
-    margin: 0.5em 0;
-  }
-  
-  .prose blockquote {
-    border-left: 4px solid #e5e7eb;
-    padding-left: 1em;
-    margin: 1em 0;
-    font-style: italic;
-  }
-  
-  .dark .prose blockquote {
-    border-left-color: #4b5563;
-  }
-`;
+};
 
 // Add this after your imports
 Prism.manual = true;
@@ -262,972 +144,6 @@ const MediaPreview = ({ media, files, onRemove }) => {
   );
 };
 
-// Update the TinyMCE configuration to better preserve image attributes and styles
-const TINYMCE_CONFIG = {
-  height: 520,
-  menubar: false,
-  branding: false,
-  promotion: false,
-  help_tabs: ['shortcuts', 'keyboardnav'],
-  plugins: [
-    'advlist', 'autolink', 'lists', 'link', 'image', 'charmap', 'preview',
-    'anchor', 'searchreplace', 'visualblocks', 'code', 'fullscreen',
-    'insertdatetime', 'table', 'help', 'wordcount',
-    'quickbars'
-  ],
-  toolbar: [
-    'formatselect | fontsizeinput | forecolor backcolor | blocks',
-    'bold italic underline strikethrough | alignleft aligncenter alignright | bullist numlist | image customvideoupload customfileupload removeformat'
-  ],
-  block_formats: 'Paragraph=p; Title=h1; Heading=h2; Subheading=h3; Small Heading=h4; Blockquote=blockquote',
-  
-  // Use the built-in font size input instead of the fontsize plugin
-  font_size_input_default_unit: 'pt',
-  font_size_formats: '8pt 10pt 12pt 14pt 16pt 18pt 24pt 36pt 48pt',
-  
-  forced_root_block: 'p',
-  content_style: `
-    body { 
-      font-family: Arial, sans-serif;
-      font-size: 14px;
-      margin: 1rem;
-      padding-bottom: 2rem;
-      max-height: 520px;
-      overflow-y: auto !important;
-    }
-    h1 { font-size: 1.8em; font-weight: bold; margin: 0.5em 0; }
-    h2 { font-size: 1.5em; font-weight: bold; margin: 0.5em 0; }
-    h3 { font-size: 1.3em; font-weight: bold; margin: 0.5em 0; }
-    h4 { font-size: 1.1em; font-weight: bold; margin: 0.5em 0; }
-    blockquote { border-left: 3px solid #ccc; margin-left: 1em; padding-left: 1em; font-style: italic; }
-    
-    /* File attachment styles */
-    .file-attachment {
-      display: flex;
-      align-items: center;
-      padding: 10px;
-      margin: 10px 0;
-      border: 1px solid #e0e0e0;
-      border-radius: 8px;
-      background-color: #f9f9f9;
-      user-select: none; /* Prevent text selection */
-      pointer-events: auto; /* Allow clicking buttons */
-      cursor: default; /* Show default cursor for the container */
-    }
-    
-    .file-attachment * {
-      cursor: default;
-      user-select: none;
-    }
-    
-    .file-attachment .file-icon {
-      margin-right: 12px;
-      font-size: 24px;
-      color: #4a5568;
-    }
-    
-    .file-attachment .file-info {
-      flex-grow: 1;
-      flex-shrink: 1;
-      min-width: 0; /* Allow text to wrap */
-      overflow: hidden; /* Prevent overflow */
-    }
-    
-    .file-attachment .file-name {
-      font-weight: 500;
-      margin-bottom: 2px;
-      word-break: break-word;
-      overflow-wrap: break-word;
-      white-space: normal;
-    }
-    
-    .file-attachment .file-size {
-      font-size: 12px;
-      color: #718096;
-    }
-    
-    .file-attachment .file-actions {
-      display: flex;
-      gap: 8px;
-    }
-    
-    .file-attachment .file-actions button {
-      cursor: pointer !important; /* Force pointer cursor for buttons */
-      pointer-events: auto !important; /* Ensure buttons are clickable */
-      padding: 4px 8px;
-      border-radius: 4px;
-      font-size: 12px;
-    }
-    
-    .file-attachment .preview-btn {
-      background-color: #ebf8ff;
-      color: #3182ce;
-      border: 1px solid #bee3f8;
-    }
-    
-    .file-attachment .download-btn {
-      background-color: #e6fffa;
-      color: #319795;
-      border: 1px solid #b2f5ea;
-    }
-    
-    .file-attachment .remove-btn {
-      background-color: #fff5f5;
-      color: #e53e3e;
-      border: 1px solid #fed7d7;
-    }
-
-    /* Video block styling in editor */
-    figure.video-container {
-      position: relative;
-      margin: 14px 0;
-      max-width: 760px;
-      border-radius: 12px;
-      overflow: hidden;
-      background: #0f172a;
-      box-shadow: 0 8px 22px rgba(2, 6, 23, 0.24);
-    }
-
-    figure.video-container video {
-      display: block;
-      width: 100%;
-      height: auto;
-      max-width: 100%;
-      background: #0f172a;
-    }
-
-    .video-delete-overlay {
-      position: absolute;
-      top: 10px;
-      right: 10px;
-      z-index: 20;
-      opacity: 0;
-      transform: translateY(-4px);
-      transition: opacity 0.2s ease, transform 0.2s ease;
-      pointer-events: none;
-    }
-
-    figure.video-container:hover .video-delete-overlay {
-      opacity: 1;
-      transform: translateY(0);
-      pointer-events: auto;
-    }
-
-    .video-delete-btn {
-      background: rgba(239, 68, 68, 0.95) !important;
-      color: #fff !important;
-      border: none !important;
-      border-radius: 9999px !important;
-      width: 30px !important;
-      height: 30px !important;
-      cursor: pointer !important;
-      display: inline-flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-      font-size: 18px !important;
-      font-weight: 700 !important;
-      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3) !important;
-    }
-    
-    /* Fix dropdown spacing */
-    .tox-collection__item-label {
-      padding-left: 4px !important;
-    }
-    .tox-collection__item-icon {
-      padding-right: 4px !important;
-    }
-    .tox-tbtn__select-label {
-      margin-left: 0 !important;
-    }
-    
-    /* Editor-only elements - only visible in the editor */
-    .mce-content-body .editor-only {
-      display: inline-block;
-    }
-    
-    /* Hide editor-only elements in the published content */
-    .html-content .editor-only {
-      display: none;
-    }
-  `,
-  statusbar: false,
-  extended_valid_elements: 'span[style|class],div[class|data-*|contenteditable],img[*|style|class|width|height|align|data-*],a[*],button[*],figure[class|style|contenteditable|data-*],video[*|style|class|controls|preload|width|height],source[src|type]',
-  inline_styles: true,
-  paste_as_text: false,
-  paste_data_images: true,
-  automatic_uploads: true,
-  file_picker_types: 'file image media',
-  browser_spellcheck: true,
-  font_formats: 'Arial=arial,helvetica,sans-serif;' +
-                'Courier New=courier new,courier,monospace;' +
-                'Georgia=georgia,times new roman,times,serif;' +
-                'Tahoma=tahoma,arial,helvetica,sans-serif;' +
-                'Times New Roman=times new roman,times,serif;' +
-                'Trebuchet MS=trebuchet ms,geneva,sans-serif;' +
-                'Verdana=verdana,geneva,sans-serif',
-  
-  // Enhanced image handling
-  image_advtab: true,
-  image_dimensions: true,
-  image_class_list: [
-    { title: 'None', value: '' },
-    { title: 'Responsive', value: 'img-fluid' },
-    { title: 'Left Aligned', value: 'float-left' },
-    { title: 'Right Aligned', value: 'float-right' },
-    { title: 'Centered', value: 'mx-auto d-block' }
-  ],
-  
-  // Preserve styles when editing
-  preserve_styles: true,
-  
-  // Add image_upload_handler to handle direct uploads from TinyMCE's default dialog
-  images_upload_handler: async function (blobInfo, progress) {
-    return new Promise((resolve, reject) => {
-      const formData = new FormData();
-      formData.append('file', blobInfo.blob(), blobInfo.filename());
-      
-      axios.post('/upload', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data'
-        },
-        onUploadProgress: (e) => {
-          progress(e.loaded / e.total * 100);
-        }
-      })
-      .then(response => {
-        resolve(mediaPath(response.data.url));
-      })
-      .catch(error => {
-        reject('Image upload failed: ' + error.message);
-      });
-    });
-  },
-  
-  // Critical settings for image resizing and alignment
-  object_resizing: true,
-  resize_img_proportional: true,
-  
-  // Don't convert URLs - this is critical
-  convert_urls: false,
-  relative_urls: false,
-  
-  // Preserve only safe inline styles that we support end-to-end.
-  valid_styles: {
-    '*': 'color,background-color,font-size,font-family,text-align,font-weight,font-style,text-decoration'
-  },
-  
-  // Configure non-editable classes
-  noneditable_noneditable_class: 'mceNonEditable',
-  noneditable_editable_class: 'mceEditable',
-  
-  // Allow the noneditable plugin to work with our elements
-  protect: [
-    /<div[^>]*class="file-attachment"[^>]*>[\s\S]*?<\/div>/g
-  ],
-  
-  setup: function(editor) {
-    // Customize the image button to show our enhanced dialog
-    editor.ui.registry.addButton('image', {
-      icon: 'image',
-      tooltip: 'Insert image',
-      onAction: function() {
-        // Create custom image dialog
-        editor.windowManager.open({
-          title: 'Insert Image',
-          body: {
-            type: 'panel',
-            items: [
-              {
-                type: 'selectbox',
-                name: 'source',
-                label: 'Image Source',
-                items: [
-                  { value: 'upload', text: 'Upload from Computer' },
-                  { value: 'url', text: 'Insert from URL' }
-                ]
-              },
-              {
-                type: 'input',
-                name: 'url',
-                label: 'Image URL',
-                enabled: false
-              },
-              {
-                type: 'dropzone',
-                name: 'file',
-                label: 'Upload Image'
-              }
-            ]
-          },
-          buttons: [
-            {
-              type: 'cancel',
-              text: 'Cancel'
-            },
-            {
-              type: 'submit',
-              text: 'Insert',
-              primary: true
-            }
-          ],
-          initialData: {
-            source: 'upload'
-          },
-          onChange: function(api, details) {
-            if (details.name === 'source') {
-              // Toggle fields based on selected source
-              if (details.value === 'upload') {
-                api.setEnabled('file', true);
-                api.setEnabled('url', false);
-              } else {
-                api.setEnabled('file', false);
-                api.setEnabled('url', true);
-              }
-            }
-          },
-          onSubmit: async function(api) {
-            const data = api.getData();
-            
-            try {
-              if (data.source === 'upload' && data.file) {
-                // Handle file upload
-                const file = data.file;
-                const formData = new FormData();
-                formData.append('file', file);
-                
-                const response = await axios.post(
-                  '/upload',
-                  formData,
-                  {
-                    headers: {
-                      'Content-Type': 'multipart/form-data'
-                    }
-                  }
-                );
-                
-                // Insert the uploaded image
-                editor.insertContent(sanitizeRichText(
-                  `<img src="${mediaPath(response.data.url)}" alt="${file.name}" style="max-width: 100%; height: auto;" />`,
-                  { mode: 'editor' },
-                ));
-              } else if (data.source === 'url' && data.url) {
-                const normalizedImageUrl = normalizeRichTextUrl(data.url, 'image');
-                if (!normalizedImageUrl) {
-                  editor.notificationManager.open({
-                    text: 'For privacy, images must be uploaded to this school site.',
-                    type: 'warning',
-                  });
-                  return;
-                }
-                editor.insertContent(sanitizeRichText(
-                  `<img src="${normalizedImageUrl}" alt="Uploaded image" style="max-width: 100%; height: auto;" />`,
-                  { mode: 'editor' },
-                ));
-              }
-              
-              api.close();
-            } catch {
-              editor.notificationManager.open({
-                text: 'Failed to process image. Please try again.',
-                type: 'error'
-              });
-              api.close();
-            }
-          }
-        });
-      }
-    });
-
-    // Add custom file upload button
-    editor.ui.registry.addButton('customfileupload', {
-      icon: 'upload',
-      tooltip: 'Upload PDF',
-      onAction: function() {
-        // Create a file input element
-        const input = document.createElement('input');
-        input.setAttribute('type', 'file');
-        input.setAttribute('accept', '.pdf,application/pdf');
-        
-        // Trigger click on the input element
-        input.click();
-        
-        // Handle file selection
-        input.onchange = async function() {
-          if (input.files && input.files[0]) {
-            const file = input.files[0];
-            const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-            if (!isPdf) {
-              toast.error('Only PDF files are allowed.');
-              return;
-            }
-            
-            try {
-              // Upload the file to the server
-              const formData = new FormData();
-              formData.append('file', file);
-              
-              const response = await axios.post(
-                '/upload/file',
-                formData,
-                {
-                  headers: {
-                    'Content-Type': 'multipart/form-data'
-                  }
-                }
-              );
-              
-              // Get the file URL from the response
-              const fileUrl = response.data.url;
-              const fileSize = formatFileSize(file.size);
-              const fileName = file.name;
-              const fileType = getFileType(file.name);
-              
-              // Create HTML for the file attachment
-              let fileHtml = `
-                <div class="mceNonEditable file-attachment" 
-                     data-file-url="${fileUrl}" 
-                     data-file-name="${fileName}" 
-                     data-file-size="${fileSize}" 
-                     data-file-type="${fileType}">
-                  <div class="file-icon">${getFileIcon(fileType)}</div>
-                  <div class="file-info">
-                    <div class="file-name" style="word-break: break-word; overflow-wrap: break-word;">${fileName}</div>
-                    <div class="file-size">${fileSize}</div>
-                  </div>
-                  <div class="file-actions">
-                    <button class="remove-btn editor-only" type="button" data-file-url="${fileUrl}" onclick="this.closest('.file-attachment').remove();">Remove</button>
-                  </div>
-                </div>
-              `;
-              
-              // Insert the file attachment at the cursor position
-              editor.insertContent(sanitizeRichText(fileHtml, { mode: 'editor' }));
-              
-            } catch {
-              toast.error('Failed to upload file. Please try again.');
-            }
-          }
-        };
-      }
-    });
-    
-    // Add custom handlers for file preview
-    editor.on('init', function() {
-      // Add global function for file preview
-      window.previewFile = function(url, type) {
-        if (type === 'pdf') {
-          openPdfViewerModal({ fileUrl: url, title: 'PDF Preview' });
-          return;
-        }
-
-        // Create modal for preview
-        const modal = document.createElement('div');
-        modal.style.position = 'fixed';
-        modal.style.top = '0';
-        modal.style.left = '0';
-        modal.style.width = '100%';
-        modal.style.height = '100%';
-        modal.style.backgroundColor = 'rgba(0,0,0,0.8)';
-        modal.style.zIndex = '9999';
-        modal.style.display = 'flex';
-        modal.style.alignItems = 'center';
-        modal.style.justifyContent = 'center';
-        
-        // Create close button
-        const closeBtn = document.createElement('button');
-        closeBtn.textContent = '×';
-        closeBtn.style.position = 'absolute';
-        closeBtn.style.top = '20px';
-        closeBtn.style.right = '20px';
-        closeBtn.style.fontSize = '30px';
-        closeBtn.style.color = 'white';
-        closeBtn.style.background = 'none';
-        closeBtn.style.border = 'none';
-        closeBtn.style.cursor = 'pointer';
-        closeBtn.onclick = function() {
-          document.body.removeChild(modal);
-        };
-        
-        // Create content container
-        const content = document.createElement('div');
-        content.style.maxWidth = '90%';
-        content.style.maxHeight = '90%';
-        content.style.overflow = 'auto';
-        content.style.backgroundColor = 'white';
-        content.style.borderRadius = '8px';
-        content.style.padding = '20px';
-        
-        // Add content based on file type
-        if (type === 'image') {
-          const img = document.createElement('img');
-          img.src = url;
-          img.style.maxWidth = '100%';
-          content.appendChild(img);
-        } else if (type === 'video') {
-          const video = document.createElement('video');
-          video.src = url;
-          video.controls = true;
-          video.style.maxWidth = '100%';
-          content.appendChild(video);
-        } else if (type === 'text') {
-          // For text files, fetch and display content
-          fetch(url)
-            .then(response => response.text())
-            .then(text => {
-              const pre = document.createElement('pre');
-              pre.style.whiteSpace = 'pre-wrap';
-              pre.style.fontFamily = 'monospace';
-              pre.textContent = text;
-              content.appendChild(pre);
-            });
-        } else {
-          // For unsupported preview types
-          const message = document.createElement('p');
-          message.textContent = 'Preview not available for this file type. Please download the file to view it.';
-          content.appendChild(message);
-        }
-        
-        modal.appendChild(closeBtn);
-        modal.appendChild(content);
-        document.body.appendChild(modal);
-      };
-    });
-    
-    // This is critical for preserving image dimensions
-    editor.on('ObjectResized', function(e) {
-      if (e.target.nodeName === 'IMG') {
-        // Set both style and attributes for maximum compatibility
-        e.target.setAttribute('width', e.width);
-        e.target.setAttribute('height', e.height);
-        e.target.style.width = e.width + 'px';
-        e.target.style.height = e.height + 'px';
-      }
-    });
-    
-    // Add this to ensure content is not modified during save
-    editor.on('BeforeSetContent', function(_e) {
-      // Don't modify content when setting it in the editor
-    });
-    
-    editor.on('GetContent', function(_e) {
-      // Don't modify content when retrieving it from the editor
-    });
-    
-    // Listen for clicks on the editor content
-    editor.on('click', function(e) {
-      if (e.target.matches('.remove-btn, .video-delete-btn')) {
-        const attachment = e.target.closest('.file-attachment, .video-container');
-        if (!attachment) {
-          return;
-        }
-        e.preventDefault();
-        editor.undoManager.transact(() => attachment.remove());
-        editor.nodeChanged();
-        editor.fire('change');
-      }
-    });
-    
-    // Add custom video upload button
-    editor.ui.registry.addButton('customvideoupload', {
-      icon: 'embed',
-      tooltip: 'Upload Video',
-      onAction: function() {
-        // Create a file input element
-        const input = document.createElement('input');
-        input.setAttribute('type', 'file');
-        input.setAttribute('accept', '.mp4,.webm,.ogg,.m4v,.avi,.mkv,video/mp4,video/webm,video/ogg,video/x-m4v,video/x-msvideo,video/x-matroska');
-        
-        // Handle file selection
-        input.onchange = async function() {
-          if (input.files && input.files[0]) {
-            const file = input.files[0];
-            
-            // Check file size (limit to 100MB)
-            const maxSize = 100 * 1024 * 1024; // 100MB in bytes
-            if (file.size > maxSize) {
-              toast.error(`Video file is too large. Maximum size is 100MB.`);
-              return;
-            }
-            
-            // Check file type
-            if (!isAllowedVideoFile(file)) {
-              toast.error('Please upload a valid video file (MP4, WebM, OGG, M4V, AVI, or MKV). MOV is not supported.');
-              return;
-            }
-            
-            try {
-              // Show loading toast
-              const loadingToast = toast.loading('Uploading video...');
-              
-              // Create form data for upload
-              const formData = new FormData();
-              formData.append('file', file);
-              
-              // Upload the video
-              const response = await axios.post('/upload/video', formData, {
-                headers: {
-                  'Content-Type': 'multipart/form-data'
-                }
-              });
-              
-              // Check if the response contains the expected data
-              // Handle both url and file_url formats
-              let videoUrl = null;
-              if (response.data && response.data.url) {
-                videoUrl = response.data.url;
-              } else if (response.data && response.data.file_url) {
-                videoUrl = response.data.file_url;
-              } else {
-                toast.error('Server returned an invalid response. Please try again.');
-                toast.dismiss(loadingToast);
-                return;
-              }
-              
-              // Ensure the URL is properly formatted
-              const fullVideoUrl = mediaPath(videoUrl);
-              
-              // Create a cleaner HTML for the video with a delete button overlay
-              const fallbackType = (() => {
-                const ext = (file.name || '').split('.').pop()?.toLowerCase() || 'mp4';
-                const map = {
-                  mp4: 'video/mp4',
-                  webm: 'video/webm',
-                  ogg: 'video/ogg',
-                  m4v: 'video/x-m4v',
-                  avi: 'video/x-msvideo',
-                  mkv: 'video/x-matroska',
-                };
-                return map[ext] || 'video/mp4';
-              })();
-
-              let videoHtml = `
-                <figure class="video-container mceNonEditable" contenteditable="false" style="position: relative; margin: 12px 0; max-width: 600px;">
-                  <video controls preload="metadata" width="100%" style="width: 100%; max-width: 600px; border-radius: 4px; display: block; background: #000;">
-                    <source src="${fullVideoUrl}" type="${file.type || fallbackType}">
-                    Your browser does not support the video tag.
-                  </video>
-                  <div class="video-delete-overlay editor-only-control">
-                    <button type="button" class="video-delete-btn" data-video-url="${videoUrl}">×</button>
-                  </div>
-                </figure>
-              `;
-              
-              // Insert the video HTML
-              editor.insertContent(sanitizeRichText(videoHtml, { mode: 'editor' }));
-              
-              // Dismiss loading toast and show success
-              toast.dismiss(loadingToast);
-              toast.success('Video uploaded successfully!');
-            } catch {
-              toast.error('Failed to upload video. Please try again.');
-            }
-          }
-        };
-        
-        // Trigger the file input click
-        input.click();
-      }
-    });
-    
-  },
-};
-
-// Helper functions for file handling
-function formatFileSize(bytes) {
-  if (bytes === 0) return '0 Bytes';
-  const k = 1024;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-}
-
-function getFileType(filename) {
-  const ext = filename.split('.').pop().toLowerCase();
-  
-  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(ext)) {
-    return 'image';
-  } else if (['mp4', 'webm', 'ogg', 'mov'].includes(ext)) {
-    return 'video';
-  } else if (ext === 'pdf') {
-    return 'pdf';
-  } else if (['txt', 'md', 'html', 'css', 'js', 'json', 'xml'].includes(ext)) {
-    return 'text';
-  } else if (['doc', 'docx'].includes(ext)) {
-    return 'word';
-  } else if (['xls', 'xlsx'].includes(ext)) {
-    return 'excel';
-  } else if (['ppt', 'pptx'].includes(ext)) {
-    return 'powerpoint';
-  } else {
-    return 'other';
-  }
-}
-
-function isAllowedVideoFile(file) {
-  if (!file) return false;
-
-  const mime = (file.type || '').toLowerCase();
-  const extension = (file.name || '').split('.').pop()?.toLowerCase() || '';
-
-  const allowedMimeTypes = new Set([
-    'video/mp4',
-    'video/webm',
-    'video/ogg',
-    'video/x-msvideo',
-    'video/x-matroska',
-    'video/x-m4v',
-  ]);
-  const allowedExtensions = new Set(['mp4', 'webm', 'ogg', 'm4v', 'avi', 'mkv']);
-
-  return allowedMimeTypes.has(mime) || allowedExtensions.has(extension);
-}
-
-function getFileIcon(fileType) {
-  switch (fileType) {
-    case 'image':
-      return '🖼️';
-    case 'video':
-      return '🎬';
-    case 'pdf':
-      return '📄';
-    case 'text':
-      return '📝';
-    case 'word':
-      return '📘';
-    case 'excel':
-      return '📊';
-    case 'powerpoint':
-      return '📑';
-    default:
-      return '📁';
-  }
-}
-
-// Update the processHTMLWithDOM function to handle different media types
-
-const appendPlaceholderLabel = (placeholder, labelText) => {
-  const label = document.createElement('span');
-  label.className = 'text-blue-500';
-  label.textContent = labelText;
-  placeholder.appendChild(label);
-};
-
-const processHTMLWithDOM = (html) => {
-  if (!html) return '';
-  const tempDiv = createSanitizedRichTextContainer(html);
-  
-  // Remove editor-only controls
-  const editorControls = tempDiv.querySelectorAll('.editor-only-control, .video-delete-btn');
-  editorControls.forEach(control => {
-    control.remove();
-  });
-
-  // Let post previews inherit theme text color instead of persisting editor text color.
-  tempDiv.querySelectorAll('[style]').forEach((element) => {
-    const styleAttr = element.getAttribute('style') || '';
-    const cleanedStyle = styleAttr
-      .replace(/(^|;)\s*color\s*:[^;]+;?/gi, '$1')
-      .replace(/;;+/g, ';')
-      .trim()
-      .replace(/^;|;$/g, '');
-
-    if (cleanedStyle) {
-      element.setAttribute('style', cleanedStyle);
-    } else {
-      element.removeAttribute('style');
-    }
-  });
-  
-  // Track what types of media we've found
-  let mediaTypes = {
-    video: false,
-    file: false,
-    image: false,
-    audio: false
-  };
-  
-  // First, clean up any raw HTML in text nodes
-  let mediaPlaceholderAdded = false;
-  
-  const cleanRawHTML = (node) => {
-    if (node.nodeType === Node.TEXT_NODE) {
-      // Check for various media-related HTML tags
-      if (node.textContent.includes('<video') || 
-          node.textContent.includes('</video>') ||
-          node.textContent.includes('<figure class="video-container"') ||
-          node.textContent.includes('</figure>')) {
-        mediaTypes.video = true;
-        
-        // If we haven't added a placeholder yet, add one
-        if (!mediaPlaceholderAdded) {
-          const placeholder = document.createElement('div');
-          placeholder.className = 'media-placeholder video-placeholder';
-          appendPlaceholderLabel(placeholder, '[View post to see video content]');
-          node.parentNode.replaceChild(placeholder, node);
-          mediaPlaceholderAdded = true;
-        } else {
-          // Otherwise, just remove the node
-          node.parentNode.removeChild(node);
-        }
-      } else if (node.textContent.includes('<a class="file-attachment"') ||
-                node.textContent.includes('data-file-url')) {
-        mediaTypes.file = true;
-        
-        // If we haven't added a placeholder yet, add one for files
-        if (!mediaPlaceholderAdded) {
-          const placeholder = document.createElement('div');
-          placeholder.className = 'media-placeholder file-placeholder';
-          appendPlaceholderLabel(placeholder, '[View post to see attached files]');
-          node.parentNode.replaceChild(placeholder, node);
-          mediaPlaceholderAdded = true;
-        } else {
-          // Otherwise, just remove the node
-          node.parentNode.removeChild(node);
-        }
-      }
-    } else if (node.nodeType === Node.ELEMENT_NODE) {
-      // Process all child nodes
-      const childNodes = Array.from(node.childNodes);
-      childNodes.forEach(cleanRawHTML);
-    }
-  };
-  
-  cleanRawHTML(tempDiv);
-  
-  // Now replace actual media elements with placeholders
-  if (!mediaPlaceholderAdded) {
-    // Check for different types of media elements
-    const videoElements = tempDiv.querySelectorAll('video, .video-wrapper, figure.video-container');
-    const fileElements = tempDiv.querySelectorAll('.file-attachment, a[href*=".pdf"], a[href*=".doc"], a[href*=".xls"], a[href*=".ppt"], a[href*=".zip"]');
-    const audioElements = tempDiv.querySelectorAll('audio');
-    const iframeElements = tempDiv.querySelectorAll('iframe');
-    
-    // Set flags for what we found
-    if (videoElements.length > 0) mediaTypes.video = true;
-    if (fileElements.length > 0) mediaTypes.file = true;
-    if (audioElements.length > 0) mediaTypes.audio = true;
-    
-    // Create appropriate placeholders based on what we found
-    if (mediaTypes.video) {
-      const placeholder = document.createElement('div');
-      placeholder.className = 'media-placeholder video-placeholder';
-      appendPlaceholderLabel(placeholder, '[View post to see video content]');
-      
-      // Replace the first video element with the placeholder
-      if (videoElements.length > 0) {
-        videoElements[0].parentNode.replaceChild(placeholder, videoElements[0]);
-        
-        // Remove the rest
-        for (let i = 1; i < videoElements.length; i++) {
-          videoElements[i].parentNode.removeChild(videoElements[i]);
-        }
-      }
-    }
-    
-    if (mediaTypes.file) {
-      const placeholder = document.createElement('div');
-      placeholder.className = 'media-placeholder file-placeholder';
-      appendPlaceholderLabel(placeholder, '[View post to see attached files]');
-      
-      // Replace the first file element with the placeholder
-      if (fileElements.length > 0) {
-        fileElements[0].parentNode.replaceChild(placeholder, fileElements[0]);
-        
-        // Remove the rest
-        for (let i = 1; i < fileElements.length; i++) {
-          fileElements[i].parentNode.removeChild(fileElements[i]);
-        }
-      }
-    }
-    
-    if (mediaTypes.audio) {
-      const placeholder = document.createElement('div');
-      placeholder.className = 'media-placeholder audio-placeholder';
-      appendPlaceholderLabel(placeholder, '[View post to see audio content]');
-      
-      // Replace the first audio element with the placeholder
-      if (audioElements.length > 0) {
-        audioElements[0].parentNode.replaceChild(placeholder, audioElements[0]);
-      }
-    }
-    
-    // Handle iframes (could be embedded content)
-    if (iframeElements.length > 0) {
-      const placeholder = document.createElement('div');
-      placeholder.className = 'media-placeholder embed-placeholder';
-      appendPlaceholderLabel(placeholder, '[View post to see embedded content]');
-      
-      // Replace the first iframe with the placeholder
-      iframeElements[0].parentNode.replaceChild(placeholder, iframeElements[0]);
-      
-      // Remove the rest
-      for (let i = 1; i < iframeElements.length; i++) {
-        iframeElements[i].parentNode.removeChild(iframeElements[i]);
-      }
-    }
-  }
-  
-  return serializeSanitizedRichText(tempDiv);
-};
-
-// Update the truncateHTML function to better preserve content structure
-
-const truncateHTML = (htmlContent, maxLength = 200) => {
-  if (!htmlContent) return '';
-  
-  const tempDiv = createSanitizedRichTextContainer(htmlContent);
-  
-  // Remove videos, file attachments, and other media elements from the preview
-  const videosAndMedia = tempDiv.querySelectorAll('video, .video-wrapper, .mceNonEditable, .file-attachment, iframe, audio');
-  videosAndMedia.forEach(element => {
-    // Replace with a placeholder
-    const placeholder = document.createElement('div');
-      placeholder.className = 'media-placeholder file-placeholder';
-      appendPlaceholderLabel(placeholder, '[View post to see attached files]');
-    element.parentNode.replaceChild(placeholder, element);
-  });
-  
-  // Get text content for length check
-  const textContent = tempDiv.textContent || tempDiv.innerText || '';
-  
-  // If content is short enough, return the modified HTML
-  if (textContent.length <= maxLength) {
-    return serializeSanitizedRichText(tempDiv);
-  }
-  
-  // For longer content, we need to truncate while preserving HTML structure
-  const readMore = document.createElement('span');
-  readMore.className = 'text-blue-500';
-  readMore.textContent = '... (read more)';
-  tempDiv.appendChild(readMore);
-  return serializeSanitizedRichText(tempDiv);
-};
-// Add this CSS variable definition near the top of your file with the other style variables
-
-const editorStyles = `
-  /* Hide editor-only controls when not in editor */
-  .html-content .editor-only-control {
-    display: none !important;
-  }
-  
-  .html-content .video-delete-btn {
-    display: none !important;
-  }
-  
-  /* Style for media placeholders */
-  .media-placeholder {
-    padding: 12px;
-    background-color: rgba(59, 130, 246, 0.1);
-    border-radius: 6px;
-    margin: 8px 0;
-    text-align: center;
-  }
-  
-  .video-placeholder {
-    border-left: 3px solid #3b82f6;
-  }
-`;
-
 const ClassFeed = () => {
   // Move all useState hooks to the top
   const { classId } = useParams();
@@ -1273,6 +189,11 @@ const ClassFeed = () => {
   const [assignmentSubmitting, setAssignmentSubmitting] = useState(false);
   const [postDraftSavedAt, setPostDraftSavedAt] = useState(null);
   const [postComposerDirty, setPostComposerDirty] = useState(false);
+  const [editorUploadBusy, setEditorUploadBusy] = useState(false);
+  const [postHtmlLength, setPostHtmlLength] = useState(0);
+  const postComposerDialogRef = useRef(null);
+  const postComposerReturnFocusRef = useRef(null);
+  const postComposerWasOpenRef = useRef(false);
   const assignmentDraftRequestRef = useRef(0);
   const assignmentDraftAbortRef = useRef(null);
   const assignmentDraftStatusRef = useRef('idle');
@@ -1324,16 +245,26 @@ const ClassFeed = () => {
       ? null
       : String(activeAssignmentId),
   };
-  const tinyMceConfig = useMemo(() => {
-    const nextContentStyle = TINYMCE_CONFIG.content_style.replace(
-      /font-size:\s*\d+px;/,
-      `font-size: ${editorFontSizePx}px;`
-    );
-    return {
-      ...TINYMCE_CONFIG,
-      content_style: nextContentStyle,
-    };
-  }, [editorFontSizePx]);
+
+  useEffect(() => {
+    if (showNewPostForm) {
+      postComposerWasOpenRef.current = true;
+      return;
+    }
+    if (!postComposerWasOpenRef.current) return;
+
+    postComposerWasOpenRef.current = false;
+    const returnTarget = postComposerReturnFocusRef.current;
+    postComposerReturnFocusRef.current = null;
+    const returnElement = returnTarget?.element?.isConnected
+      ? returnTarget.element
+      : returnTarget?.fallbackSelector
+      ? document.querySelector(returnTarget.fallbackSelector)
+      : null;
+    if (returnElement && typeof returnElement.focus === 'function') {
+      returnElement.focus();
+    }
+  }, [showNewPostForm]);
 
   // Move all useEffect hooks together
   useEffect(() => {
@@ -1737,26 +668,6 @@ const ClassFeed = () => {
       localStorage.setItem(reminderKey, new Date().toISOString());
     });
   }, [assignments, isStudent, userInfo?.id, userInfo?.userId, userSettings.assignmentReminders, userSettings.emailNotifications]);
-
-  useEffect(() => {
-    const styleSheet = document.createElement("style");
-    styleSheet.innerText = expandableListStyles + codeStyles + glassStyles + richTextStyles + editorStyles;
-    document.head.appendChild(styleSheet);
-
-    const handleExpandableClick = (e) => {
-      const header = e.target.closest('.expandable-header');
-      if (header) {
-        header.classList.toggle('collapsed');
-      }
-    };
-
-    document.addEventListener('click', handleExpandableClick);
-
-    return () => {
-      document.removeEventListener('click', handleExpandableClick);
-      styleSheet.remove();
-    };
-  }, []);
 
   useEffect(() => {
     // Get likes for all posts on initial load
@@ -2339,6 +1250,8 @@ const ClassFeed = () => {
     setPostContent(createEmptyPostContent());
     setPostDraftSavedAt(null);
     setPostComposerDirty(false);
+    setEditorUploadBusy(false);
+    setPostHtmlLength(0);
   };
 
   const closePostComposer = ({ persistDraft = true } = {}) => {
@@ -2355,17 +1268,21 @@ const ClassFeed = () => {
     setShowNewPostForm(false);
   };
 
-  const openNewPostComposer = () => {
+  const openNewPostComposer = (event) => {
+    postComposerReturnFocusRef.current = {
+      element: event?.currentTarget || document.activeElement,
+    };
     resetPostComposer();
     setEditingPostId(null);
     setShowNewPostForm(true);
   };
 
-  const resumePostDraft = (draft) => {
+  const resumePostDraft = (draft, returnFocusTarget = document.activeElement) => {
     if (!draft) {
       return;
     }
 
+    postComposerReturnFocusRef.current = { element: returnFocusTarget };
     resetPostComposer();
     setEditingPostId(draft.editingPostId ?? null);
     applyPostDraftToComposer({
@@ -2402,13 +1319,17 @@ const ClassFeed = () => {
     }
   };
 
-  const handleEditPost = async (postId) => {
+  const handleEditPost = async (postId, returnFocusTarget = document.activeElement) => {
     const targetPost = posts.find((post) => post.id === postId);
     if (!canManagePost(targetPost)) {
       toast.error('You can only edit your own posts.');
       return;
     }
 
+    postComposerReturnFocusRef.current = {
+      element: returnFocusTarget,
+      fallbackSelector: `[data-post-actions-trigger="${postId}"]`,
+    };
     try {
       setLoading(true);
       
@@ -2470,6 +1391,18 @@ const ClassFeed = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    if (editorUploadBusy) {
+      toast.error('Wait for the media upload to finish before publishing.');
+      return;
+    }
+    if (postHtmlLength > MAX_POST_HTML_LENGTH) {
+      toast.error('This post is too large to publish. Remove some text or formatting and try again.');
+      return;
+    }
+    if (loading) {
+      return;
+    }
     
     if (!postTitle.trim()) {
       toast.error('Please enter a post title');
@@ -3022,7 +1955,7 @@ const ClassFeed = () => {
                         </div>
                         <div className="flex gap-2">
                           <button
-                            onClick={() => resumePostDraft(draft)}
+                            onClick={(event) => resumePostDraft(draft, event.currentTarget)}
                             className="px-4 py-2 rounded-lg text-sm font-medium bg-blue-500/10 text-blue-500 hover:bg-blue-500/20"
                           >
                             Resume
@@ -3087,6 +2020,7 @@ const ClassFeed = () => {
                   {canManagePost(post) && (
                     <div className="relative flex items-center gap-2">
                       <button
+                        data-post-actions-trigger={post.id}
                         onClick={(e) => {
                           e.stopPropagation();
                           setMenuOpen(menuOpen === post.id ? null : post.id);
@@ -3107,7 +2041,11 @@ const ClassFeed = () => {
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                handleEditPost(post.id);
+                                const actionsTrigger = e.currentTarget
+                                  .closest('[role="menu"]')
+                                  ?.parentElement
+                                  ?.previousElementSibling;
+                                handleEditPost(post.id, actionsTrigger);
                                 setMenuOpen(null);
                               }}
                               className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
@@ -3144,13 +2082,15 @@ const ClassFeed = () => {
                 </div>
               
                 {/* Post Content */}
-                <div
-                  className="html-content mb-4 cursor-pointer max-w-none text-gray-800 line-clamp-3"
-                  onClick={() => openPost(post.id)}
-                  dangerouslySetInnerHTML={{
-                    __html: processHTMLWithDOM(truncateHTML(post.content, 150)),
-                  }}
-                />
+                <div onClick={() => openPost(post.id)}>
+                  <RichTextContent
+                    html={post.content}
+                    compact
+                    className="html-content mb-4 cursor-pointer max-w-none text-gray-800"
+                    testId={`class-feed-post-preview-${post.id}`}
+                    ariaLabel={`Preview of ${post.title || 'untitled post'}`}
+                  />
+                </div>
                 
                 {/* Comments Section */}
                 <AnimatePresence>
@@ -3444,11 +2384,31 @@ const ClassFeed = () => {
             className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
           >
             <motion.div
+              ref={postComposerDialogRef}
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
               className="bg-white rounded-lg p-6 max-w-4xl w-full shadow-xl max-h-[90vh] overflow-y-auto text-gray-900"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="post-composer-dialog-title"
+              tabIndex={-1}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  if (event.defaultPrevented) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  if (!loading && !editorUploadBusy) {
+                    closePostComposer();
+                  }
+                  return;
+                }
+                containDialogFocus(event, postComposerDialogRef.current);
+              }}
             >
+              <h2 id="post-composer-dialog-title" className="mb-4 text-2xl font-bold text-gray-900">
+                {editingPostId ? 'Edit post' : 'Create post'}
+              </h2>
               <div className="mb-4 flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-gray-300 flex items-center justify-center">
                   {userInfo?.profile_image ? (
@@ -3485,6 +2445,7 @@ const ClassFeed = () => {
                     Post Title (Required)
                   </label>
                 <input
+                  autoFocus
                   type="text"
                     id="post-title"
                     value={postTitle}
@@ -3510,15 +2471,28 @@ const ClassFeed = () => {
                       </div>
                     )}
                   >
-                    <SelfHostedEditor
-                      init={tinyMceConfig}
+                    <LitBlogsEditor
                       value={content}
-                      onEditorChange={(content) => {
-                        setContent(content);
+                      editorFontSize={userSettings.editorFontSize}
+                      disabled={loading}
+                      onUploadStateChange={setEditorUploadBusy}
+                      onContentLimitChange={({ length }) => setPostHtmlLength(length)}
+                      onChange={(nextContent) => {
+                        setContent(nextContent);
                         setPostComposerDirty(true);
                       }}
                     />
                   </Suspense>
+                  {postHtmlLength > MAX_POST_HTML_LENGTH && (
+                    <div
+                      className="mt-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
+                      role="alert"
+                    >
+                      This post is too large to publish. Remove some text or formatting until the
+                      formatted content is {MAX_POST_HTML_LENGTH.toLocaleString('en-US')} characters
+                      or fewer ({postHtmlLength.toLocaleString('en-US')} currently).
+                    </div>
+                  )}
                   
                   {/* Add the MediaPreview component here */}
                   <MediaPreview 
@@ -3623,6 +2597,7 @@ const ClassFeed = () => {
                     <motion.button
                       type="button"
                       onClick={handleSavePostDraft}
+                      disabled={loading || editorUploadBusy || postHtmlLength > MAX_POST_HTML_LENGTH}
                       className="px-6 py-2 rounded-lg bg-amber-500 text-white hover:bg-amber-400"
                       whileHover={{ scale: 1.05 }}
                       whileTap={{ scale: 0.95 }}
@@ -3632,6 +2607,7 @@ const ClassFeed = () => {
                     <motion.button
                       type="button"
                       onClick={handleDiscardPostDraft}
+                      disabled={loading || editorUploadBusy}
                       className="px-6 py-2 rounded-lg bg-rose-600 text-white hover:bg-rose-500"
                       whileHover={{ scale: 1.05 }}
                       whileTap={{ scale: 0.95 }}
@@ -3641,6 +2617,7 @@ const ClassFeed = () => {
                   <motion.button
                     type="button"
                     onClick={closePostComposer}
+                    disabled={loading || editorUploadBusy}
                     className="px-6 py-2 rounded-lg bg-gray-200 hover:bg-gray-300"
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
@@ -3649,11 +2626,18 @@ const ClassFeed = () => {
                   </motion.button>
                   <motion.button
                     type="submit"
+                    disabled={loading || editorUploadBusy || postHtmlLength > MAX_POST_HTML_LENGTH}
                     className="px-6 py-2 rounded-lg text-white bg-blue-600 hover:bg-blue-700"
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
                   >
-                    {editingPostId ? 'Update Post' : 'Publish'}
+                    {editorUploadBusy
+                      ? 'Uploading media…'
+                      : loading
+                      ? 'Saving…'
+                      : editingPostId
+                      ? 'Update Post'
+                      : 'Publish'}
                   </motion.button>
                   </div>
                 </div>

@@ -5,6 +5,14 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const classFeedSource = readFileSync(resolve(process.cwd(), "src", "ClassFeed.jsx"), "utf8");
+const editorSource = readFileSync(
+  resolve(process.cwd(), "src", "components", "LitBlogsEditor.jsx"),
+  "utf8",
+);
+const attachmentNodeSource = readFileSync(
+  resolve(process.cwd(), "src", "components", "EditorAttachmentNodeView.jsx"),
+  "utf8",
+);
 
 describe("upload lifecycle frontend contract", () => {
   it("never deletes uploaded objects while editing unsaved post content", () => {
@@ -14,8 +22,9 @@ describe("upload lifecycle frontend contract", () => {
   });
 
   it("updates controlled editor state when a custom attachment is removed", () => {
-    expect(classFeedSource).toContain("editor.undoManager.transact");
-    expect(classFeedSource).toContain("editor.fire('change')");
+    expect(attachmentNodeSource).toContain("onClick={deleteNode}");
+    expect(editorSource).toContain("onUpdate: ({ editor: updatedEditor })");
+    expect(editorSource).toContain("onChangeRef.current(canonicalHtml)");
   });
 
   it("keeps preview removal controls from submitting the post form", () => {

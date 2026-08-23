@@ -72,19 +72,26 @@ describe("rich-text integration policy", () => {
     expect(source).not.toMatch(/\.replace\(\/&lt;\/g,\s*["']<["']\)/);
   });
 
-  it("sanitizes every HTML fragment before inserting it into TinyMCE", () => {
-    const source = readSource("ClassFeed.jsx");
-    const insertions = source.match(/editor\.insertContent\(/g) || [];
-    const sanitizedInsertions = source.match(/editor\.insertContent\(sanitizeRichText\(/g) || [];
+  it("sanitizes Tiptap imports, pasted HTML, and serialized output", () => {
+    const source = readSource("components/LitBlogsEditor.jsx");
 
-    expect(insertions.length).toBeGreaterThan(0);
-    expect(sanitizedInsertions).toHaveLength(insertions.length);
+    expect(source).toContain("transformPastedHTML: sanitizeImportedHtml");
+    expect(source).toContain("initialContentRef.current = sanitizeImportedHtml(value)");
+    const rawRead = source.indexOf("const rawHtml = updatedEditor.getHTML()");
+    const limitReport = source.indexOf("reportContentLimit(rawHtml)", rawRead);
+    const sanitizeRaw = source.indexOf("sanitizeSerializedHtml(rawHtml)", limitReport);
+    expect(rawRead).toBeGreaterThan(-1);
+    expect(limitReport).toBeGreaterThan(rawRead);
+    expect(sanitizeRaw).toBeGreaterThan(limitReport);
+    expect(source).not.toMatch(/tinymce|SelfHostedEditor|editor\.insertContent/i);
   });
 
-  it("rejects non-canonical image URLs before inserting them into TinyMCE", () => {
-    const source = readSource("ClassFeed.jsx");
+  it("rejects non-canonical image URLs before inserting them into Tiptap", () => {
+    const editorSource = readSource("components/LitBlogsEditor.jsx");
+    const uploadSource = readSource("editor/editorUploads.js");
 
-    expect(source).toContain("normalizeRichTextUrl(data.url, 'image')");
+    expect(editorSource).toContain('normalizeRichTextUrl(imageUrl, "image")');
+    expect(uploadSource).toContain("isCanonicalUploadUrl(asset?.url)");
   });
 
 });

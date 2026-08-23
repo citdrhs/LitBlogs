@@ -271,16 +271,18 @@ jobs:
         working-directory: litblogs
         run: |
           python -m pytest -q e2e/support/test_database.py
+          node --test e2e/support/availability.test.mjs
           node --test e2e/support/sanitized-reporter.test.mjs
       - name: Install Chromium with system dependencies
         working-directory: litblogs
         run: npx playwright install --with-deps chromium
-      - name: Run seven browser journeys
+      - name: Run eight browser journeys
         working-directory: litblogs
         env:
           CI: "true"
           E2E_ADMIN_DATABASE_URL: postgresql+psycopg2://litblogs_e2e_admin:e2e-ci-only-postgres-password@127.0.0.1:5432/postgres
           E2E_DISPOSABLE_DATABASE_CONFIRMED: litblogs-e2e-only
+          E2E_REQUIRE_AVAILABLE: "true"
         run: npm run test:e2e
       - name: Upload sanitized browser failure report
         if: failure()

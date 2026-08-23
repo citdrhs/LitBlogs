@@ -1,5 +1,7 @@
 import { API_BASE_PATH } from "./urlUtils.js";
 
+export const MAX_POST_HTML_LENGTH = 100000;
+
 const CANONICAL_UPLOAD_KEY = /^objects\/[0-9a-f]{2}\/[0-9a-f]{32}\.[a-z0-9]{1,10}$/;
 
 const canonicalUploadUrl = (value, apiBasePath) => {

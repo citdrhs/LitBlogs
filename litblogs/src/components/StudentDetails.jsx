@@ -303,7 +303,9 @@ const StudentDetails = ({ darkMode }) => {
                     <RichTextContent
                       html={post.content || ''}
                       compact
-                      className="text-gray-600 dark:text-gray-300 mb-4"
+                      dark={darkMode}
+                      className="mb-4"
+                      testId={`student-details-post-preview-${post.id}`}
                       ariaLabel={`Preview of ${post.title}`}
                     />
                     <div className="flex justify-between items-center">

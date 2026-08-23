@@ -61,16 +61,18 @@ jobs:
         working-directory: litblogs
         run: |
           python -m pytest -q e2e/support/test_database.py
+          node --test e2e/support/availability.test.mjs
           node --test e2e/support/sanitized-reporter.test.mjs
       - name: Install Chromium with system dependencies
         working-directory: litblogs
         run: npx playwright install --with-deps chromium
-      - name: Run seven browser journeys
+      - name: Run eight browser journeys
         working-directory: litblogs
         env:
           CI: "true"
           E2E_ADMIN_DATABASE_URL: postgresql+psycopg2://litblogs_e2e_admin:e2e-ci-only-postgres-password@127.0.0.1:5432/postgres
           E2E_DISPOSABLE_DATABASE_CONFIRMED: litblogs-e2e-only
+          E2E_REQUIRE_AVAILABLE: "true"
         run: npm run test:e2e
       - name: Upload sanitized browser failure report
         if: failure()
@@ -314,9 +316,10 @@ jobs:
           source_date_epoch="$(git show -s --format=%ct HEAD)"
           staging="$RUNNER_TEMP/litblogs-release"
           mkdir -p "$staging/tree"
-          git archive --format=tar HEAD -- deploy docs/operations litblogs/*.py litblogs/rich_text_contract.json litblogs/alembic.ini litblogs/migrations/env.py litblogs/migrations/sqlite_contract.py litblogs/migrations/script.py.mako litblogs/migrations/versions litblogs/requirements.txt litblogs/requirements.in litblogs/requirements-lock.txt litblogs/requirements-lock.in | tar -xf - -C "$staging/tree"
+          git archive --format=tar HEAD -- deploy docs/operations litblogs/*.py litblogs/rich_text_contract.json litblogs/THIRD_PARTY_EDITOR_NOTICES.md litblogs/alembic.ini litblogs/migrations/env.py litblogs/migrations/sqlite_contract.py litblogs/migrations/script.py.mako litblogs/migrations/versions litblogs/requirements.txt litblogs/requirements.in litblogs/requirements-lock.txt litblogs/requirements-lock.in | tar -xf - -C "$staging/tree"
           test -f "$staging/tree/litblogs/password_reset_delivery.py"
           test -f "$staging/tree/litblogs/rich_text_contract.json"
+          test -f "$staging/tree/litblogs/THIRD_PARTY_EDITOR_NOTICES.md"
           test -f "$staging/tree/litblogs/rich_text_contract.py"
           test -f "$staging/tree/litblogs/rich_text_security.py"
           test -f "$staging/tree/litblogs/runtime_database_identity.py"

@@ -430,6 +430,7 @@ const PostView = () => {
               <RichTextContent
                 html={post.content || ''}
                 className="html-content"
+                testId="post-view-content"
                 ariaLabel="Post content"
               />
             </div>

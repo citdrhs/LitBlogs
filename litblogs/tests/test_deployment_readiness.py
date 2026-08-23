@@ -643,6 +643,7 @@ def test_release_admission_requires_every_shipped_runtime_module():
         "litblogs/oauth_security.py",
         "litblogs/operator_runtime.py",
         "litblogs/password_reset_delivery.py",
+        "litblogs/THIRD_PARTY_EDITOR_NOTICES.md",
         "litblogs/rich_text_contract.json",
         "litblogs/rich_text_contract.py",
         "litblogs/rich_text_security.py",
@@ -1042,7 +1043,7 @@ def test_release_artifact_uses_a_runtime_allowlist_instead_of_shipping_the_repos
 
     assert (
         "git archive --format=tar HEAD -- deploy docs/operations litblogs/*.py "
-        "litblogs/rich_text_contract.json "
+        "litblogs/rich_text_contract.json litblogs/THIRD_PARTY_EDITOR_NOTICES.md "
         "litblogs/alembic.ini litblogs/migrations/env.py "
         "litblogs/migrations/sqlite_contract.py "
         "litblogs/migrations/script.py.mako litblogs/migrations/versions "
@@ -1052,6 +1053,7 @@ def test_release_artifact_uses_a_runtime_allowlist_instead_of_shipping_the_repos
     )
     assert "git archive --format=tar HEAD |" not in release
     assert 'test -f "$staging/tree/litblogs/rich_text_contract.json"' in release
+    assert 'test -f "$staging/tree/litblogs/THIRD_PARTY_EDITOR_NOTICES.md"' in release
     assert 'test -f "$staging/tree/litblogs/rich_text_contract.py"' in release
     assert 'test -f "$staging/tree/litblogs/rich_text_security.py"' in release
     assert "litblogs/migrations/0001_create_federated_identities.sql" not in release

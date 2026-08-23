@@ -10,6 +10,7 @@ VALIDATOR_PATH = REPOSITORY_ROOT / "scripts" / "validate-repository-policy.py"
 CI_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
 RELEASE_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "release.yml"
 BACKEND_ROOT = REPOSITORY_ROOT / "litblogs"
+EDITOR_NOTICE_PATH = BACKEND_ROOT / "THIRD_PARTY_EDITOR_NOTICES.md"
 MAIN_PATH = BACKEND_ROOT / "main.py"
 IDENTITY_MIGRATION_PATH = BACKEND_ROOT / "migrations" / "0003_add_identity_controls.sql"
 IDENTITY_RUNBOOK_PATH = BACKEND_ROOT / "migrations" / "README-identity-controls.md"
@@ -31,6 +32,22 @@ REVIEWED_TIPTAP_RUNTIME_DEPENDENCIES = {
     "@tiptap/react": "^3.30.2",
     "@tiptap/starter-kit": "^3.30.2",
 }
+REVIEWED_PROSEMIRROR_PACKAGES = {
+    "prosemirror-changeset",
+    "prosemirror-commands",
+    "prosemirror-dropcursor",
+    "prosemirror-gapcursor",
+    "prosemirror-history",
+    "prosemirror-inputrules",
+    "prosemirror-keymap",
+    "prosemirror-model",
+    "prosemirror-schema-list",
+    "prosemirror-state",
+    "prosemirror-tables",
+    "prosemirror-transform",
+    "prosemirror-view",
+}
+DEFAULT_EDITOR_NOTICE = object()
 
 SQLITE_PYTEST_STEP = """      - name: Run isolated backend tests
         working-directory: litblogs
@@ -106,6 +123,7 @@ def _validate_tiptap_policy(
     package_updates=None,
     lock_root_dependencies=None,
     lock_package_updates=None,
+    editor_notice=DEFAULT_EDITOR_NOTICE,
 ):
     if dependencies is None:
         dependencies = REVIEWED_TIPTAP_RUNTIME_DEPENDENCIES
@@ -144,6 +162,12 @@ def _validate_tiptap_policy(
     (source_root / "editor.js").write_text(runtime_source, encoding="utf-8")
     (frontend_root / "config.py").write_text(backend_source, encoding="utf-8")
     (frontend_root / "index.html").write_text(index_source, encoding="utf-8")
+    if editor_notice is DEFAULT_EDITOR_NOTICE:
+        editor_notice = EDITOR_NOTICE_PATH.read_text(encoding="utf-8")
+    if editor_notice is not None:
+        (frontend_root / "THIRD_PARTY_EDITOR_NOTICES.md").write_text(
+            editor_notice, encoding="utf-8"
+        )
 
     policy_validator.ROOT = tmp_path
     policy_validator.failures.clear()
@@ -162,6 +186,9 @@ def _validate_real_tiptap_lock(policy_validator, tmp_path, package_lock):
     )
     (frontend_root / "package-lock.json").write_text(
         json.dumps(package_lock), encoding="utf-8"
+    )
+    (frontend_root / "THIRD_PARTY_EDITOR_NOTICES.md").write_text(
+        EDITOR_NOTICE_PATH.read_text(encoding="utf-8"), encoding="utf-8"
     )
     policy_validator.ROOT = tmp_path
     policy_validator.failures.clear()
@@ -186,6 +213,99 @@ def test_tiptap_editor_policy_accepts_reviewed_oss_runtime_dependencies(
     policy_validator.failures.clear()
     policy_validator.validate_tiptap_editor_policy()
     assert policy_validator.failures == []
+
+
+def test_tiptap_editor_notice_matches_declared_and_locked_mit_dependencies():
+    package = json.loads((BACKEND_ROOT / "package.json").read_text(encoding="utf-8"))
+    package_lock = json.loads(
+        (BACKEND_ROOT / "package-lock.json").read_text(encoding="utf-8")
+    )
+    declared = {
+        package_name
+        for package_name in package["dependencies"]
+        if package_name.startswith("@tiptap/")
+    }
+    locked_licenses = {
+        package_name: package_lock["packages"][f"node_modules/{package_name}"][
+            "license"
+        ]
+        for package_name in declared
+    }
+    declared_prosemirror = set(
+        package_lock["packages"]["node_modules/@tiptap/pm"]["dependencies"]
+    )
+    locked_prosemirror_licenses = {
+        package_name: package_lock["packages"][f"node_modules/{package_name}"][
+            "license"
+        ]
+        for package_name in declared_prosemirror
+    }
+    normalized_notice = " ".join(EDITOR_NOTICE_PATH.read_text(encoding="utf-8").split())
+
+    assert declared == set(REVIEWED_TIPTAP_RUNTIME_DEPENDENCIES)
+    assert set(locked_licenses) == declared
+    assert set(locked_licenses.values()) == {"MIT"}
+    assert declared_prosemirror == REVIEWED_PROSEMIRROR_PACKAGES
+    assert set(locked_prosemirror_licenses) == declared_prosemirror
+    assert set(locked_prosemirror_licenses.values()) == {"MIT"}
+    assert all(
+        f"- {package_name}" in normalized_notice
+        for package_name in declared_prosemirror
+    )
+    assert "Copyright (c) 2025, Tiptap GmbH" in normalized_notice
+    assert (
+        "Copyright (C) 2015-2017 by Marijn Haverbeke "
+        "<marijn@haverbeke.berlin> and others" in normalized_notice
+    )
+    assert normalized_notice.count(
+        "Permission is hereby granted, free of charge, to any person obtaining a copy"
+    ) == 2
+    assert normalized_notice.count('THE SOFTWARE IS PROVIDED "AS IS"') == 2
+
+
+def test_tiptap_editor_policy_requires_complete_third_party_notices(
+    policy_validator, tmp_path
+):
+    failures = _validate_tiptap_policy(
+        policy_validator,
+        tmp_path,
+        editor_notice="MIT License\n",
+    )
+
+    assert any("editor third-party notices" in failure for failure in failures)
+
+
+def test_tiptap_editor_policy_requires_third_party_notice_file(
+    policy_validator, tmp_path
+):
+    failures = _validate_tiptap_policy(
+        policy_validator, tmp_path, editor_notice=None
+    )
+
+    assert any(
+        "missing required file: litblogs/THIRD_PARTY_EDITOR_NOTICES.md" in failure
+        for failure in failures
+    )
+
+
+def test_tiptap_editor_policy_rejects_non_mit_prosemirror_lock_metadata(
+    policy_validator, tmp_path
+):
+    package_lock = json.loads(
+        (BACKEND_ROOT / "package-lock.json").read_text(encoding="utf-8")
+    )
+    package_lock["packages"]["node_modules/prosemirror-model"][
+        "license"
+    ] = "Apache-2.0"
+
+    failures = _validate_real_tiptap_lock(
+        policy_validator, tmp_path, package_lock
+    )
+
+    assert any(
+        "MIT license for ProseMirror editor dependency prosemirror-model" in failure
+        for failure in failures
+    )
 
 
 def test_tiptap_editor_policy_rejects_unreviewed_tiptap_packages(
@@ -974,6 +1094,22 @@ def test_policy_validator_requires_rich_text_security_release_admission(
     assert any("rich_text_security.py" in failure for failure in failures)
 
 
+def test_policy_validator_requires_editor_notice_release_admission(
+    policy_validator, tmp_path
+):
+    workflow = RELEASE_PATH.read_text(encoding="utf-8")
+    required = 'test -f "$staging/tree/litblogs/THIRD_PARTY_EDITOR_NOTICES.md"'
+    assert required in workflow
+
+    failures = _validate_release_workflow(
+        policy_validator,
+        tmp_path,
+        workflow.replace(required, "true # weakened editor notice admission", 1),
+    )
+
+    assert any("THIRD_PARTY_EDITOR_NOTICES.md" in failure for failure in failures)
+
+
 def test_ci_browser_gate_is_mandatory_and_uploads_only_sanitized_failures(
     policy_validator,
 ):
@@ -991,10 +1127,12 @@ def test_ci_browser_gate_is_mandatory_and_uploads_only_sanitized_failures(
         ),
     }
     assert "npm ci" in commands
+    assert "node --test e2e/support/availability.test.mjs" in commands
+    assert "node --test e2e/support/sanitized-reporter.test.mjs" in commands
     assert "npx playwright install --with-deps chromium" in commands
     assert "npm run test:e2e" in commands
     browser_steps = browser_job["steps"]
-    journey_step = next(step for step in browser_steps if step.get("name") == "Run seven browser journeys")
+    journey_step = next(step for step in browser_steps if step.get("name") == "Run eight browser journeys")
     assert journey_step["env"] == {
         "CI": "true",
         "E2E_ADMIN_DATABASE_URL": (
@@ -1002,6 +1140,7 @@ def test_ci_browser_gate_is_mandatory_and_uploads_only_sanitized_failures(
             "e2e-ci-only-postgres-password@127.0.0.1:5432/postgres"
         ),
         "E2E_DISPOSABLE_DATABASE_CONFIRMED": "litblogs-e2e-only",
+        "E2E_REQUIRE_AVAILABLE": "true",
     }
     upload_step = next(
         step
@@ -1018,10 +1157,19 @@ def test_ci_browser_gate_is_mandatory_and_uploads_only_sanitized_failures(
 def test_release_packaging_depends_on_unprivileged_browser_gate(policy_validator):
     workflow, _ = policy_validator.load_yaml(".github/workflows/release.yml")
     browser_job = workflow["jobs"]["browser-journeys"]
+    commands = policy_validator.step_commands(browser_job)
 
     assert "environment" not in browser_job
     assert browser_job["permissions"] == {"contents": "read"}
     assert browser_job["if"] == "github.ref == 'refs/heads/main'"
+    assert "node --test e2e/support/availability.test.mjs" in commands
+    assert "node --test e2e/support/sanitized-reporter.test.mjs" in commands
+    journey_step = next(
+        step
+        for step in browser_job["steps"]
+        if step.get("name") == "Run eight browser journeys"
+    )
+    assert journey_step["env"]["E2E_REQUIRE_AVAILABLE"] == "true"
     assert workflow["jobs"]["build-release"]["needs"] == "browser-journeys"
     protected_jobs = [
         job_id
@@ -1099,6 +1247,15 @@ def test_browser_harness_forbids_raw_artifacts_and_proves_runtime_database_acl()
     reporter_test = (
         BACKEND_ROOT / "e2e" / "support" / "sanitized-reporter.test.mjs"
     ).read_text(encoding="utf-8")
+    availability = (
+        BACKEND_ROOT / "e2e" / "support" / "availability.mjs"
+    ).read_text(encoding="utf-8")
+    availability_test = (
+        BACKEND_ROOT / "e2e" / "support" / "availability.test.mjs"
+    ).read_text(encoding="utf-8")
+    global_setup = (BACKEND_ROOT / "e2e" / "global-setup.mjs").read_text(
+        encoding="utf-8"
+    )
     spec_sources = [
         path.read_text(encoding="utf-8")
         for path in sorted((BACKEND_ROOT / "e2e" / "specs").glob("*.spec.js"))
@@ -1117,7 +1274,19 @@ def test_browser_harness_forbids_raw_artifacts_and_proves_runtime_database_acl()
     assert "storageState" not in playwright_config
     for ignored_output in ("test-results/", "playwright-report/", "blob-report/"):
         assert ignored_output in ignore_policy
-    assert sum(source.count("test('") for source in spec_sources) == 7
+    assert sum(source.count("test('") for source in spec_sources) == 8
+    assert any(
+        "the LitBlogs editor preserves one rich post across every author and course view"
+        in source
+        for source in spec_sources
+    )
+
+    assert "Boolean(environment.CI)" in availability
+    assert "environment.E2E_REQUIRE_AVAILABLE === 'true'" in availability
+    assert "if (requiresAvailableEnvironment()) throw new Error(reason)" in global_setup
+    assert "CI: 'false'" in availability_test
+    assert "E2E_REQUIRE_AVAILABLE: 'true'" in availability_test
+    assert "E2E_REQUIRE_AVAILABLE: 'TRUE'" in availability_test
 
     assert "SHOW server_version_num" in database_harness
     assert "170_000 <= version_number < 180_000" in database_harness
@@ -1132,7 +1301,12 @@ def test_browser_harness_forbids_raw_artifacts_and_proves_runtime_database_acl()
     assert "test-results/e2e/sanitized-failures" in reporter
     for callback in ("printsToStdio()", "onStdOut()", "onStdErr()", "onError()"):
         assert callback in reporter
+    assert "safeFailureSummary(content)" in reporter
+    assert "title: 'browser journey'" in reporter
+    assert "E2E summary: total=${total} passed=${passed} failed=${failed} skipped=${skipped}" in reporter
     assert "streamed-private-output-canary" in reporter_test
+    assert "unknownSessionCanary" in reporter_test
+    assert "prints only a fixed aggregate summary after the run" in reporter_test
     assert "errors: testInfo.errors.map" not in fixtures
     assert "error_count: testInfo.errors.length" in fixtures
     assert all("cookies: document.cookie" not in source for source in spec_sources)

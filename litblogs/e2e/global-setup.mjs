@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url';
 
 import { chromium } from '@playwright/test';
 
+import { requiresAvailableEnvironment } from './support/availability.mjs';
+
 const backendDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const supportDirectory = path.join(backendDirectory, 'e2e', 'support');
 const executableName = (name) => process.platform === 'win32' ? `${name}.exe` : name;
@@ -127,7 +129,7 @@ const stopService = async (child) => {
 };
 
 const skipLocallyOrFail = (reason) => {
-  if (process.env.CI) throw new Error(reason);
+  if (requiresAvailableEnvironment()) throw new Error(reason);
   process.env.E2E_LOCAL_SKIP_REASON = reason;
   return async () => {};
 };

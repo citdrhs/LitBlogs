@@ -66,6 +66,7 @@ REQUIRED_RELEASE_FILES = (
     "litblogs/operator_runtime.py",
     "litblogs/password_reset_delivery.py",
     "litblogs/password_reset_job.py",
+    "litblogs/THIRD_PARTY_EDITOR_NOTICES.md",
     "litblogs/rich_text_contract.json",
     "litblogs/rich_text_contract.py",
     "litblogs/rich_text_security.py",

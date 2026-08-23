@@ -283,6 +283,7 @@ const StudentHub = () => {
                         html={post.content || ''}
                         compact
                         className="html-content text-gray-800"
+                        testId={`student-hub-post-preview-${post.id}`}
                         ariaLabel={`Preview of ${post.title}`}
                       />
                      

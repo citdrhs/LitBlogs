@@ -1,4 +1,9 @@
 import { Node } from "@tiptap/core";
+import { ReactNodeViewRenderer } from "@tiptap/react";
+
+import EditorAttachmentNodeView from "../components/EditorAttachmentNodeView.jsx";
+import EditorImageNodeView from "../components/EditorImageNodeView.jsx";
+import EditorVideoNodeView from "../components/EditorVideoNodeView.jsx";
 import {
   isCanonicalUploadUrl,
   normalizeDimension,
@@ -54,6 +59,10 @@ export const CanonicalImage = Node.create({
       height: hiddenAttribute(),
       class: hiddenAttribute(),
     };
+  },
+
+  addNodeView() {
+    return ReactNodeViewRenderer(EditorImageNodeView);
   },
 
   parseHTML() {
@@ -132,6 +141,10 @@ export const Video = Node.create({
       height: hiddenAttribute(),
       preload: hiddenAttribute("metadata"),
     };
+  },
+
+  addNodeView() {
+    return ReactNodeViewRenderer(EditorVideoNodeView);
   },
 
   parseHTML() {
@@ -237,6 +250,10 @@ export const Attachment = Node.create({
       size: hiddenAttribute(),
       type: hiddenAttribute("application/pdf"),
     };
+  },
+
+  addNodeView() {
+    return ReactNodeViewRenderer(EditorAttachmentNodeView);
   },
 
   parseHTML() {

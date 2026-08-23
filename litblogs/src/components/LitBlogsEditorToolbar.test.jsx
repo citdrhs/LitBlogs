@@ -101,8 +101,11 @@ describe("LitBlogsEditorToolbar", () => {
 
     expect(screen.getByRole("toolbar", { name: "Rich text formatting" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Bold" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "Heading 2" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "Align center" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("combobox", { name: "Block style" })).toHaveValue("heading-2");
+    expect(screen.getByRole("button", { name: "Text alignment: Center" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
     expect(screen.getByRole("combobox", { name: "Font family" })).toHaveValue(FONT_FAMILIES[2].cssValue);
     expect(screen.getByRole("combobox", { name: "Font size" })).toHaveValue(FONT_SIZES[2].cssValue);
     expect(screen.getByRole("combobox", { name: "Font family" }).querySelectorAll("option")).toHaveLength(
@@ -139,20 +142,11 @@ describe("LitBlogsEditorToolbar", () => {
   });
 
   it.each([
-    ["Paragraph", "setParagraph", []],
-    ["Heading 1", "toggleHeading", [{ level: 1 }]],
-    ["Heading 2", "toggleHeading", [{ level: 2 }]],
-    ["Heading 3", "toggleHeading", [{ level: 3 }]],
-    ["Heading 4", "toggleHeading", [{ level: 4 }]],
-    ["Blockquote", "toggleBlockquote", []],
     ["Bold", "toggleBold", []],
     ["Italic", "toggleItalic", []],
     ["Underline", "toggleUnderline", []],
     ["Strikethrough", "toggleStrike", []],
     ["Clear formatting", "unsetAllMarks", []],
-    ["Align left", "setTextAlign", ["left"]],
-    ["Align center", "setTextAlign", ["center"]],
-    ["Align right", "setTextAlign", ["right"]],
     ["Bulleted list", "toggleBulletList", []],
     ["Numbered list", "toggleOrderedList", []],
     ["Insert table", "insertTable", [{ rows: 3, cols: 3, withHeaderRow: true }]],
@@ -169,6 +163,115 @@ describe("LitBlogsEditorToolbar", () => {
       expect(editor.calls).toContainEqual({ name: "clearNodes", args: [] });
     }
     expectCommand(editor, command, args);
+  });
+
+  it("runs every block style and alignment command through one compact control each", () => {
+    const editor = createFakeEditor();
+    render(<LitBlogsEditorToolbar editor={editor} />);
+
+    const blockStyle = screen.getByRole("combobox", { name: "Block style" });
+    expect([...blockStyle.options].map((option) => option.textContent)).toEqual([
+      "¶ Paragraph",
+      "H1",
+      "H2",
+      "H3",
+      "H4",
+      "❝ Quote",
+    ]);
+    expect(blockStyle.options[0]).toHaveValue("paragraph");
+
+    fireEvent.change(blockStyle, { target: { value: "heading-3" } });
+    expectCommand(editor, "toggleHeading", [{ level: 3 }]);
+    fireEvent.change(blockStyle, { target: { value: "blockquote" } });
+    expectCommand(editor, "toggleBlockquote");
+    fireEvent.change(blockStyle, { target: { value: "paragraph" } });
+    expectCommand(editor, "setParagraph");
+
+    const alignment = screen.getByRole("button", { name: "Text alignment: Left" });
+    expect(alignment).toHaveClass("litblogs-toolbar-button--dropdown");
+    expect(alignment.querySelectorAll("svg")).toHaveLength(2);
+    fireEvent.click(alignment);
+    const menu = screen.getByRole("menu", { name: "Text alignment" });
+    expect(within(menu).getAllByRole("menuitemradio")).toHaveLength(3);
+    fireEvent.click(within(menu).getByRole("menuitemradio", { name: "Align center" }));
+    expectCommand(editor, "setTextAlign", ["center"]);
+  });
+
+  it("uses recognizable icon-only actions with accessible names and native hover titles", () => {
+    const editor = createFakeEditor();
+    render(
+      <LitBlogsEditorToolbar
+        editor={editor}
+        onInsertImage={() => {}}
+        onInsertVideo={() => {}}
+        onInsertPdf={() => {}}
+      />,
+    );
+
+    [
+      "Bold",
+      "Italic",
+      "Underline",
+      "Strikethrough",
+      "Clear formatting",
+      "Link",
+      "Bulleted list",
+      "Numbered list",
+      "Insert table",
+      "Delete table",
+      "Insert image",
+      "Insert video",
+      "Insert PDF attachment",
+      "Undo",
+      "Redo",
+    ].forEach((label) => {
+      const button = screen.getByRole("button", { name: label });
+      expect(button).toHaveAttribute("title", label);
+      expect(button).toHaveClass("litblogs-toolbar-button--icon");
+      expect(button.querySelector("svg")).not.toBeNull();
+      expect(button).toHaveTextContent("");
+    });
+  });
+
+  it("operates the alignment menu by keyboard, restores focus on Escape, and closes on focus leave", async () => {
+    const editor = createFakeEditor();
+    const onOuterKeyDown = vi.fn();
+    render(
+      <div onKeyDown={onOuterKeyDown}>
+        <LitBlogsEditorToolbar editor={editor} />
+        <button type="button">After toolbar</button>
+      </div>,
+    );
+
+    const trigger = screen.getByRole("button", { name: "Text alignment: Left" });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    const menu = screen.getByRole("menu", { name: "Text alignment" });
+    const left = within(menu).getByRole("menuitemradio", { name: "Align left" });
+    const center = within(menu).getByRole("menuitemradio", { name: "Align center" });
+    await waitFor(() => expect(left).toHaveFocus());
+    fireEvent.keyDown(left, { key: "ArrowDown" });
+    expect(center).toHaveFocus();
+    fireEvent.keyDown(center, { key: "Enter" });
+    expectCommand(editor, "setTextAlign", ["center"]);
+    expect(screen.queryByRole("menu", { name: "Text alignment" })).not.toBeInTheDocument();
+    await waitFor(() => expect(trigger).toHaveFocus());
+
+    fireEvent.click(trigger);
+    onOuterKeyDown.mockClear();
+    fireEvent.keyDown(within(screen.getByRole("menu", { name: "Text alignment" }))
+      .getByRole("menuitemradio", { name: "Align left" }), { key: "Escape" });
+    expect(onOuterKeyDown).not.toHaveBeenCalled();
+    await waitFor(() => expect(trigger).toHaveFocus());
+
+    fireEvent.click(trigger);
+    const reopenedLeft = within(screen.getByRole("menu", { name: "Text alignment" }))
+      .getByRole("menuitemradio", { name: "Align left" });
+    const afterToolbar = screen.getByRole("button", { name: "After toolbar" });
+    fireEvent.blur(reopenedLeft, { relatedTarget: afterToolbar });
+    afterToolbar.focus();
+    expect(screen.queryByRole("menu", { name: "Text alignment" })).not.toBeInTheDocument();
+    expect(afterToolbar).toHaveFocus();
   });
 
   it("applies and clears font, size, text-color, and highlight choices", () => {
@@ -291,6 +394,83 @@ describe("LitBlogsEditorToolbar", () => {
       name: "setLink",
       args: [{ href: "/classes/42?tab=posts" }],
     });
+  });
+
+  it("does not nest a link form inside the post composer form", () => {
+    const editor = createFakeEditor();
+    render(
+      <form aria-label="Post composer">
+        <LitBlogsEditorToolbar editor={editor} />
+      </form>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Link" }));
+
+    expect(screen.getByRole("form", { name: "Post composer" })).toBeInTheDocument();
+    expect(document.querySelectorAll("form")).toHaveLength(1);
+  });
+
+  it("contains link-dialog Escape so an outer composer stays open", () => {
+    const editor = createFakeEditor();
+    const onOuterKeyDown = vi.fn();
+    render(
+      <div onKeyDown={onOuterKeyDown}>
+        <LitBlogsEditorToolbar editor={editor} />
+      </div>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Link" }));
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Link URL" }), { key: "Escape" });
+
+    expect(screen.queryByRole("dialog", { name: "Edit link" })).not.toBeInTheDocument();
+    expect(onOuterKeyDown).not.toHaveBeenCalled();
+  });
+
+  it("closes nonmodal popups as focus leaves and never leaves link and color open together", async () => {
+    const editor = createFakeEditor();
+    render(<LitBlogsEditorToolbar editor={editor} />);
+
+    const linkTrigger = screen.getByRole("button", { name: "Link" });
+    const colorTrigger = screen.getByRole("button", { name: /Text color:/ });
+    fireEvent.click(linkTrigger);
+    const linkInput = screen.getByRole("textbox", { name: "Link URL" });
+    await waitFor(() => expect(linkInput).toHaveFocus());
+
+    fireEvent.blur(linkInput, { relatedTarget: colorTrigger });
+    colorTrigger.focus();
+    fireEvent.click(colorTrigger);
+
+    expect(screen.queryByRole("dialog", { name: "Edit link" })).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Text color palette" })).toBeInTheDocument();
+
+    const swatch = screen.getByRole("button", { name: "Ink #111827" });
+    fireEvent.blur(swatch, { relatedTarget: linkTrigger });
+    linkTrigger.focus();
+    fireEvent.click(linkTrigger);
+
+    expect(screen.queryByRole("dialog", { name: "Text color palette" })).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Edit link" })).toBeInTheDocument();
+  });
+
+  it("lets keyboard focus continue past the link popup instead of restoring its trigger", async () => {
+    const editor = createFakeEditor();
+    render(
+      <>
+        <LitBlogsEditorToolbar editor={editor} />
+        <button type="button">After toolbar</button>
+      </>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Link" }));
+    const input = screen.getByRole("textbox", { name: "Link URL" });
+    const afterToolbar = screen.getByRole("button", { name: "After toolbar" });
+    await waitFor(() => expect(input).toHaveFocus());
+
+    fireEvent.blur(input, { relatedTarget: afterToolbar });
+    afterToolbar.focus();
+
+    expect(screen.queryByRole("dialog", { name: "Edit link" })).not.toBeInTheDocument();
+    await waitFor(() => expect(afterToolbar).toHaveFocus());
   });
 
   it("invokes first-party media callbacks without embedding upload behavior in the toolbar", () => {

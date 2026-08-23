@@ -432,6 +432,7 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
                           html={post.content || ''}
                           compact
                           className="text-gray-600"
+                          testId={`class-details-post-preview-${post.id}`}
                           ariaLabel={`Preview of ${post.title}`}
                         />
 

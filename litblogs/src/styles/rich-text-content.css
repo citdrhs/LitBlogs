@@ -3,6 +3,7 @@
   --rich-text-muted-surface: #f8fafc;
   --rich-text-code-surface: #0f172a;
   --rich-text-code-ink: #f8fafc;
+  --rich-text-surface: #ffffff;
   color: inherit;
   font-family: Arial, Helvetica, sans-serif;
   font-size: 1rem;
@@ -22,6 +23,10 @@
 
 .rich-text-content p {
   margin-block: 0 0.9em;
+}
+
+.rich-text-content mark {
+  color: inherit;
 }
 
 .rich-text-content h1,
@@ -163,8 +168,20 @@
 .rich-text-content img,
 .rich-text-content video {
   border-radius: 0.45rem;
-  height: auto;
   max-width: 100%;
+}
+
+.rich-text-content img:not([height]),
+.rich-text-content video:not([height]) {
+  height: auto;
+}
+
+@supports (aspect-ratio: attr(width type(<number>)) / attr(height type(<number>))) {
+  .rich-text-content img[width][height],
+  .rich-text-content video[width][height] {
+    aspect-ratio: attr(width type(<number>)) / attr(height type(<number>));
+    height: auto;
+  }
 }
 
 .rich-text-content img.post-image,
@@ -199,6 +216,9 @@
 .rich-text-content figure.video-container video {
   background: #000000;
   display: block;
+}
+
+.rich-text-content figure.video-container video:not([width]) {
   width: 100%;
 }
 
@@ -265,7 +285,7 @@
 }
 
 .rich-text-content--compact::before {
-  background: linear-gradient(to bottom, transparent, #ffffff);
+  background: linear-gradient(to bottom, transparent, var(--rich-text-surface));
   block-size: 2rem;
   content: "";
   inset-block-end: 0;
@@ -275,37 +295,34 @@
   z-index: 1;
 }
 
-.dark .rich-text-content {
+.rich-text-content--dark {
   --rich-text-border: #475569;
   --rich-text-muted-surface: #1e293b;
   --rich-text-code-surface: #020617;
+  --rich-text-surface: #0f172a;
   color: #e5e7eb;
 }
 
-.dark .rich-text-content a {
+.rich-text-content--dark a {
   color: #93c5fd;
 }
 
-.dark .rich-text-content a:hover {
+.rich-text-content--dark a:hover {
   color: #bfdbfe;
 }
 
-.dark .rich-text-content code {
+.rich-text-content--dark code {
   background: #334155;
 }
 
-.dark .rich-text-content .file-size {
+.rich-text-content--dark .file-size {
   color: #cbd5e1;
 }
 
-.dark .rich-text-content .file-icon {
+.rich-text-content--dark .file-icon {
   background: #450a0a;
   border-color: #7f1d1d;
   color: #fecaca;
-}
-
-.dark .rich-text-content--compact::before {
-  background: linear-gradient(to bottom, transparent, #0f172a);
 }
 
 @media (max-width: 640px) {

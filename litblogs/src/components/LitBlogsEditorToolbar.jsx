@@ -1,4 +1,25 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  FaAlignCenter,
+  FaAlignLeft,
+  FaAlignRight,
+  FaBold,
+  FaCaretDown,
+  FaFilePdf,
+  FaImage,
+  FaItalic,
+  FaLink,
+  FaListOl,
+  FaListUl,
+  FaRedo,
+  FaRemoveFormat,
+  FaStrikethrough,
+  FaTable,
+  FaTrashAlt,
+  FaUnderline,
+  FaUndo,
+  FaVideo,
+} from "react-icons/fa";
 
 import {
   FONT_FAMILIES,
@@ -45,6 +66,188 @@ const runCommand = (editor, disabled, command, args = [], afterCommand) => {
 
 const clearNodesAfter = (chain) => chain.clearNodes();
 
+const BLOCK_OPTIONS = Object.freeze([
+  Object.freeze({ label: "Paragraph", shortLabel: "¶ Paragraph", value: "paragraph", command: "setParagraph" }),
+  ...[1, 2, 3, 4].map((level) => Object.freeze({
+    args: Object.freeze([{ level }]),
+    label: `Heading ${level}`,
+    shortLabel: `H${level}`,
+    value: `heading-${level}`,
+    command: "toggleHeading",
+  })),
+  Object.freeze({ label: "Quote", shortLabel: "❝ Quote", value: "blockquote", command: "toggleBlockquote" }),
+]);
+
+const ALIGNMENT_OPTIONS = Object.freeze([
+  Object.freeze({ Icon: FaAlignLeft, label: "Align left", shortLabel: "Left", value: "left" }),
+  Object.freeze({ Icon: FaAlignCenter, label: "Align center", shortLabel: "Center", value: "center" }),
+  Object.freeze({ Icon: FaAlignRight, label: "Align right", shortLabel: "Right", value: "right" }),
+]);
+
+const AlignmentPicker = ({
+  activeAlignment,
+  disabled,
+  disabledOptions,
+  onChange,
+}) => {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef(null);
+  const triggerRef = useRef(null);
+  const optionRefs = useRef([]);
+  const activeIndex = Math.max(
+    0,
+    ALIGNMENT_OPTIONS.findIndex(({ value }) => value === activeAlignment),
+  );
+  const activeOption = ALIGNMENT_OPTIONS[activeIndex];
+  const {
+    center: centerDisabled,
+    left: leftDisabled,
+    right: rightDisabled,
+  } = disabledOptions;
+
+  const closeMenu = useCallback(({ restoreFocus = true } = {}) => {
+    setOpen(false);
+    if (restoreFocus) queueMicrotask(() => triggerRef.current?.focus());
+  }, []);
+
+  useEffect(() => {
+    if (!disabled) return;
+    setOpen(false);
+  }, [disabled]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const activeOptionDisabled = activeOption.value === "left"
+      ? leftDisabled
+      : activeOption.value === "center"
+        ? centerDisabled
+        : rightDisabled;
+    const preferredIndex = activeOptionDisabled
+      ? ALIGNMENT_OPTIONS.findIndex(({ value }) => (
+        value === "left" ? !leftDisabled : value === "center" ? !centerDisabled : !rightDisabled
+      ))
+      : activeIndex;
+    optionRefs.current[preferredIndex]?.focus();
+
+    const handlePointerDown = (event) => {
+      if (!containerRef.current?.contains(event.target)) {
+        closeMenu({ restoreFocus: false });
+      }
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [
+    activeIndex,
+    activeOption.value,
+    centerDisabled,
+    closeMenu,
+    leftDisabled,
+    open,
+    rightDisabled,
+  ]);
+
+  const focusRelativeOption = (currentIndex, direction) => {
+    const enabled = ALIGNMENT_OPTIONS
+      .map(({ value }, index) => (disabledOptions[value] ? null : index))
+      .filter((index) => index !== null);
+    if (!enabled.length) return;
+    const enabledPosition = enabled.indexOf(currentIndex);
+    const nextPosition = enabledPosition < 0
+      ? 0
+      : (enabledPosition + direction + enabled.length) % enabled.length;
+    optionRefs.current[enabled[nextPosition]]?.focus();
+  };
+
+  const chooseAlignment = (value) => {
+    if (disabled || disabledOptions[value]) return;
+    onChange(value);
+    closeMenu();
+  };
+
+  const handleOptionKeyDown = (event, index, value) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeMenu();
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      chooseAlignment(value);
+      return;
+    }
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    if (event.key === "Home" || event.key === "End") {
+      const enabled = ALIGNMENT_OPTIONS
+        .map(({ value: optionValue }, optionIndex) => (
+          disabledOptions[optionValue] ? null : optionIndex
+        ))
+        .filter((optionIndex) => optionIndex !== null);
+      optionRefs.current[event.key === "Home" ? enabled[0] : enabled.at(-1)]?.focus();
+      return;
+    }
+    focusRelativeOption(index, event.key === "ArrowDown" ? 1 : -1);
+  };
+
+  const ActiveIcon = activeOption.Icon;
+  const triggerLabel = `Text alignment: ${activeOption.shortLabel}`;
+
+  return (
+    <div
+      ref={containerRef}
+      className="litblogs-alignment-picker"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+          closeMenu({ restoreFocus: false });
+        }
+      }}
+    >
+      <button
+        ref={triggerRef}
+        type="button"
+        className="litblogs-toolbar-button litblogs-toolbar-button--icon litblogs-toolbar-button--dropdown"
+        aria-label={triggerLabel}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={disabled}
+        title={triggerLabel}
+        onClick={() => (open ? closeMenu({ restoreFocus: false }) : setOpen(true))}
+        onKeyDown={(event) => {
+          if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+          event.preventDefault();
+          setOpen(true);
+        }}
+      >
+        <ActiveIcon aria-hidden="true" focusable="false" />
+        <FaCaretDown aria-hidden="true" focusable="false" />
+      </button>
+      {open && !disabled && (
+        <div className="litblogs-alignment-menu" role="menu" aria-label="Text alignment">
+          {ALIGNMENT_OPTIONS.map(({ Icon, label, value }, index) => (
+            <button
+              key={value}
+              ref={(element) => {
+                optionRefs.current[index] = element;
+              }}
+              type="button"
+              role="menuitemradio"
+              aria-checked={activeAlignment === value}
+              disabled={disabledOptions[value]}
+              title={label}
+              onClick={() => chooseAlignment(value)}
+              onKeyDown={(event) => handleOptionKeyDown(event, index, value)}
+            >
+              <Icon aria-hidden="true" focusable="false" />
+              <span>{label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const ToolbarButton = ({
   active,
   children,
@@ -54,10 +257,11 @@ const ToolbarButton = ({
 }) => (
   <button
     type="button"
-    className="litblogs-toolbar-button"
+    className="litblogs-toolbar-button litblogs-toolbar-button--icon"
     aria-label={label}
     aria-pressed={typeof active === "boolean" ? active : undefined}
     disabled={disabled}
+    title={label}
     onClick={onClick}
   >
     {children}
@@ -150,11 +354,34 @@ const LitBlogsEditorToolbar = ({
   const command = (commandName, args = [], afterCommand) => () => {
     runCommand(editor, disabled, commandName, args, afterCommand);
   };
+  const blockOptions = BLOCK_OPTIONS.map((option) => ({
+    ...option,
+    disabled: commandDisabled(option.command, option.args || []),
+  }));
+  const activeHeading = [1, 2, 3, 4].find((level) => (
+    isActive("heading", { level })
+  ));
+  const activeBlock = activeHeading
+    ? `heading-${activeHeading}`
+    : isActive("blockquote")
+      ? "blockquote"
+      : "paragraph";
+  const disabledAlignments = Object.fromEntries(
+    ALIGNMENT_OPTIONS.map(({ value }) => [
+      value,
+      commandDisabled("setTextAlign", [value]),
+    ]),
+  );
+  const activeAlignment = ALIGNMENT_OPTIONS.find(({ value }) => (
+    isActive({ textAlign: value })
+  ))?.value || "left";
 
-  const closeLinkDialog = () => {
+  const closeLinkDialog = ({ restoreFocus = true } = {}) => {
     setLinkOpen(false);
     setLinkError("");
-    queueMicrotask(() => linkButtonRef.current?.focus());
+    if (restoreFocus) {
+      queueMicrotask(() => linkButtonRef.current?.focus());
+    }
   };
 
   const openLinkDialog = () => {
@@ -191,10 +418,17 @@ const LitBlogsEditorToolbar = ({
   const handleLinkKeyDown = (event) => {
     if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       closeLinkDialog();
     } else if (event.key === "Enter" && event.target === linkInputRef.current) {
       event.preventDefault();
       applyLink();
+    }
+  };
+
+  const handleLinkBlur = (event) => {
+    if (!event.currentTarget.contains(event.relatedTarget)) {
+      closeLinkDialog({ restoreFocus: false });
     }
   };
 
@@ -212,40 +446,34 @@ const LitBlogsEditorToolbar = ({
       aria-disabled={globallyDisabled || undefined}
     >
       <div className="litblogs-toolbar-group" role="group" aria-label="Blocks">
-        <ToolbarButton
-          active={isActive("paragraph")}
-          label="Paragraph"
-          disabled={commandDisabled("setParagraph")}
-          onClick={command("setParagraph")}
-        >
-          Paragraph
-        </ToolbarButton>
-        {[1, 2, 3, 4].map((level) => (
-          <ToolbarButton
-            key={level}
-            active={isActive("heading", { level })}
-            label={`Heading ${level}`}
-            disabled={commandDisabled("toggleHeading", [{ level }])}
-            onClick={command("toggleHeading", [{ level }])}
+        <label className="litblogs-toolbar-field litblogs-toolbar-field--block">
+          <span className="litblogs-visually-hidden">Block style</span>
+          <select
+            aria-label="Block style"
+            title="Block style"
+            value={activeBlock}
+            disabled={globallyDisabled || blockOptions.every((option) => option.disabled)}
+            onChange={(event) => {
+              const option = blockOptions.find(({ value }) => value === event.target.value);
+              if (!option || option.disabled) return;
+              runCommand(editor, disabled, option.command, option.args || []);
+            }}
           >
-            H{level}
-          </ToolbarButton>
-        ))}
-        <ToolbarButton
-          active={isActive("blockquote")}
-          label="Blockquote"
-          disabled={commandDisabled("toggleBlockquote")}
-          onClick={command("toggleBlockquote")}
-        >
-          Quote
-        </ToolbarButton>
+            {blockOptions.map((option) => (
+              <option key={option.value} value={option.value} disabled={option.disabled}>
+                {option.shortLabel}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       <div className="litblogs-toolbar-group" role="group" aria-label="Typography">
-        <label className="litblogs-toolbar-field">
+        <label className="litblogs-toolbar-field litblogs-toolbar-field--font-family">
           <span className="litblogs-visually-hidden">Font family</span>
           <select
             aria-label="Font family"
+            title="Font family"
             value={activeFontFamily}
             disabled={fontFamilyDisabled}
             onChange={(event) => {
@@ -271,10 +499,11 @@ const LitBlogsEditorToolbar = ({
             ))}
           </select>
         </label>
-        <label className="litblogs-toolbar-field">
+        <label className="litblogs-toolbar-field litblogs-toolbar-field--font-size">
           <span className="litblogs-visually-hidden">Font size</span>
           <select
             aria-label="Font size"
+            title="Font size"
             value={activeFontSize}
             disabled={fontSizeDisabled}
             onChange={(event) => {
@@ -330,11 +559,11 @@ const LitBlogsEditorToolbar = ({
 
       <div className="litblogs-toolbar-group" role="group" aria-label="Marks">
         {[
-          ["Bold", "bold", "toggleBold"],
-          ["Italic", "italic", "toggleItalic"],
-          ["Underline", "underline", "toggleUnderline"],
-          ["Strikethrough", "strike", "toggleStrike"],
-        ].map(([label, mark, commandName]) => (
+          ["Bold", "bold", "toggleBold", FaBold],
+          ["Italic", "italic", "toggleItalic", FaItalic],
+          ["Underline", "underline", "toggleUnderline", FaUnderline],
+          ["Strikethrough", "strike", "toggleStrike", FaStrikethrough],
+        ].map(([label, mark, commandName, Icon]) => (
           <ToolbarButton
             key={label}
             active={isActive(mark)}
@@ -342,7 +571,7 @@ const LitBlogsEditorToolbar = ({
             disabled={commandDisabled(commandName)}
             onClick={command(commandName)}
           >
-            {label}
+            <Icon aria-hidden="true" focusable="false" />
           </ToolbarButton>
         ))}
         <ToolbarButton
@@ -350,46 +579,38 @@ const LitBlogsEditorToolbar = ({
           disabled={commandDisabled("unsetAllMarks", [], clearNodesAfter)}
           onClick={command("unsetAllMarks", [], clearNodesAfter)}
         >
-          Clear
+          <FaRemoveFormat aria-hidden="true" focusable="false" />
         </ToolbarButton>
         <button
           ref={linkButtonRef}
           type="button"
-          className="litblogs-toolbar-button"
+          className="litblogs-toolbar-button litblogs-toolbar-button--icon"
           aria-label="Link"
           aria-pressed={isActive("link")}
           aria-haspopup="dialog"
           aria-expanded={linkOpen && !linkDisabled}
           disabled={linkDisabled}
+          title="Link"
           onClick={openLinkDialog}
         >
-          Link
+          <FaLink aria-hidden="true" focusable="false" />
         </button>
       </div>
 
       <div className="litblogs-toolbar-group" role="group" aria-label="Alignment and lists">
-        {[
-          ["Align left", "left"],
-          ["Align center", "center"],
-          ["Align right", "right"],
-        ].map(([label, alignment]) => (
-          <ToolbarButton
-            key={alignment}
-            active={isActive({ textAlign: alignment })}
-            label={label}
-            disabled={commandDisabled("setTextAlign", [alignment])}
-            onClick={command("setTextAlign", [alignment])}
-          >
-            {label}
-          </ToolbarButton>
-        ))}
+        <AlignmentPicker
+          activeAlignment={activeAlignment}
+          disabled={globallyDisabled || Object.values(disabledAlignments).every(Boolean)}
+          disabledOptions={disabledAlignments}
+          onChange={(alignment) => runCommand(editor, disabled, "setTextAlign", [alignment])}
+        />
         <ToolbarButton
           active={isActive("bulletList")}
           label="Bulleted list"
           disabled={commandDisabled("toggleBulletList")}
           onClick={command("toggleBulletList")}
         >
-          Bullets
+          <FaListUl aria-hidden="true" focusable="false" />
         </ToolbarButton>
         <ToolbarButton
           active={isActive("orderedList")}
@@ -397,7 +618,7 @@ const LitBlogsEditorToolbar = ({
           disabled={commandDisabled("toggleOrderedList")}
           onClick={command("toggleOrderedList")}
         >
-          Numbered
+          <FaListOl aria-hidden="true" focusable="false" />
         </ToolbarButton>
       </div>
 
@@ -407,35 +628,35 @@ const LitBlogsEditorToolbar = ({
           disabled={commandDisabled("insertTable", [{ rows: 3, cols: 3, withHeaderRow: true }])}
           onClick={command("insertTable", [{ rows: 3, cols: 3, withHeaderRow: true }])}
         >
-          Table
+          <FaTable aria-hidden="true" focusable="false" />
         </ToolbarButton>
         <ToolbarButton
           label="Delete table"
           disabled={commandDisabled("deleteTable")}
           onClick={command("deleteTable")}
         >
-          Delete table
+          <FaTrashAlt aria-hidden="true" focusable="false" />
         </ToolbarButton>
         <ToolbarButton
           label="Insert image"
           disabled={globallyDisabled || typeof onInsertImage !== "function"}
           onClick={() => invokeMediaCallback(onInsertImage)}
         >
-          Image
+          <FaImage aria-hidden="true" focusable="false" />
         </ToolbarButton>
         <ToolbarButton
           label="Insert video"
           disabled={globallyDisabled || typeof onInsertVideo !== "function"}
           onClick={() => invokeMediaCallback(onInsertVideo)}
         >
-          Video
+          <FaVideo aria-hidden="true" focusable="false" />
         </ToolbarButton>
         <ToolbarButton
           label="Insert PDF attachment"
           disabled={globallyDisabled || typeof onInsertPdf !== "function"}
           onClick={() => invokeMediaCallback(onInsertPdf)}
         >
-          PDF
+          <FaFilePdf aria-hidden="true" focusable="false" />
         </ToolbarButton>
       </div>
 
@@ -445,14 +666,14 @@ const LitBlogsEditorToolbar = ({
           disabled={commandDisabled("undo")}
           onClick={command("undo")}
         >
-          Undo
+          <FaUndo aria-hidden="true" focusable="false" />
         </ToolbarButton>
         <ToolbarButton
           label="Redo"
           disabled={commandDisabled("redo")}
           onClick={command("redo")}
         >
-          Redo
+          <FaRedo aria-hidden="true" focusable="false" />
         </ToolbarButton>
       </div>
 
@@ -465,14 +686,10 @@ const LitBlogsEditorToolbar = ({
           className="litblogs-link-dialog"
           role="dialog"
           aria-label="Edit link"
+          onBlur={handleLinkBlur}
           onKeyDown={handleLinkKeyDown}
         >
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              applyLink();
-            }}
-          >
+          <div className="litblogs-link-dialog__fields">
             <label>
               <span>Link URL</span>
               <input
@@ -502,7 +719,7 @@ const LitBlogsEditorToolbar = ({
               </button>
               <button type="button" onClick={closeLinkDialog}>Cancel</button>
             </div>
-          </form>
+          </div>
         </div>
       )}
     </div>

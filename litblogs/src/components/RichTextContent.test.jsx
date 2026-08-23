@@ -1,7 +1,13 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 
 import RichTextContent from "./RichTextContent";
+
+const mocks = vi.hoisted(() => ({ openPdfViewerModal: vi.fn() }));
+
+vi.mock("./PdfViewerModal", () => ({
+  openPdfViewerModal: (...args) => mocks.openPdfViewerModal(...args),
+}));
 
 const RICH_FIXTURE = `
   <h2 style="color: rgb(29, 78, 216)">Reading response</h2>
@@ -61,5 +67,38 @@ describe("RichTextContent", () => {
     rerender(<RichTextContent html={first} testId="stable" />);
 
     expect(screen.getByTestId("stable").innerHTML).toBe(first);
+  });
+
+  it("opens a sanitized PDF attachment by mouse or keyboard", () => {
+    const pdfUrl = `/api/uploads/objects/aa/${"a".repeat(32)}.pdf`;
+    const openParentPost = vi.fn();
+    render(
+      <div onClick={openParentPost}>
+        <RichTextContent
+          html={`<div class="file-attachment" data-file-url="${pdfUrl}" data-file-name="Reading.pdf" data-file-type="application/pdf"><span class="file-name">Reading.pdf</span></div>`}
+        />
+      </div>,
+    );
+
+    const attachment = screen.getByRole("button", { name: "Open PDF Reading.pdf" });
+    expect(attachment).toHaveAttribute("tabindex", "0");
+    fireEvent.click(attachment);
+    fireEvent.keyDown(attachment, { key: "Enter" });
+    fireEvent.keyDown(attachment, { key: " " });
+
+    expect(mocks.openPdfViewerModal).toHaveBeenCalledTimes(3);
+    expect(openParentPost).not.toHaveBeenCalled();
+    expect(mocks.openPdfViewerModal).toHaveBeenLastCalledWith({
+      fileUrl: pdfUrl,
+      title: "Reading.pdf",
+    });
+  });
+
+  it("uses an explicit dark-surface class instead of inheriting the page theme", () => {
+    const { rerender } = render(<RichTextContent html="<p>Light card</p>" testId="theme" />);
+    expect(screen.getByTestId("theme")).not.toHaveClass("rich-text-content--dark");
+
+    rerender(<RichTextContent html="<p>Dark card</p>" testId="theme" dark />);
+    expect(screen.getByTestId("theme")).toHaveClass("rich-text-content--dark");
   });
 });

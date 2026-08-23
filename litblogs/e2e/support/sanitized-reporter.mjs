@@ -36,14 +36,59 @@ const redact = (value, secrets) => {
   return output;
 };
 
+const safeFailureSummary = (content) => {
+  try {
+    const parsed = JSON.parse(content);
+    const summary = {
+      title: 'browser journey',
+      status: ['failed', 'timedOut', 'interrupted'].includes(parsed.status)
+        ? parsed.status
+        : 'failed',
+      roles: Array.isArray(parsed.roles)
+        ? parsed.roles.filter((role) => ['ADMIN', 'ANONYMOUS', 'STUDENT', 'TEACHER'].includes(role))
+        : [],
+      error_count: Number.isSafeInteger(parsed.error_count) && parsed.error_count >= 0
+        ? parsed.error_count
+        : 0,
+      checkpoints: Array.isArray(parsed.checkpoints)
+        ? parsed.checkpoints.filter(
+            (checkpoint) => typeof checkpoint === 'string'
+              && /^[a-z0-9-]{1,80}$/.test(checkpoint),
+          )
+        : [],
+      error_locations: Array.isArray(parsed.error_locations)
+        ? parsed.error_locations.map((location) => {
+            if (!location || typeof location !== 'object') return null;
+            const file = typeof location.file === 'string'
+              && /^[A-Za-z0-9._/-]{1,240}$/.test(location.file)
+              ? location.file
+              : '';
+            const line = Number.isSafeInteger(location.line) && location.line >= 1
+              ? location.line
+              : null;
+            const column = Number.isSafeInteger(location.column) && location.column >= 1
+              ? location.column
+              : null;
+            return file && line && column ? { file, line, column } : null;
+          })
+        : [],
+    };
+    return JSON.stringify(summary, null, 2);
+  } catch {
+    return '';
+  }
+};
+
 export default class SanitizedReporter {
   constructor(options = {}) {
     this.outputDirectory = path.resolve(
       options.outputDirectory || 'test-results/e2e/sanitized-failures',
     );
+    this.counts = { total: 0, passed: 0, failed: 0, skipped: 0 };
   }
 
   onBegin() {
+    this.counts = { total: 0, passed: 0, failed: 0, skipped: 0 };
     fs.rmSync(this.outputDirectory, { recursive: true, force: true });
     fs.mkdirSync(this.outputDirectory, { recursive: true, mode: 0o700 });
   }
@@ -61,6 +106,15 @@ export default class SanitizedReporter {
   onError() {}
 
   onTestEnd(test, result) {
+    this.counts.total += 1;
+    if (result.status === 'passed') {
+      this.counts.passed += 1;
+    } else if (result.status === 'skipped') {
+      this.counts.skipped += 1;
+    } else {
+      this.counts.failed += 1;
+    }
+
     const secrets = readSecrets();
     for (const error of result.errors || []) {
       error.message = redact(error.message, secrets);
@@ -88,6 +142,7 @@ export default class SanitizedReporter {
         if (attachment.body) {
           content = attachment.body.toString('utf8');
         }
+        content = safeFailureSummary(content);
         if (content) {
           const testIdentity = `${test.id || test.title || 'browser-journey'}:${result.retry || 0}`;
           const digest = crypto.createHash('sha256').update(testIdentity).digest('hex').slice(0, 16);
@@ -118,5 +173,12 @@ export default class SanitizedReporter {
       }
     }
     result.attachments.splice(0, result.attachments.length, ...allowed);
+  }
+
+  onEnd() {
+    const { total, passed, failed, skipped } = this.counts;
+    process.stdout.write(
+      `E2E summary: total=${total} passed=${passed} failed=${failed} skipped=${skipped}\n`,
+    );
   }
 }

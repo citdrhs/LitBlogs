@@ -107,6 +107,53 @@ describe("LitBlogsColorPalette", () => {
     expect(trigger).toHaveFocus();
   });
 
+  it("contains palette Escape so an outer composer stays open", () => {
+    const onOuterKeyDown = vi.fn();
+    render(
+      <div onKeyDown={onOuterKeyDown}>
+        <LitBlogsColorPalette
+          label="Text color"
+          colors={TEXT_COLOR_PALETTE}
+          value="#111827"
+          onChange={() => {}}
+        />
+      </div>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Text color: Ink" }));
+    fireEvent.keyDown(screen.getByRole("button", { name: "Ink #111827" }), {
+      key: "Escape",
+    });
+
+    expect(screen.queryByRole("dialog", { name: "Text color palette" })).not.toBeInTheDocument();
+    expect(onOuterKeyDown).not.toHaveBeenCalled();
+  });
+
+  it("closes without stealing focus when keyboard focus leaves the palette", () => {
+    render(
+      <>
+        <LitBlogsColorPalette
+          label="Text color"
+          colors={TEXT_COLOR_PALETTE}
+          value="#111827"
+          onChange={() => {}}
+        />
+        <button type="button">Next control</button>
+      </>,
+    );
+
+    const trigger = screen.getByRole("button", { name: "Text color: Ink" });
+    fireEvent.click(trigger);
+    const swatch = screen.getByRole("button", { name: "Ink #111827" });
+    const nextControl = screen.getByRole("button", { name: "Next control" });
+
+    fireEvent.blur(swatch, { relatedTarget: nextControl });
+    nextControl.focus();
+
+    expect(screen.queryByRole("dialog", { name: "Text color palette" })).not.toBeInTheDocument();
+    expect(nextControl).toHaveFocus();
+  });
+
   it("does not open or emit changes while disabled", () => {
     const onChange = vi.fn();
 
