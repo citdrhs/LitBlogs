@@ -333,7 +333,9 @@ const VIEWPORT_FIT = Object.freeze({
   hidden: 'hidden',
   invalid: 'invalid-rect',
   leftOverflow: 'left-overflow',
+  multipleMatches: 'multiple-matches',
   noClientRect: 'no-client-rect',
+  notFound: 'not-found',
   notSampled: 'unavailable-or-not-sampled',
   rightOverflow: 'right-overflow',
   zeroHeight: 'zero-height',
@@ -346,14 +348,20 @@ const MOBILE_COMPOSER_MEASUREMENT_CHECKPOINT = Object.freeze({
   [VIEWPORT_FIT.hidden]: 'mobile-edit-composer-measurement-hidden',
   [VIEWPORT_FIT.invalid]: 'mobile-edit-composer-measurement-invalid-rect',
   [VIEWPORT_FIT.leftOverflow]: 'mobile-edit-composer-measurement-left-overflow',
+  [VIEWPORT_FIT.multipleMatches]: 'mobile-edit-composer-measurement-multiple-matches',
   [VIEWPORT_FIT.noClientRect]: 'mobile-edit-composer-measurement-no-client-rect',
+  [VIEWPORT_FIT.notFound]: 'mobile-edit-composer-measurement-not-found',
   [VIEWPORT_FIT.notSampled]: 'mobile-edit-composer-measurement-unavailable-or-not-sampled',
   [VIEWPORT_FIT.rightOverflow]: 'mobile-edit-composer-measurement-right-overflow',
   [VIEWPORT_FIT.zeroHeight]: 'mobile-edit-composer-measurement-zero-height',
   [VIEWPORT_FIT.zeroWidth]: 'mobile-edit-composer-measurement-zero-width',
 });
 
-const measureDomViewportFit = async (locator) => locator.evaluate((element, categories) => {
+const measureDomViewportFit = async (page, selector) => page.evaluate(({ categories, selector }) => {
+  const matches = document.querySelectorAll(selector);
+  if (matches.length === 0) return categories.notFound;
+  if (matches.length > 1) return categories.multipleMatches;
+  const [element] = matches;
   if (!element.isConnected) return categories.detached;
   const style = window.getComputedStyle(element);
   if (
@@ -375,13 +383,13 @@ const measureDomViewportFit = async (locator) => locator.evaluate((element, cate
   if (rect.left < -1) return categories.leftOverflow;
   if (rect.right > window.innerWidth + 1) return categories.rightOverflow;
   return categories.fits;
-}, VIEWPORT_FIT, { timeout: 10_000 }).catch(() => VIEWPORT_FIT.evaluateError);
+}, { categories: VIEWPORT_FIT, selector }).catch(() => VIEWPORT_FIT.evaluateError);
 
-const assertFitsViewport = async (locator, { onFinalMeasurement } = {}) => {
+const assertFitsViewport = async (page, selector, { onFinalMeasurement } = {}) => {
   let lastMeasurement = VIEWPORT_FIT.notSampled;
   try {
     await expect.poll(async () => {
-      lastMeasurement = await measureDomViewportFit(locator);
+      lastMeasurement = await measureDomViewportFit(page, selector);
       return lastMeasurement;
     }, {
       intervals: [50, 100, 250],
@@ -822,10 +830,8 @@ test('the LitBlogs editor preserves one rich post across every author and course
   const editComposer = author.page.getByRole('dialog', { name: 'Edit post' });
   await expect(editComposer).toBeVisible();
   checkpoint('mobile-edit-composer-ready');
-  const editComposerGeometry = author.page.locator(
-    '[role="dialog"][aria-labelledby="post-composer-dialog-title"]',
-  );
-  await assertFitsViewport(editComposerGeometry, {
+  const editComposerSelector = '[role="dialog"][aria-labelledby="post-composer-dialog-title"]';
+  await assertFitsViewport(author.page, editComposerSelector, {
     onFinalMeasurement: (measurement) => checkpoint(
       MOBILE_COMPOSER_MEASUREMENT_CHECKPOINT[measurement],
     ),
@@ -834,7 +840,10 @@ test('the LitBlogs editor preserves one rich post across every author and course
   const editEditorRoot = editComposer.getByTestId('litblogs-editor');
   await expect(editEditorRoot).toBeVisible();
   checkpoint('mobile-edit-editor-root-visible');
-  await assertFitsViewport(editComposerGeometry.getByTestId('litblogs-editor'));
+  await assertFitsViewport(
+    author.page,
+    `${editComposerSelector} [data-testid="litblogs-editor"]`,
+  );
   checkpoint('mobile-edit-editor-fit-ready');
   checkpoint('mobile-edit-layout-ready');
   const reopenedEditor = editComposer.getByRole('textbox', { name: 'Post content' });
@@ -930,7 +939,7 @@ test('the LitBlogs editor preserves one rich post across every author and course
   await expect(pdfModal).toHaveCount(0);
   await peer.page.setViewportSize({ width: 390, height: 844 });
   await expectRichText(desktopPost, media);
-  await assertFitsViewport(desktopPost);
+  await assertFitsViewport(peer.page, '[data-testid="post-view-content"]');
   await takeLocalVisual(peer.page, 'post-view-mobile');
   checkpoint('post-view-ready');
 
