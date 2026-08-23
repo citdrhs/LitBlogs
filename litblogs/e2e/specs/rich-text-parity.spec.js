@@ -822,7 +822,10 @@ test('the LitBlogs editor preserves one rich post across every author and course
   const editComposer = author.page.getByRole('dialog', { name: 'Edit post' });
   await expect(editComposer).toBeVisible();
   checkpoint('mobile-edit-composer-ready');
-  await assertFitsViewport(editComposer, {
+  const editComposerGeometry = author.page.locator(
+    '[role="dialog"][aria-labelledby="post-composer-dialog-title"]',
+  );
+  await assertFitsViewport(editComposerGeometry, {
     onFinalMeasurement: (measurement) => checkpoint(
       MOBILE_COMPOSER_MEASUREMENT_CHECKPOINT[measurement],
     ),
@@ -831,7 +834,7 @@ test('the LitBlogs editor preserves one rich post across every author and course
   const editEditorRoot = editComposer.getByTestId('litblogs-editor');
   await expect(editEditorRoot).toBeVisible();
   checkpoint('mobile-edit-editor-root-visible');
-  await assertFitsViewport(editEditorRoot);
+  await assertFitsViewport(editComposerGeometry.getByTestId('litblogs-editor'));
   checkpoint('mobile-edit-editor-fit-ready');
   checkpoint('mobile-edit-layout-ready');
   const reopenedEditor = editComposer.getByRole('textbox', { name: 'Post content' });
