@@ -42,7 +42,7 @@ The backend sanitizer remains authoritative. Editor output is untrusted input ev
 
 Supported HTML is deliberately limited to the existing server/frontend allowlist:
 
-- Blocks: `p`, `h1`-`h4`, `blockquote`, ordered/unordered lists, list items, tables, rows, headers, cells, and code/preformatted content already allowed by the shared sanitizer.
+- Blocks: `p`, `h1`-`h6`, `blockquote`, ordered/unordered lists, list items, tables, rows, headers, cells, and code/preformatted content already allowed by the shared sanitizer. The toolbar exposes `h1`-`h4`; `h5`/`h6` remain importable and editable so legacy safe posts are not flattened.
 - Marks: `strong`, `em`, `u`, `s`, links, and spans carrying only supported color, background-color, font-size, font-family, text-align, font-weight, font-style, and text-decoration values.
 - Images: authorized local upload URLs, alt text, width/height, supported alignment classes, and responsive dimensions.
 - Video: a canonical `figure.video-container` with a `video` and `source` carrying an authorized local URL and approved MIME type.
@@ -73,6 +73,10 @@ Existing scattered TinyMCE-era content rules and runtime style injection are con
 
 No preview or feed may remove an allowed inline foreground color. The current ClassFeed preview and StudentHub color-stripping transforms are deleted and replaced by the shared sanitized renderer. Contrast tests cover every fixed palette swatch on both light and dark outer themes. Shared rendering must not depend on `!important`, because style normalization intentionally removes CSS priority markers.
 
+One checked-in `rich_text_contract.json` is the cross-language source for the editor palette, font families, and font-size label/value mapping. The fixed text palette is ink `#111827`, slate `#374151`, gray `#6b7280`, red `#b91c1c`, orange `#c2410c`, gold `#a16207`, green `#15803d`, teal `#0f766e`, blue `#1d4ed8`, purple `#6d28d9`, pink `#be185d`, and white `#ffffff`. The highlight palette is none plus amber `#fef3c7`, gold `#fde68a`, red `#fecaca`, orange `#fed7aa`, green `#bbf7d0`, blue `#bfdbfe`, purple `#ddd6fe`, pink `#fbcfe8`, and gray `#e5e7eb`. Swatches use a visible border/checker treatment so white and “none” remain visible.
+
+The allowed font-family menu remains Arial, Courier New, Georgia, Tahoma, Times New Roman, Trebuchet MS, and Verdana, with bounded safe fallbacks. Legacy safe font-family values remain renderable even when they are not offered for new selection.
+
 ## Editor architecture
 
 `LitBlogsEditor.jsx` owns the Tiptap lifecycle and exposes a small controlled interface:
@@ -96,6 +100,8 @@ Tiptap extensions are assembled in one audited module. Only open-source `@tiptap
 - Atomic PDF attachment blocks.
 - Canonical HTML normalization for legacy content.
 
+StarterKit's bundled Link and Underline extensions are disabled before the separately configured open-source Link and Underline extensions are added, preventing duplicate extension names. Custom Node/Extension implementations import from the directly pinned `@tiptap/core` package.
+
 Toolbar, color palettes, link dialog, table menu, upload buttons, and NodeViews are ordinary accessible React components. All buttons have explicit `type="button"`, labels, pressed/expanded state, keyboard operation, and visible focus.
 
 ## Upload behavior
@@ -115,6 +121,8 @@ Serialized image/video/PDF nodes retain the exact semantic URLs and attributes s
 Pasted HTML passes through the existing frontend sanitizer before Tiptap parses it. Script, event, remote media, unsafe protocols, arbitrary classes/IDs, unsupported CSS, and active embeds are discarded. Plain text and safe formatting remain.
 
 Pasted or dropped data images use the authenticated image-upload path rather than serializing base64 data. External media is not fetched by the application. Oversized or unsupported content fails with a generic user-facing message and never reaches persistent browser storage or logs.
+
+This is enforced through explicit Tiptap `transformPastedHTML`, `handlePaste`, and `handleDrop` hooks. HTML is sanitized before ProseMirror parsing; pasted/dropped files and data images go through `uploadEditorAsset`; remote media elements are removed before they can initiate a request; safe plain text continues through the native insertion path.
 
 Existing posts are covered by fixture-based round trips. Importing and reserializing an unchanged legacy post must preserve its visible safe content and every backend-scanned upload reference while removing only editor-vendor artifacts.
 

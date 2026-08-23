@@ -25,6 +25,7 @@ Add assertions that the manifest contains the reviewed open-source Tiptap packag
 
 ```js
 expect(manifest.dependencies).toMatchObject({
+  '@tiptap/core': expect.stringMatching(/^\^3\./),
   '@tiptap/react': expect.stringMatching(/^\^3\./),
   '@tiptap/pm': expect.stringMatching(/^\^3\./),
   '@tiptap/starter-kit': expect.stringMatching(/^\^3\./),
@@ -38,7 +39,7 @@ Run `npm run test:run -- src/thirdPartyPrivacy.test.js` from `litblogs`; expect 
 
 - [ ] **Step 3: Replace dependencies**
 
-Install version `3.30.2` for `@tiptap/react`, `@tiptap/pm`, `@tiptap/starter-kit`, `@tiptap/extension-text-style`, `@tiptap/extension-color`, `@tiptap/extension-highlight`, `@tiptap/extension-font-family`, `@tiptap/extension-text-align`, `@tiptap/extension-underline`, `@tiptap/extension-link`, `@tiptap/extension-image`, `@tiptap/extension-table`, `@tiptap/extension-character-count`, and `@tiptap/extension-placeholder`. Keep TinyMCE temporarily so every intermediate commit still builds; regenerate the lockfile only through npm.
+Install version `3.30.2` for `@tiptap/core`, `@tiptap/react`, `@tiptap/pm`, `@tiptap/starter-kit`, `@tiptap/extension-text-style`, `@tiptap/extension-color`, `@tiptap/extension-highlight`, `@tiptap/extension-font-family`, `@tiptap/extension-text-align`, `@tiptap/extension-underline`, `@tiptap/extension-link`, `@tiptap/extension-image`, `@tiptap/extension-table`, `@tiptap/extension-character-count`, and `@tiptap/extension-placeholder`. Keep TinyMCE temporarily so every intermediate commit still builds; regenerate the lockfile only through npm.
 
 - [ ] **Step 4: Implement repository allow/deny policy**
 
@@ -46,26 +47,30 @@ Allow only the audited new `@tiptap/*` package names and deny Pro/cloud/service 
 
 - [ ] **Step 5: Run GREEN gates and commit**
 
-Run the focused frontend and repository-policy tests, `npm ls --all`, and `npm audit --omit=dev`; expect all to pass with both engines temporarily installed and no Pro/cloud package. Commit `build: add Tiptap OSS editor dependencies`.
+Run the focused frontend and repository-policy tests, `npm ls --all`, `npm audit --omit=dev`, ESLint, and the Vite production build; expect all to pass with both engines temporarily installed and no Pro/cloud package. Commit `build: add Tiptap OSS editor dependencies`.
 
 ### Task 2: Define canonical rich-text HTML and extension behavior
 
 **Files:**
+- Create: `litblogs/rich_text_contract.json`
 - Create: `litblogs/src/editor/richTextSchema.js`
 - Create: `litblogs/src/editor/richTextSchema.test.js`
 - Create: `litblogs/src/editor/FontSize.js`
+- Create: `litblogs/src/editor/ImageNode.js`
 - Create: `litblogs/src/editor/AttachmentNode.js`
 - Create: `litblogs/src/editor/VideoNode.js`
 - Modify: `litblogs/src/utils/richTextSecurity.js`
 - Modify: `litblogs/src/utils/richTextSecurity.test.js`
 - Modify: `litblogs/main.py`
 - Modify: `litblogs/tests/test_content_security.py`
+- Modify: `litblogs/deployment_check.py`
+- Modify: `litblogs/tests/test_deployment_readiness.py`
 
 - [ ] **Step 1: Write failing HTML fixture tests**
 
 Create table-driven fixtures for headings, blockquotes, lists, links, tables, code, foreground/background colors, font family/size, alignment, image dimensions/classes, canonical video figures, canonical PDF attachments, and TinyMCE legacy wrappers. Each fixture must assert safe visible content and backend-scanned URLs survive while `mceNonEditable`, inline handlers, editor controls, unsupported CSS, remote media, and unsafe protocols do not.
 
-Add a cross-boundary regression proving all nine configured point labels normalize to their canonical pixel values and survive frontend sanitization, backend sanitization, storage, and rendering. Add route regressions proving allowed foreground/background colors are retained rather than removed by ClassFeed or StudentHub preview transforms.
+Add a cross-boundary regression proving all nine configured point labels normalize to their canonical pixel values and survive frontend sanitization, backend sanitization, storage, and rendering. Route-specific color stripping belongs to Task 6, where the responsible components are changed.
 
 ```js
 it.each(RICH_TEXT_FIXTURES)('$name round-trips canonical HTML', ({ input, expected }) => {
@@ -77,21 +82,21 @@ it.each(RICH_TEXT_FIXTURES)('$name round-trips canonical HTML', ({ input, expect
 
 - [ ] **Step 2: Run RED schema tests**
 
-Run `npm run test:run -- src/editor/richTextSchema.test.js src/utils/richTextSecurity.test.js`; expect module-not-found and missing-normalization failures.
+Run `npm run test:run -- src/editor/richTextSchema.test.js src/utils/richTextSecurity.test.js`; expect module-not-found and missing-normalization failures. Run `python -m pytest tests/test_content_security.py -q` with the new point-size/contract cases and expect the current backend sanitizer to strip or reject the required canonical values.
 
 - [ ] **Step 3: Implement the audited extension set**
 
-Export `createRichTextExtensions()` with StarterKit, underline, link, text style/color/font family/font size, multicolor highlight, text alignment, table, image, character count, placeholder, and custom atomic attachment/video nodes. Configure only the headings, attributes, styles, protocols, classes, canonical pixel sizes, font families, and MIME values admitted end-to-end.
+Export `createRichTextExtensions()` with StarterKit, underline, link, text style/color/font family/font size, multicolor highlight, text alignment, table, image, character count, placeholder, and custom atomic attachment/video nodes. Configure StarterKit with `link: false` and `underline: false` before adding the separately configured extensions. Preserve imported `h5`/`h6` while exposing only `h1`-`h4` in the toolbar. Configure only attributes, styles, protocols, classes, canonical pixel sizes, font families, and MIME values admitted end-to-end.
 
-Add an exact legacy-normalization map in both sanitizer paths: `8/10/12/14/16/18/24/36/48pt` becomes `10.667/13.333/16/18.667/21.333/24/32/48/64px` before bounded CSS validation. Reject every other point value and have the font-size extension emit only the canonical pixel values while displaying point labels.
+Create a shared JSON contract containing the exact palettes, the seven configured font families, and the legacy point-to-pixel map. Add exact legacy normalization in both sanitizer paths: `8/10/12/14/16/18/24/36/48pt` becomes `10.667/13.333/16/18.667/21.333/24/32/48/64px` before bounded CSS validation. Reject every other point value and have the font-size extension emit only the canonical pixel values while displaying point labels. Add the JSON runtime dependency to release-readiness checks.
 
 - [ ] **Step 4: Implement canonical legacy import/output**
 
-Sanitize before parsing, parse legacy attachment/video/image markup into typed nodes, and render vendor-neutral canonical HTML containing the existing backend-scanned attributes. Ensure editor-only controls are React NodeView UI and never part of `renderHTML()`.
+Sanitize before parsing, parse legacy attachment/video/image markup into typed nodes, and render vendor-neutral canonical HTML containing the existing backend-scanned attributes. Make frontend/backend tag, per-tag attribute, class, style, URL, and MIME expectations semantically identical; remove persisted buttons, inline handlers, editor-only classes, and transient `data-pdf-*` display metadata. Ensure editor-only controls are React NodeView UI and never part of `renderHTML()`.
 
 - [ ] **Step 5: Run GREEN schema/security tests and commit**
 
-Run the focused tests, including a canary containing scripts, event handlers, remote URLs, and unsupported styles. Expect exact canonical output and no canary activation. Commit `feat: define canonical LitBlogs rich-text schema`.
+Run the focused Vitest tests and `python -m pytest tests/test_content_security.py tests/test_upload_asset_security.py -q`, including a canary containing scripts, event handlers, remote URLs, and unsupported styles. Then run ESLint and the production build. Expect exact canonical output, preserved backend upload references, and no canary activation. Commit `feat: define canonical LitBlogs rich-text schema`.
 
 ### Task 3: Build the accessible LitBlogs editor and toolbar
 
@@ -124,7 +129,7 @@ Run `npm run test:run -- src/components/LitBlogsEditor.test.jsx src/components/L
 
 - [ ] **Step 3: Implement editor lifecycle and toolbar**
 
-Use `useEditor` and `EditorContent`. Emit sanitized canonical HTML on document updates, track the last emitted/imported HTML, and call `commands.setContent(value, { emitUpdate: false })` only for genuine external changes. Build accessible native buttons/selects/popovers with explicit labels, pressed/expanded state, roving keyboard behavior where applicable, and visible focus.
+Use `useEditor` and `EditorContent`. Emit sanitized canonical HTML on document updates, track the last emitted/imported HTML, and call `commands.setContent(value, { emitUpdate: false })` only for genuine external changes. Pass a sanitizer through `editorProps.transformPastedHTML` so unsafe/remote HTML is removed before ProseMirror parses or loads it. Build accessible native buttons/selects/popovers with explicit labels, pressed/expanded state, roving keyboard behavior where applicable, and visible focus.
 
 - [ ] **Step 4: Implement shared document and editor-only CSS**
 
@@ -132,7 +137,7 @@ Move document typography/media rules into `.rich-text-content`. Scope toolbar, s
 
 - [ ] **Step 5: Run GREEN component/accessibility tests and commit**
 
-Run the focused tests in desktop and narrow container sizes. Assert no console errors and no iframe exists. Commit `feat: add the native LitBlogs post editor`.
+Run the focused tests in desktop and narrow container sizes, ESLint, and the Vite production build. Assert no console errors and no iframe exists. Commit `feat: add the native LitBlogs post editor`.
 
 ### Task 4: Integrate authenticated editor uploads
 
@@ -144,10 +149,14 @@ Run the focused tests in desktop and narrow container sizes. Assert no console e
 - Create: `litblogs/src/components/EditorAttachmentNodeView.jsx`
 - Create: `litblogs/src/components/EditorMediaNodes.test.jsx`
 - Modify: `litblogs/src/components/LitBlogsEditor.jsx`
+- Modify: `litblogs/src/editor/richTextSchema.js`
+- Modify: `litblogs/src/editor/ImageNode.js`
+- Modify: `litblogs/src/editor/AttachmentNode.js`
+- Modify: `litblogs/src/editor/VideoNode.js`
 
 - [ ] **Step 1: Write failing upload/node tests**
 
-Cover image/video/PDF type and size validation, upload endpoints, progress, canonical URL normalization, generic failure messages, insertion only after success, atomic selection/deletion, image alt/dimensions/alignment, exact video source/type, exact attachment data attributes, base64 paste upload, remote-image rejection, and object URL cleanup.
+Cover image/video/PDF type and size validation, upload endpoints, progress, canonical URL normalization, generic failure messages, insertion only after success, atomic selection/deletion, image alt/dimensions/alignment, exact video source/type, exact attachment data attributes, base64 paste upload, drag/drop upload, safe plain-text paste, remote-image rejection without a network request, and object URL cleanup.
 
 - [ ] **Step 2: Run RED upload tests**
 
@@ -155,15 +164,15 @@ Run `npm run test:run -- src/editor/editorUploads.test.js src/components/EditorM
 
 - [ ] **Step 3: Implement upload functions**
 
-Expose one `uploadEditorAsset({ kind, file, onProgress, signal })` that maps `image`, `video`, and `pdf` to the existing endpoints, uses the existing authenticated Axios/CSRF behavior, bounds client input, accepts only current server-compatible types, and returns a normalized authorized local URL plus safe metadata.
+Expose one `uploadEditorAsset({ kind, file, onProgress, signal })` that maps `image`, `video`, and `pdf` to the existing endpoints, uses the existing authenticated Axios/CSRF behavior, bounds client input, accepts only current server-compatible types, and returns a normalized authorized local URL plus safe metadata. Wire explicit `handlePaste` and `handleDrop` hooks: file/data-image payloads upload through this function; safe plain text uses native insertion; HTML is handled by the pre-parse sanitizer; remote media is rejected before fetching.
 
 - [ ] **Step 4: Implement atomic media NodeViews**
 
-Render editor controls outside canonical content, use transactions for update/remove, preserve selection and undo history, and serialize the exact HTML attributes consumed by `extract_upload_references_from_html`. Never delete an uploaded object directly from the editor.
+Register all three React NodeViews in the image/attachment/video extensions assembled by `richTextSchema.js`. Render editor controls outside canonical content, use transactions for update/remove, preserve selection and undo history, and serialize the exact HTML attributes consumed by `extract_upload_references_from_html`. Never delete an uploaded object directly from the editor.
 
 - [ ] **Step 5: Run GREEN upload/security tests and commit**
 
-Run focused frontend tests plus backend upload-reference/binding tests. Expect canonical references to bind and foreign/remote references to remain rejected. Commit `feat: integrate secure rich-text media uploads`.
+Run focused frontend tests plus backend upload-reference/binding tests, ESLint, and the production build. Expect canonical references to bind and foreign/remote references to remain rejected. Commit `feat: integrate secure rich-text media uploads`.
 
 ### Task 5: Replace the ClassFeed TinyMCE adapter and preserve drafts
 
@@ -178,14 +187,16 @@ Run focused frontend tests plus backend upload-reference/binding tests. Expect c
 - Modify: `litblogs/src/thirdPartyPrivacy.test.js`
 - Modify: `scripts/validate-repository-policy.py`
 - Modify: `litblogs/tests/test_repository_policy.py`
+- Create: `litblogs/e2e/specs/rich-text-parity.spec.js`
+- Create: `litblogs/e2e/support/rich-text.js`
 
 - [ ] **Step 1: Write failing composer integration tests**
 
-Assert the new editor loads new/edit HTML, changes mark the composer dirty, 500 ms memory-only autosave preserves canonical HTML, blank cancel does not erase a saved draft, untouched edit cancel creates no draft, discard/reset/class/user transitions remain isolated, and submit sends the canonical post request with structured media/code arrays unchanged. Add dependency/source/build-policy assertions that now require TinyMCE to be completely absent.
+Assert the new editor loads new/edit HTML, changes mark the composer dirty, 500 ms memory-only autosave preserves canonical HTML, blank cancel does not erase a saved draft, untouched edit cancel creates no draft, discard/reset/class/user transitions remain isolated, and submit sends the canonical post request with structured media/code arrays unchanged. Add dependency/source/build-policy assertions that now require TinyMCE to be completely absent. Before replacing ClassFeed, add the real-browser author journey (open editor, format color/highlight/font/heading/list, publish, inspect author feed, reopen edit) and capture RED against the TinyMCE adapter.
 
 - [ ] **Step 2: Run RED ClassFeed tests**
 
-Run the new integration test with the existing draft lifecycle suite; expect failures while ClassFeed still lazy-loads `SelfHostedEditor` and constructs `tinyMceConfig`.
+Run the new integration test with the existing draft lifecycle suite; expect failures while ClassFeed still lazy-loads `SelfHostedEditor` and constructs `tinyMceConfig`. Run the focused `rich-text parity` Chromium author journey and confirm its behavioral failure on no-iframe/toolbar/round-trip requirements.
 
 - [ ] **Step 3: Replace the adapter**
 
@@ -193,11 +204,11 @@ Lazy-load `LitBlogsEditor`, pass `value`, `onChange`, font-size setting, and sub
 
 - [ ] **Step 4: Remove TinyMCE-era CSS and consolidate render classes**
 
-Delete `.tox`, `.tinymce-content`, `mce*`, and iframe-specific rules only after equivalent shared stylesheet assertions are green. Replace render containers with the common `rich-text-content` class without changing authorization or sanitizer calls.
+Delete `.tox`, `mce*`, and iframe-specific rules only after equivalent shared stylesheet assertions are green. Retain temporary `.tinymce-content`/legacy display compatibility selectors used by render consumers until Task 6 migrates them atomically. Replace the ClassFeed editor container with the common `rich-text-content` class without changing authorization or sanitizer calls.
 
 - [ ] **Step 5: Run GREEN composer/privacy tests and commit**
 
-Run ClassFeed, private-draft, rich-text, post-contract, and durable-storage canary tests. Expect no private HTML in browser durable sinks and no TinyMCE source reference. Commit `refactor: replace the ClassFeed TinyMCE composer`.
+Run ClassFeed, private-draft, rich-text, post-contract, durable-storage canary, and focused author browser tests. Run ESLint and the Vite production build, then scan the fresh `dist` plus source/lockfile for TinyMCE assets, imports, GPL configuration, API keys, and external editor origins. Expect no private HTML in durable sinks and no TinyMCE artifact. Commit `refactor: replace the ClassFeed TinyMCE composer`.
 
 ### Task 6: Unify every published rich-text consumer
 
@@ -211,10 +222,12 @@ Run ClassFeed, private-draft, rich-text, post-contract, and durable-storage cana
 - Create: `litblogs/src/components/RichTextContent.test.jsx`
 - Modify: `litblogs/src/utils/richTextIntegration.test.js`
 - Create: `litblogs/src/utils/richTextVisualContract.test.jsx`
+- Modify: `litblogs/e2e/specs/rich-text-parity.spec.js`
+- Modify: `litblogs/e2e/support/rich-text.js`
 
 - [ ] **Step 1: Write failing consumer matrix tests**
 
-Render a single sanitized fixture through every consumer and assert equivalent semantic nodes/classes/styles for headings, foreground/background colors, fonts/sizes, alignment, lists, tables, links, code, images, video, and attachments. Add explicit regressions for the historical missing-post-format and invisible-color-swatch failures.
+Render a single sanitized fixture through every consumer and assert equivalent semantic nodes/classes/styles for headings, foreground/background colors, fonts/sizes, alignment, lists, tables, links, code, images, video, and attachments. Add explicit regressions for the historical missing-post-format and invisible-color-swatch failures. Extend the browser spec with separate RED journeys for enrolled-student ClassFeed, teacher ClassDetails Blogs, full PostView, StudentHub Post History, and teacher StudentDetails Posts.
 
 The ClassFeed preview and StudentHub tests must fail while their current transforms strip inline `color`; GREEN requires deleting that stripping rather than weakening the fixture.
 
@@ -228,13 +241,13 @@ Keep `sanitizeRichText(..., { mode: 'render' })` as the final boundary inside `R
 
 - [ ] **Step 4: Run GREEN consumer tests and commit**
 
-Run all frontend rich-text, role, class, post, and profile component suites. Commit `fix: unify rich-text rendering across LitBlogs views`.
+Run all frontend rich-text, role, class, post, and profile component suites plus the cross-route browser subset, ESLint, and the production build. Remove the retained `.tinymce-content` compatibility rules only now that every consumer uses `RichTextContent`. Commit `fix: unify rich-text rendering across LitBlogs views`.
 
 ### Task 7: Prove visual and role-specific parity in real Chromium
 
 **Files:**
-- Create: `litblogs/e2e/specs/editor-rendering.spec.js`
-- Create: `litblogs/e2e/support/richTextFixture.js`
+- Modify: `litblogs/e2e/specs/rich-text-parity.spec.js`
+- Modify: `litblogs/e2e/support/rich-text.js`
 - Modify: `litblogs/e2e/support/fixtures.js`
 - Modify: `litblogs/playwright.config.js` only if a synthetic local visual-verification project is required
 - Modify: `.github/workflows/ci.yml`
@@ -244,7 +257,7 @@ Run all frontend rich-text, role, class, post, and profile component suites. Com
 
 - [ ] **Step 1: Write failing browser journeys**
 
-Through the real UI, have a teacher create a post containing every supported format and authorized media type. Before publishing, record semantic DOM and a bounded computed-style map. After publishing, compare that contract in the author feed, enrolled-student feed, standalone post, teacher/admin class-details preview, and permitted profile/history view. Add edit/reopen, selection-state, safe paste, keyboard-only, mobile-width, and unauthorized-view assertions.
+Extend the already-failing/green author and cross-route journeys one behavior at a time. Through the real UI, create a post containing every supported format and authorized media type. Before publishing, record semantic DOM and a bounded computed-style map. After publishing, compare that contract in the editor, author feed, enrolled-student feed, standalone PostView, teacher ClassDetails Blogs preview, StudentHub Post History, and teacher StudentDetails Posts. Add edit/reopen, selection-state, safe paste/drop, keyboard-only, desktop `1440x900`, tablet `768x1024`, mobile `390x844`, dark-mode, unauthorized-view, and media ACL assertions.
 
 ```js
 const editorContract = await captureRichTextContract(page.getByTestId('editor-canvas'));
@@ -254,7 +267,7 @@ await expectRichTextContract(page.getByTestId('class-feed-post-body'), editorCon
 
 - [ ] **Step 2: Run RED Chromium suite**
 
-Run the focused E2E spec against the disposable PostgreSQL 17 harness; expect failures because the editor/test IDs and shared computed-style contract do not exist yet.
+For each newly added media, keyboard/accessibility, dark-mode, and viewport behavior, run the focused E2E test before its implementation/selector/style adjustment and confirm the expected behavioral mismatch. Do not use a missing test ID as the sole RED proof.
 
 - [ ] **Step 3: Complete stable selectors and route fixtures**
 
@@ -266,7 +279,7 @@ Run Chromium at desktop and mobile viewports. Produce local-only synthetic scree
 
 - [ ] **Step 5: Wire protected CI/release coverage and commit**
 
-Add the focused editor journey to existing browser jobs without weakening the PostgreSQL role, migration, secret-redaction, retry, or artifact policies. Run policy/YAML tests. Commit `test: verify editor and published-post visual parity`.
+Add the focused editor journey to existing browser jobs without weakening the PostgreSQL role, migration, secret-redaction, retry, or artifact policies. Run policy/YAML tests, ESLint, and the production build. Commit `test: verify editor and published-post visual parity`.
 
 ### Task 8: Full verification and independent closure
 
@@ -289,6 +302,6 @@ Run all Chromium journeys against the isolated PostgreSQL 17 stack. Reinspect th
 
 Obtain separate spec-compliance, code-quality/security, and frontend visual/accessibility reviews of the frozen exact tree. Convert every Critical/Important finding into a focused failing regression, implement the minimal correction, and repeat review until approved.
 
-- [ ] **Step 5: Commit the exact approved tree**
+- [ ] **Step 5: Freeze the exact approved commit sequence**
 
-After fresh full gates and clean staging review, commit locally with `feat: replace TinyMCE with LitBlogs editor`. Do not push or merge without the user's explicit instruction.
+After fresh full gates and clean staging review, ensure every review fix is committed with its owning task and the worktree is clean. Do not create an empty umbrella commit, squash, push, or merge without the user's explicit instruction.
