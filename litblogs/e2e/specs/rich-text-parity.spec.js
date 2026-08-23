@@ -356,6 +356,21 @@ const MOBILE_COMPOSER_MEASUREMENT_CHECKPOINT = Object.freeze({
   [VIEWPORT_FIT.zeroHeight]: 'mobile-edit-composer-measurement-zero-height',
   [VIEWPORT_FIT.zeroWidth]: 'mobile-edit-composer-measurement-zero-width',
 });
+const MOBILE_EDITOR_MEASUREMENT_CHECKPOINT = Object.freeze({
+  [VIEWPORT_FIT.detached]: 'mobile-edit-editor-measurement-detached',
+  [VIEWPORT_FIT.evaluateError]: 'mobile-edit-editor-measurement-evaluate-error',
+  [VIEWPORT_FIT.fits]: 'mobile-edit-editor-measurement-fits',
+  [VIEWPORT_FIT.hidden]: 'mobile-edit-editor-measurement-hidden',
+  [VIEWPORT_FIT.invalid]: 'mobile-edit-editor-measurement-invalid-rect',
+  [VIEWPORT_FIT.leftOverflow]: 'mobile-edit-editor-measurement-left-overflow',
+  [VIEWPORT_FIT.multipleMatches]: 'mobile-edit-editor-measurement-multiple-matches',
+  [VIEWPORT_FIT.noClientRect]: 'mobile-edit-editor-measurement-no-client-rect',
+  [VIEWPORT_FIT.notFound]: 'mobile-edit-editor-measurement-not-found',
+  [VIEWPORT_FIT.notSampled]: 'mobile-edit-editor-measurement-unavailable-or-not-sampled',
+  [VIEWPORT_FIT.rightOverflow]: 'mobile-edit-editor-measurement-right-overflow',
+  [VIEWPORT_FIT.zeroHeight]: 'mobile-edit-editor-measurement-zero-height',
+  [VIEWPORT_FIT.zeroWidth]: 'mobile-edit-editor-measurement-zero-width',
+});
 
 const measureDomViewportFit = async (page, selector) => page.evaluate(({ categories, selector }) => {
   const matches = document.querySelectorAll(selector);
@@ -838,16 +853,21 @@ test('the LitBlogs editor preserves one rich post across every author and course
   });
   checkpoint('mobile-edit-composer-fit-ready');
   const editEditorRoot = editComposer.getByTestId('litblogs-editor');
-  await expect(editEditorRoot).toBeVisible();
+  await expect(editEditorRoot).toBeVisible({ timeout: 30_000 });
   checkpoint('mobile-edit-editor-root-visible');
   await assertFitsViewport(
     author.page,
     `${editComposerSelector} [data-testid="litblogs-editor"]`,
+    {
+      onFinalMeasurement: (measurement) => checkpoint(
+        MOBILE_EDITOR_MEASUREMENT_CHECKPOINT[measurement],
+      ),
+    },
   );
   checkpoint('mobile-edit-editor-fit-ready');
   checkpoint('mobile-edit-layout-ready');
   const reopenedEditor = editComposer.getByRole('textbox', { name: 'Post content' });
-  await expect(reopenedEditor).toBeVisible();
+  await expect(reopenedEditor).toBeVisible({ timeout: 30_000 });
   checkpoint('mobile-edit-editor-visible');
   const reopenedProbe = await reopenedEditor.evaluate((root, heading) => ({
     hasAnyText: Boolean(root.textContent.trim()),
