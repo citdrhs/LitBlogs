@@ -10,12 +10,16 @@ const sourceRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
-const richTextConsumers = [
-  "ClassFeed.jsx",
+const directSanitizerConsumers = ["ClassFeed.jsx"];
+const sharedRendererConsumers = [
   "PostView.jsx",
   "StudentHub.jsx",
   "components/ClassDetails.jsx",
   "components/StudentDetails.jsx",
+];
+const richTextConsumers = [
+  ...directSanitizerConsumers,
+  ...sharedRendererConsumers,
 ];
 
 const readSource = (relativePath) => readFileSync(
@@ -24,12 +28,40 @@ const readSource = (relativePath) => readFileSync(
 );
 
 describe("rich-text integration policy", () => {
-  it.each(richTextConsumers)("routes %s through the canonical sanitizer", (relativePath) => {
+  it.each(directSanitizerConsumers)("routes %s through the canonical sanitizer", (relativePath) => {
     const source = readSource(relativePath);
 
     expect(source).toContain("richTextSecurity");
     expect(source).toMatch(/sanitizeRichText|createSanitizedRichTextContainer/);
     expect(source).not.toMatch(/ReactHtmlParser/);
+  });
+
+  it.each(sharedRendererConsumers)("routes %s through RichTextContent", (relativePath) => {
+    const source = readSource(relativePath);
+
+    expect(source).toContain("RichTextContent");
+    expect(source).not.toContain("richTextSecurity");
+    expect(source).not.toMatch(/dangerouslySetInnerHTML/);
+    expect(source).not.toMatch(
+      /createSanitizedRichTextContainer|serializeSanitizedRichText|processHTMLWithDOM|stripInlineTextColor|truncateHTML/,
+    );
+  });
+
+  it("uses the full shared renderer for PostView", () => {
+    const source = readSource("PostView.jsx");
+
+    expect(source).toMatch(/<RichTextContent\s+html=\{post\.content \|\| ''\}/);
+    expect(source).not.toMatch(/<RichTextContent[\s\S]*?\scompact(?:\s|=)[\s\S]*?\/>/);
+  });
+
+  it.each([
+    "StudentHub.jsx",
+    "components/ClassDetails.jsx",
+    "components/StudentDetails.jsx",
+  ])("uses the compact shared renderer for %s", (relativePath) => {
+    const source = readSource(relativePath);
+
+    expect(source).toMatch(/<RichTextContent[\s\S]*?\scompact\s+[\s\S]*?\/>/);
   });
 
   it.each(richTextConsumers)("does not reparse DOM text with innerHTML in %s", (relativePath) => {
@@ -55,9 +87,4 @@ describe("rich-text integration policy", () => {
     expect(source).toContain("normalizeRichTextUrl(data.url, 'image')");
   });
 
-  it("reads attachment metadata from the sanitized attachment container", () => {
-    const source = readSource("PostView.jsx");
-
-    expect(source).toContain("attachment.getAttribute('data-file-url')");
-  });
 });

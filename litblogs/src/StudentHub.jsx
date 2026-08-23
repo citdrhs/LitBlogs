@@ -6,36 +6,8 @@ import Loader from './components/Loader';
 import Navbar from './components/Navbar';
 import { toast } from 'react-hot-toast';
 import Footer from './components/Footer';
+import RichTextContent from './components/RichTextContent';
 import { logoutBrowserSession } from './utils/auth';
-import {
-  createSanitizedRichTextContainer,
-  serializeSanitizedRichText,
-} from './utils/richTextSecurity';
-
-const stripInlineTextColor = (html = '') => {
-  if (!html || typeof document === 'undefined') {
-    return html || '';
-  }
-
-  const tempDiv = createSanitizedRichTextContainer(html);
-
-  tempDiv.querySelectorAll('[style]').forEach((element) => {
-    const styleAttr = element.getAttribute('style') || '';
-    const cleanedStyle = styleAttr
-      .replace(/(^|;)\s*color\s*:[^;]+;?/gi, '$1')
-      .replace(/;;+/g, ';')
-      .trim()
-      .replace(/^;|;$/g, '');
-
-    if (cleanedStyle) {
-      element.setAttribute('style', cleanedStyle);
-    } else {
-      element.removeAttribute('style');
-    }
-  });
-
-  return serializeSanitizedRichText(tempDiv);
-};
 
 const StudentHub = () => {
   const navigate = useNavigate();
@@ -307,9 +279,11 @@ const StudentHub = () => {
                       <div className="mb-2">
                         <h2 className="text-xl font-semibold text-gray-900">{post.title}</h2>
                       </div>
-                      <div
-                        className="html-content text-gray-800 line-clamp-3"
-                        dangerouslySetInnerHTML={{ __html: stripInlineTextColor(post.content || '') }}
+                      <RichTextContent
+                        html={post.content || ''}
+                        compact
+                        className="html-content text-gray-800"
+                        ariaLabel={`Preview of ${post.title}`}
                       />
                      
                       {/* Post Stats */}

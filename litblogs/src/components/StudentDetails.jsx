@@ -6,10 +6,7 @@ import Loader from './Loader';
 import { formatRelativeTime } from '../utils/timeUtils';
 import { toast } from 'react-hot-toast';
 import Footer from './Footer';
-import {
-  createSanitizedRichTextContainer,
-  serializeSanitizedRichText,
-} from '../utils/richTextSecurity';
+import RichTextContent from './RichTextContent';
 
 const StudentDetails = ({ darkMode }) => {
   const { classId, studentId } = useParams();
@@ -94,24 +91,6 @@ const StudentDetails = ({ darkMode }) => {
     }
   };
   
-  // Function to truncate HTML content for preview
-  const truncateHTML = (htmlContent, maxLength = 100) => {
-    if (!htmlContent) return '';
-    
-    const tempDiv = createSanitizedRichTextContainer(htmlContent);
-    
-    // Get text content
-    const textContent = tempDiv.textContent || tempDiv.innerText || '';
-    
-    // Truncate text content
-    if (textContent.length <= maxLength) {
-      return serializeSanitizedRichText(tempDiv);
-    }
-
-    tempDiv.replaceChildren(document.createTextNode(`${textContent.substring(0, maxLength)}...`));
-    return serializeSanitizedRichText(tempDiv);
-  };
-
   const openPost = (postId) => {
     navigate(`/class/${classId}/post/${postId}`, {
       state: {
@@ -321,9 +300,11 @@ const StudentDetails = ({ darkMode }) => {
                     <div className="mb-2">
                       <h4 className="text-lg font-semibold dark:text-white">{post.title}</h4>
                     </div>
-                    <div
+                    <RichTextContent
+                      html={post.content || ''}
+                      compact
                       className="text-gray-600 dark:text-gray-300 mb-4"
-                      dangerouslySetInnerHTML={{ __html: truncateHTML(post.content, 200) }}
+                      ariaLabel={`Preview of ${post.title}`}
                     />
                     <div className="flex justify-between items-center">
                       <div className="flex items-center space-x-4 text-gray-500 dark:text-gray-400">

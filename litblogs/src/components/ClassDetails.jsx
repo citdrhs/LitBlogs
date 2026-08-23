@@ -3,10 +3,7 @@ import { motion } from 'framer-motion';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import Loader from './Loader';
-import {
-  createSanitizedRichTextContainer,
-  serializeSanitizedRichText,
-} from '../utils/richTextSecurity';
+import RichTextContent from './RichTextContent';
 
 // Format relative time (e.g., "2 hours ago")
 const formatRelativeTime = (dateString) => {
@@ -172,24 +169,6 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
     fetchClassDetails();
   }, [classData.id]);
   
-  // Function to truncate HTML content for preview
-  const truncateHTML = (htmlContent, maxLength = 100) => {
-    if (!htmlContent) return '';
-    
-    const tempDiv = createSanitizedRichTextContainer(htmlContent);
-    
-    // Get text content
-    const textContent = tempDiv.textContent || tempDiv.innerText || '';
-    
-    // Truncate text content
-    if (textContent.length <= maxLength) {
-      return serializeSanitizedRichText(tempDiv);
-    }
-
-    tempDiv.replaceChildren(document.createTextNode(`${textContent.substring(0, maxLength)}...`));
-    return serializeSanitizedRichText(tempDiv);
-  };
-
   const handleSaveAssignment = async () => {
     try {
       setSavingAssignment(true);
@@ -449,9 +428,11 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
                         <div className="mb-2">
                           <h2 className="text-xl font-semibold text-gray-900">{post.title}</h2>
                         </div>
-                        <div
-                          className="text-gray-600 line-clamp-3"
-                          dangerouslySetInnerHTML={{ __html: truncateHTML(post.content, 150) }}
+                        <RichTextContent
+                          html={post.content || ''}
+                          compact
+                          className="text-gray-600"
+                          ariaLabel={`Preview of ${post.title}`}
                         />
 
                         {/* Post Stats */}
