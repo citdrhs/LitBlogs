@@ -352,9 +352,9 @@ const classifyViewportFit = (bounds, viewport) => {
   return VIEWPORT_FIT.fits;
 };
 
-const measureDomViewportFit = async (locator, page) => {
-  const viewport = page.viewportSize();
-  const bounds = await locator.evaluate((element) => {
+const measureDomViewportFit = async (handle, viewport) => {
+  if (!handle) return VIEWPORT_FIT.missing;
+  const bounds = await handle.evaluate((element) => {
     const rect = element.getBoundingClientRect();
     return {
       height: rect.height,
@@ -362,19 +362,28 @@ const measureDomViewportFit = async (locator, page) => {
       right: rect.right,
       width: rect.width,
     };
-  }, undefined, { timeout: 500 }).catch(() => null);
+  }).catch(() => null);
   return classifyViewportFit(bounds, viewport);
 };
 
 const assertFitsViewport = async (locator, page, { onFinalMeasurement } = {}) => {
+  const viewport = page.viewportSize();
+  const handle = await locator.elementHandle({ timeout: 10_000 }).catch(() => null);
+  if (!handle) {
+    onFinalMeasurement?.(VIEWPORT_FIT.missing);
+    expect(handle).not.toBeNull();
+    return;
+  }
   try {
-    await expect.poll(() => measureDomViewportFit(locator, page), {
+    await expect.poll(() => measureDomViewportFit(handle, viewport), {
       intervals: [50, 100, 250],
       timeout: 5_000,
     }).toBe(VIEWPORT_FIT.fits);
   } catch (error) {
-    onFinalMeasurement?.(await measureDomViewportFit(locator, page));
+    onFinalMeasurement?.(await measureDomViewportFit(handle, viewport));
     throw error;
+  } finally {
+    await handle.dispose();
   }
   onFinalMeasurement?.(VIEWPORT_FIT.fits);
 };
