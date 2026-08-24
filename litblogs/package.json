@@ -31,7 +31,7 @@
     "axios": "^1.15.0",
     "caniuse-lite": "^1.0.30001772",
     "emoji-picker-react": "^4.12.0",
-    "framer-motion": "^12.40.0",
+    "framer-motion": "^13.1.1",
     "pdfjs-dist": "^3.11.174",
     "prismjs": "^1.29.0",
     "react": "^18.2.0",
