@@ -680,18 +680,24 @@ const TINYMCE_CONFIG = {
               const fileUrl = response.data.url;
               const fileSize = formatFileSize(file.size);
               const fileName = file.name;
+              const escapedFileName = fileName
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#39;");
               const fileType = getFileType(file.name);
               
               // Create HTML for the file attachment
               let fileHtml = `
                 <div class="mceNonEditable file-attachment" 
                      data-file-url="${fileUrl}" 
-                     data-file-name="${fileName}" 
+                     data-file-name="${escapedFileName}" 
                      data-file-size="${fileSize}" 
                      data-file-type="${fileType}">
                   <div class="file-icon">${getFileIcon(fileType)}</div>
                   <div class="file-info">
-                    <div class="file-name" style="word-break: break-word; overflow-wrap: break-word;">${fileName}</div>
+                    <div class="file-name" style="word-break: break-word; overflow-wrap: break-word;">${escapedFileName}</div>
                     <div class="file-size">${fileSize}</div>
                   </div>
                   <div class="file-actions">
