@@ -1,8 +1,16 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { cwd } from "node:process";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import TutorialVideoPlayer from "./TutorialVideoPlayer.jsx";
 import { studentTutorialTranscript } from "./tutorialTranscript.js";
+
+const tutorialPlayerStyles = readFileSync(
+  resolve(cwd(), "src/styles/tutorial-video-player.css"),
+  "utf8",
+);
 
 const PLAYER_PROPS = {
   videoSrc: "/tutorial.mp4",
@@ -17,6 +25,13 @@ const renderPlayer = () => render(<TutorialVideoPlayer {...PLAYER_PROPS} />);
 describe("TutorialVideoPlayer controls", () => {
   let playMock;
   let pauseMock;
+  let styleElement;
+
+  beforeAll(() => {
+    styleElement = document.createElement("style");
+    styleElement.textContent = tutorialPlayerStyles;
+    document.head.append(styleElement);
+  });
 
   beforeEach(() => {
     playMock = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
@@ -24,14 +39,25 @@ describe("TutorialVideoPlayer controls", () => {
   });
 
   afterEach(() => {
+    document.documentElement.classList.remove("dark");
     vi.restoreAllMocks();
   });
 
-  it("keeps shortcuts scoped to the focused player and ignores control targets", () => {
+  afterAll(() => {
+    styleElement.remove();
+  });
+
+  it("keeps Space and K scoped to the focused player and ignores editable or control targets", () => {
     renderPlayer();
 
     const player = screen.getByRole("region", { name: /Keyboard shortcuts/ });
     const playButton = screen.getByRole("button", { name: "Play" });
+    const seekControl = screen.getByRole("slider", { name: "Seek video" });
+    const speedControl = screen.getByRole("combobox", { name: "Playback speed" });
+    const textarea = document.createElement("textarea");
+    const contentEditable = document.createElement("div");
+    contentEditable.setAttribute("contenteditable", "true");
+    player.append(textarea, contentEditable);
 
     fireEvent.keyDown(document.body, { key: "k" });
     expect(playMock).not.toHaveBeenCalled();
@@ -41,12 +67,19 @@ describe("TutorialVideoPlayer controls", () => {
     fireEvent.keyDown(player, { key: "k" });
     expect(playMock).toHaveBeenCalledTimes(1);
 
+    fireEvent.keyDown(player, { key: " " });
+    expect(playMock).toHaveBeenCalledTimes(2);
+
     fireEvent.keyDown(playButton, { key: "k" });
-    expect(playMock).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(seekControl, { key: " " });
+    fireEvent.keyDown(speedControl, { key: " " });
+    fireEvent.keyDown(textarea, { key: " " });
+    fireEvent.keyDown(contentEditable, { key: " " });
+    expect(playMock).toHaveBeenCalledTimes(2);
 
     const summary = screen.getByText("Read tutorial transcript");
     expect(fireEvent.keyDown(summary, { key: " " })).toBe(true);
-    expect(playMock).toHaveBeenCalledTimes(1);
+    expect(playMock).toHaveBeenCalledTimes(2);
   });
 
   it("does not claim playback started after play rejects and follows media events", async () => {
@@ -101,12 +134,50 @@ describe("TutorialVideoPlayer controls", () => {
       .not.toBeInTheDocument();
   });
 
-  it("derives fullscreen control state from fullscreenchange events", async () => {
+  it("keeps a computed 16:9 viewport and responds to the page theme", () => {
+    renderPlayer();
+    const player = screen.getByRole("region", { name: /Keyboard shortcuts/ });
+    const viewport = screen.getByLabelText("LitBlog student tutorial").parentElement;
+
+    expect(getComputedStyle(viewport).aspectRatio).toBe("16 / 9");
+    viewport.style.width = "320px";
+    expect(getComputedStyle(viewport).aspectRatio).toBe("16 / 9");
+
+    const lightColor = getComputedStyle(player).color;
+    document.documentElement.classList.add("dark");
+    const darkColor = getComputedStyle(player).color;
+
+    expect(lightColor).toBe("rgb(15, 23, 42)");
+    expect(darkColor).toBe("rgb(226, 232, 240)");
+  });
+
+  it("exposes a strong focus-visible affordance through the parsed style contract", () => {
+    renderPlayer();
+    const player = screen.getByRole("region", { name: /Keyboard shortcuts/ });
+
+    player.focus();
+    const focusRule = Array.from(styleElement.sheet.cssRules).find(
+      (rule) => rule.selectorText?.includes(".tutorial-video-player:focus-visible"),
+    );
+
+    expect(player).toHaveFocus();
+    expect(focusRule).toBeDefined();
+    expect(focusRule.style.outline).toBe("3px solid #fbbf24");
+    expect(focusRule.style.getPropertyValue("outline-offset")).toBe("3px");
+  });
+
+  it("requests and exits fullscreen but changes control state only on fullscreenchange", () => {
     let fullscreenElement = null;
     const originalFullscreenDescriptor = Object.getOwnPropertyDescriptor(document, "fullscreenElement");
+    const originalExitDescriptor = Object.getOwnPropertyDescriptor(document, "exitFullscreen");
+    const exitFullscreen = vi.fn().mockResolvedValue();
     Object.defineProperty(document, "fullscreenElement", {
       configurable: true,
       get: () => fullscreenElement,
+    });
+    Object.defineProperty(document, "exitFullscreen", {
+      configurable: true,
+      value: exitFullscreen,
     });
 
     try {
@@ -126,6 +197,10 @@ describe("TutorialVideoPlayer controls", () => {
       fireEvent(document, new Event("fullscreenchange"));
       expect(screen.getByRole("button", { name: "Exit fullscreen" })).toBeInTheDocument();
 
+      fireEvent.click(screen.getByRole("button", { name: "Exit fullscreen" }));
+      expect(exitFullscreen).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("button", { name: "Exit fullscreen" })).toBeInTheDocument();
+
       fullscreenElement = null;
       fireEvent(document, new Event("fullscreenchange"));
       expect(screen.getByRole("button", { name: "Enter fullscreen" })).toBeInTheDocument();
@@ -134,6 +209,75 @@ describe("TutorialVideoPlayer controls", () => {
         Object.defineProperty(document, "fullscreenElement", originalFullscreenDescriptor);
       } else {
         delete document.fullscreenElement;
+      }
+      if (originalExitDescriptor) {
+        Object.defineProperty(document, "exitFullscreen", originalExitDescriptor);
+      } else {
+        delete document.exitFullscreen;
+      }
+    }
+  });
+
+  it("absorbs rejected and throwing fullscreen API calls without reporting false state", async () => {
+    let fullscreenElement = null;
+    const originalFullscreenDescriptor = Object.getOwnPropertyDescriptor(document, "fullscreenElement");
+    const originalExitDescriptor = Object.getOwnPropertyDescriptor(document, "exitFullscreen");
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => fullscreenElement,
+    });
+
+    try {
+      renderPlayer();
+      const player = screen.getByRole("region", { name: /Keyboard shortcuts/ });
+      const requestFullscreen = vi.fn()
+        .mockRejectedValueOnce(new Error("Fullscreen denied"))
+        .mockImplementationOnce(() => { throw new Error("Fullscreen unavailable"); });
+      const exitFullscreen = vi.fn()
+        .mockRejectedValueOnce(new Error("Exit denied"))
+        .mockImplementationOnce(() => { throw new Error("Exit unavailable"); });
+      Object.defineProperty(player, "requestFullscreen", {
+        configurable: true,
+        value: requestFullscreen,
+      });
+      Object.defineProperty(document, "exitFullscreen", {
+        configurable: true,
+        value: exitFullscreen,
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Enter fullscreen" }));
+      await waitFor(() => expect(requestFullscreen).toHaveBeenCalledTimes(1));
+      expect(screen.getByRole("button", { name: "Enter fullscreen" })).toBeInTheDocument();
+
+      expect(() => fireEvent.click(screen.getByRole("button", { name: "Enter fullscreen" })))
+        .not.toThrow();
+      expect(requestFullscreen).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole("button", { name: "Enter fullscreen" })).toBeInTheDocument();
+
+      fullscreenElement = player;
+      fireEvent(document, new Event("fullscreenchange"));
+      fireEvent.click(screen.getByRole("button", { name: "Exit fullscreen" }));
+      await waitFor(() => expect(exitFullscreen).toHaveBeenCalledTimes(1));
+      expect(screen.getByRole("button", { name: "Exit fullscreen" })).toBeInTheDocument();
+
+      expect(() => fireEvent.click(screen.getByRole("button", { name: "Exit fullscreen" })))
+        .not.toThrow();
+      expect(exitFullscreen).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole("button", { name: "Exit fullscreen" })).toBeInTheDocument();
+
+      fullscreenElement = null;
+      fireEvent(document, new Event("fullscreenchange"));
+      expect(screen.getByRole("button", { name: "Enter fullscreen" })).toBeInTheDocument();
+    } finally {
+      if (originalFullscreenDescriptor) {
+        Object.defineProperty(document, "fullscreenElement", originalFullscreenDescriptor);
+      } else {
+        delete document.fullscreenElement;
+      }
+      if (originalExitDescriptor) {
+        Object.defineProperty(document, "exitFullscreen", originalExitDescriptor);
+      } else {
+        delete document.exitFullscreen;
       }
     }
   });
