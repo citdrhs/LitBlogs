@@ -126,6 +126,14 @@ def _utc_now_naive() -> datetime:
     """Return UTC as a naive datetime for the app's existing database columns."""
     return datetime.now(UTC).replace(tzinfo=None)
 
+
+def _utc_sort_timestamp(value: datetime | None) -> datetime:
+    if value is None:
+        return datetime.min.replace(tzinfo=UTC)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
 try:
     from pywebpush import WebPushException, webpush
 except Exception:
@@ -239,11 +247,77 @@ def _build_unique_filename(filename: str | None, prefix: str | None = None) -> s
     return f"{'_'.join(name_parts)}{suffix}"
 
 def _upload_path(*parts: str) -> Path:
-    return UPLOAD_DIR.joinpath(*parts)
+    upload_root = UPLOAD_DIR.resolve()
+    candidate = upload_root.joinpath(*(str(part) for part in parts)).resolve()
+    try:
+        candidate.relative_to(upload_root)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid upload path",
+        ) from exc
+    return candidate
 
 def _upload_url(*parts: str) -> str:
     normalized_parts = [str(part).replace("\\", "/").strip("/") for part in parts if str(part).strip("/")]
     return f"/uploads/{'/'.join(normalized_parts)}"
+
+
+def _extract_download_upload_path(url: str) -> str:
+    """Extract a supported upload path in linear time."""
+    if "\r" in url or "\n" in url or "\\" in url or "\x00" in url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid file URL",
+        )
+
+    try:
+        parsed_url = urlsplit(url)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid file URL",
+        ) from exc
+
+    is_absolute_url = bool(parsed_url.scheme or parsed_url.netloc)
+    if is_absolute_url and (
+        parsed_url.scheme.lower() not in {"http", "https"}
+        or not parsed_url.netloc
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid file URL",
+        )
+
+    url_path = parsed_url.path
+    upload_marker = "/uploads/"
+    marker_index = url_path.find(upload_marker)
+    if marker_index >= 0:
+        file_path = url_path[marker_index + len(upload_marker):]
+    elif is_absolute_url or url_path.startswith("/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid file URL",
+        )
+    else:
+        file_path = url_path
+
+    path_parts = file_path.split("/")
+    if not path_parts or any(part in {"", ".", ".."} for part in path_parts):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid file URL",
+        )
+
+    try:
+        candidate = _upload_path(*path_parts)
+        relative_path = candidate.relative_to(UPLOAD_DIR.resolve())
+    except (HTTPException, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid file URL",
+        ) from exc
+    return relative_path.as_posix()
 
 def _resolve_upload_bucket(file: UploadFile) -> str:
     content_type = (file.content_type or "").lower()
@@ -3876,22 +3950,7 @@ async def download_file(
 ):
     """Force download a file with the specified filename"""
     try:        
-        # Extract the file path from the URL.
-        # Supports both /uploads/... and /api/uploads/... forms.
-        upload_match = re.search(r"(?:/api)?/uploads/(.+)$", url)
-        if upload_match:
-            file_path = upload_match.group(1)
-        elif url.startswith('/uploads/'):
-            file_path = url[9:]
-        elif url.startswith('/api/uploads/'):
-            file_path = url[13:]
-        elif url.startswith('http'):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid file URL"
-            )
-        else:
-            file_path = url
+        file_path = _extract_download_upload_path(url)
         
         # Construct the full path
         full_path = _upload_path(file_path)
@@ -4060,7 +4119,10 @@ async def get_student_details(
             "timestamp": post_like.created_at,
         })
 
-    activity_timeline.sort(key=lambda item: item.get("timestamp") or datetime.min, reverse=True)
+    activity_timeline.sort(
+        key=lambda item: _utc_sort_timestamp(item.get("timestamp")),
+        reverse=True,
+    )
 
     recent_activity = [
         {

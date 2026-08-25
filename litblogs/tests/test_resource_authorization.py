@@ -979,6 +979,90 @@ def test_web_push_delivery_uses_a_bounded_network_timeout(monkeypatch):
     assert 0 < captured["timeout"] <= 10
 
 
+@pytest.mark.parametrize(
+    ("url", "expected_path"),
+    [
+        ("/uploads/images/7/photo.png", "images/7/photo.png"),
+        ("/api/uploads/files/7/reading.pdf", "files/7/reading.pdf"),
+        (
+            "https://school.example/uploads/videos/7/lesson.mp4?download=1#lesson",
+            "videos/7/lesson.mp4",
+        ),
+        ("files/7/notes.txt", "files/7/notes.txt"),
+    ],
+)
+def test_download_upload_path_extraction_preserves_supported_urls(url, expected_path):
+    assert main._extract_download_upload_path(url) == expected_path
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "/uploads/",
+        "/uploads/../../.env",
+        "/uploads//etc/passwd",
+        "files\\7\\notes.txt",
+    ],
+)
+def test_download_upload_path_extraction_rejects_unsafe_paths(url):
+    with pytest.raises(main.HTTPException) as exc_info:
+        main._extract_download_upload_path(url)
+
+    assert exc_info.value.status_code == 400
+
+
+def test_download_upload_path_extraction_rejects_adversarial_line_breaks():
+    adversarial_url = ("/uploads/a" * 10_000) + "\nX"
+
+    with pytest.raises(main.HTTPException) as exc_info:
+        main._extract_download_upload_path(adversarial_url)
+
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.parametrize("url_shape", ["absolute", "traversal", "upload_url"])
+def test_download_rejects_files_outside_upload_root(
+    client,
+    authorization_scenario,
+    monkeypatch,
+    tmp_path,
+    url_shape,
+):
+    upload_root = tmp_path / "uploads"
+    upload_root.mkdir()
+    outside_file = tmp_path / "outside.txt"
+    outside_file.write_text("known non-upload content", encoding="utf-8")
+    monkeypatch.setattr(main, "UPLOAD_DIR", upload_root)
+
+    unsafe_urls = {
+        "absolute": str(outside_file),
+        "traversal": "../outside.txt",
+        "upload_url": "/uploads/../outside.txt",
+    }
+    response = client.get(
+        "/api/download",
+        params={"url": unsafe_urls[url_shape], "filename": "outside.txt"},
+        headers=authorization_scenario["student_a_headers"],
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Invalid file URL"}
+
+
+def test_utc_sort_timestamp_normalizes_mixed_values_and_preserves_order():
+    missing = None
+    naive_earlier = datetime(2026, 8, 25, 10, 0)
+    aware_later = datetime(2026, 8, 25, 11, 0, tzinfo=UTC)
+
+    ordered = sorted(
+        [missing, naive_earlier, aware_later],
+        key=main._utc_sort_timestamp,
+        reverse=True,
+    )
+
+    assert ordered == [aware_later, naive_earlier, missing]
+
+
 def test_push_subscription_endpoint_cannot_be_taken_over_by_another_user(
     client,
     authorization_scenario,
@@ -1276,7 +1360,11 @@ def test_password_reset_delivery_worker_removes_token_on_failure(
         db.close()
 
 
-def test_student_and_teacher_class_social_journey(client, authorization_scenario):
+def test_student_and_teacher_class_social_journey(
+    client,
+    authorization_scenario,
+    monkeypatch,
+):
     scenario = authorization_scenario
     create_class_response = client.post(
         "/api/classes",
@@ -1342,10 +1430,24 @@ def test_student_and_teacher_class_social_journey(client, authorization_scenario
         f"/api/classes/{class_id}/students",
         headers=scenario["teacher_a_headers"],
     )
-    teacher_student_details = client.get(
-        f"/api/classes/{class_id}/students/{scenario['student_a']}",
-        headers=scenario["teacher_a_headers"],
-    )
+    original_ensure_enrolled_student = main._ensure_enrolled_student
+
+    def ensure_enrolled_student_with_postgres_timestamp(*args, **kwargs):
+        student, enrollment = original_ensure_enrolled_student(*args, **kwargs)
+        if enrollment.enrolled_at.tzinfo is None:
+            enrollment.enrolled_at = enrollment.enrolled_at.replace(tzinfo=UTC)
+        return student, enrollment
+
+    with monkeypatch.context() as postgres_timestamp_shape:
+        postgres_timestamp_shape.setattr(
+            main,
+            "_ensure_enrolled_student",
+            ensure_enrolled_student_with_postgres_timestamp,
+        )
+        teacher_student_details = client.get(
+            f"/api/classes/{class_id}/students/{scenario['student_a']}",
+            headers=scenario["teacher_a_headers"],
+        )
     teacher_student_posts = client.get(
         f"/api/classes/{class_id}/students/{scenario['student_a']}/posts",
         headers=scenario["teacher_a_headers"],
