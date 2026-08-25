@@ -1,8 +1,10 @@
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+from uuid import UUID
 
 from dotenv import dotenv_values
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -21,6 +23,12 @@ _PLACEHOLDER_FRAGMENTS = (
     "test-",
     "test-only",
     "your-secret",
+)
+_GOOGLE_CLIENT_ID_PATTERN = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]*\.apps\.googleusercontent\.com$"
+)
+_EMAIL_DOMAIN_PATTERN = re.compile(
+    r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$"
 )
 
 
@@ -72,9 +80,9 @@ class Settings(BaseSettings):
 
     google_client_id: str | None = None
     microsoft_client_id: str | None = None
-    microsoft_client_secret: SecretStr | None = None
     microsoft_tenant_id: str | None = None
-    microsoft_redirect_uri: str | None = None
+    oauth_http_timeout_seconds: float = Field(default=5.0, ge=0.5, le=10.0)
+    oauth_jwks_cache_seconds: int = Field(default=300, ge=60, le=3_600)
 
     session_cookie_name: str | None = None
     csrf_cookie_name: str | None = None
@@ -123,7 +131,6 @@ class Settings(BaseSettings):
         "google_client_id",
         "microsoft_client_id",
         "microsoft_tenant_id",
-        "microsoft_redirect_uri",
         "session_cookie_name",
         "csrf_cookie_name",
         "email_host",
@@ -158,10 +165,11 @@ class Settings(BaseSettings):
             "JWT_AUDIENCE": self.jwt_audience,
             "FRONTEND_URL": self.frontend_url,
             "CORS_ALLOWED_ORIGINS": self.cors_allowed_origins,
+            "ALLOWED_EMAIL_DOMAINS": self.allowed_email_domains,
             "GOOGLE_CLIENT_ID": self.google_client_id,
             "MICROSOFT_CLIENT_ID": self.microsoft_client_id,
-            "MICROSOFT_CLIENT_SECRET": self.microsoft_client_secret,
             "MICROSOFT_TENANT_ID": self.microsoft_tenant_id,
+            "MICROSOFT_ALLOWED_TENANT_IDS": self.microsoft_allowed_tenant_ids,
             "SESSION_COOKIE_NAME": self.session_cookie_name,
             "CSRF_COOKIE_NAME": self.csrf_cookie_name,
             "TEACHER_ACCESS_CODE": self.teacher_access_code,
@@ -176,7 +184,6 @@ class Settings(BaseSettings):
             "JWT_AUDIENCE": self.jwt_audience,
             "GOOGLE_CLIENT_ID": self.google_client_id,
             "MICROSOFT_CLIENT_ID": self.microsoft_client_id,
-            "MICROSOFT_CLIENT_SECRET": _reveal_secret(self.microsoft_client_secret),
             "MICROSOFT_TENANT_ID": self.microsoft_tenant_id,
             "SESSION_COOKIE_NAME": self.session_cookie_name,
             "CSRF_COOKIE_NAME": self.csrf_cookie_name,
@@ -192,7 +199,6 @@ class Settings(BaseSettings):
         minimum_lengths = {
             "GOOGLE_CLIENT_ID": (self.google_client_id, 8),
             "MICROSOFT_CLIENT_ID": (self.microsoft_client_id, 8),
-            "MICROSOFT_CLIENT_SECRET": (_reveal_secret(self.microsoft_client_secret), 16),
             "MICROSOFT_TENANT_ID": (self.microsoft_tenant_id, 8),
             "TEACHER_ACCESS_CODE": (_reveal_secret(self.teacher_access_code), 16),
             "ADMIN_ACCESS_CODE": (_reveal_secret(self.admin_access_code), 16),
@@ -202,6 +208,21 @@ class Settings(BaseSettings):
         for name, (value, minimum_bytes) in minimum_lengths.items():
             if len(str(value).encode("utf-8")) < minimum_bytes:
                 raise ValueError(f"{name} must contain at least {minimum_bytes} bytes in production")
+
+        if not _GOOGLE_CLIENT_ID_PATTERN.fullmatch(self.google_client_id or ""):
+            raise ValueError("GOOGLE_CLIENT_ID must be a valid Google OAuth client ID in production")
+        if not _is_uuid(self.microsoft_client_id):
+            raise ValueError("MICROSOFT_CLIENT_ID must be a UUID in production")
+        if not _is_uuid(self.microsoft_tenant_id):
+            raise ValueError("MICROSOFT_TENANT_ID must be a fixed tenant UUID in production")
+        if any(not _is_uuid(tenant_id) for tenant_id in self.microsoft_allowed_tenant_ids):
+            raise ValueError("MICROSOFT_ALLOWED_TENANT_IDS must contain only tenant UUIDs in production")
+        if self.microsoft_tenant_id.lower() not in self.microsoft_allowed_tenant_ids:
+            raise ValueError(
+                "MICROSOFT_ALLOWED_TENANT_IDS must include MICROSOFT_TENANT_ID in production"
+            )
+        if any(not _is_email_domain(domain) for domain in self.allowed_email_domains):
+            raise ValueError("ALLOWED_EMAIL_DOMAINS must contain valid DNS domains in production")
 
         if not self.session_cookie_secure:
             raise ValueError("SESSION_COOKIE_SECURE must be true in production")
@@ -215,6 +236,18 @@ class Settings(BaseSettings):
 def _is_https_url(value: str | None) -> bool:
     parsed = urlsplit(value or "")
     return parsed.scheme == "https" and bool(parsed.netloc)
+
+
+def _is_uuid(value: str | None) -> bool:
+    try:
+        UUID(str(value or ""))
+    except (TypeError, ValueError, AttributeError):
+        return False
+    return True
+
+
+def _is_email_domain(value: str) -> bool:
+    return bool(_EMAIL_DOMAIN_PATTERN.fullmatch(value))
 
 
 def _reveal_secret(value: SecretStr | None) -> str:

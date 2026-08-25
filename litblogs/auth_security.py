@@ -70,6 +70,14 @@ def decode_access_token(token: str, *, settings: Settings | None = None) -> dict
 
 
 def provisioning_code_matches(supplied: object, configured: object) -> bool:
+    return _constant_time_text_matches(supplied, configured)
+
+
+def csrf_token_matches(supplied: object, configured: object) -> bool:
+    return _constant_time_text_matches(supplied, configured)
+
+
+def _constant_time_text_matches(supplied: object, configured: object) -> bool:
     if not isinstance(supplied, str) or not isinstance(configured, str):
         return False
     if not supplied.strip() or not configured.strip():

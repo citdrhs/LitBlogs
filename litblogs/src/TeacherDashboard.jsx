@@ -6,6 +6,7 @@ import Navbar from './components/Navbar';
 import ClassDetails from './components/ClassDetails';
 import { toast } from 'react-hot-toast';
 import Footer from './components/Footer';
+import { logoutBrowserSession } from './utils/auth';
 
 const TeacherDashboard = () => {
   const navigate = useNavigate();
@@ -50,31 +51,21 @@ const TeacherDashboard = () => {
   // Combine the useEffects
   useEffect(() => {
     // Load user info
-    const storedUserInfo = localStorage.getItem('user_info');
+    const storedUserInfo = sessionStorage.getItem('user_info');
     if (storedUserInfo) {
       setUserInfo(JSON.parse(storedUserInfo));
-    }
-
-    // Fetch dashboard data
-    const token = localStorage.getItem('token');
-    if (!token) {
-      navigate('/sign-in');
-      return;
     }
 
     const fetchData = async () => {
       try {
         setLoading(true);
-        const config = {
-          headers: { Authorization: `Bearer ${token}` }
-        };
 
         // Fetch teacher dashboard data with detailed class information
         const [response, classesResponse, archivedClassesResponse, analyticsResponse] = await Promise.all([
-          axios.get('/teacher/dashboard', config),
-          axios.get('/classes?status=active', config),
-          axios.get('/classes?status=archived', config),
-          axios.get('/teacher/analytics', config)
+          axios.get('/teacher/dashboard'),
+          axios.get('/classes?status=active'),
+          axios.get('/classes?status=archived'),
+          axios.get('/teacher/analytics')
         ]);
         
         // Update state with teacher data and classes with student counts
@@ -149,10 +140,7 @@ const TeacherDashboard = () => {
 
   const createClass = async () => {
     try {
-      const token = localStorage.getItem('token');
-      const response = await axios.post('/classes', newClass, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const response = await axios.post('/classes', newClass);
       
       setClasses(prev => [...prev, response.data]);
       
@@ -163,19 +151,18 @@ const TeacherDashboard = () => {
     }
   };
 
-  const handleSignOut = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user_info');
-    localStorage.removeItem('class_info');
-    setUserInfo(null);
-    navigate('/');
+  const handleSignOut = async () => {
+    try {
+      await logoutBrowserSession();
+      setUserInfo(null);
+      navigate('/');
+    } catch {
+      window.alert('Unable to sign out. Please try again.');
+    }
   };
 
   const fetchAllStudents = async () => {
     try {
-      const token = localStorage.getItem('token');
-      if (!token) return;
-      
       // Only fetch students when the Students tab is selected
       if (activeTab !== 'Students') return;
       
@@ -184,10 +171,7 @@ const TeacherDashboard = () => {
       
       // For each class, fetch its students
       for (const cls of classes) {
-        const response = await axios.get(
-          `/classes/${cls.id}/students`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
+        const response = await axios.get(`/classes/${cls.id}/students`);
         
         // Add class information to each student
         const studentsWithClass = response.data.map(student => ({
@@ -216,17 +200,11 @@ const TeacherDashboard = () => {
     const fetchClasses = async () => {
       try {
         setLoading(true);
-        const token = localStorage.getItem('token');
-        
         // Fetch active classes
-        const activeResponse = await axios.get('/classes?status=active', {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        const activeResponse = await axios.get('/classes?status=active');
         
         // Fetch archived classes
-        const archivedResponse = await axios.get('/classes?status=archived', {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        const archivedResponse = await axios.get('/classes?status=archived');
         
         setClasses(activeResponse.data);
         setArchivedClasses(archivedResponse.data);
@@ -248,10 +226,7 @@ const TeacherDashboard = () => {
     }
     
     try {
-      const token = localStorage.getItem('token');
-      await axios.put(`/classes/${classId}/archive`, {}, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      await axios.put(`/classes/${classId}/archive`, {});
       
       // Move the class from active to archived
       const classToArchive = classes.find(c => c.id === classId);
@@ -269,10 +244,7 @@ const TeacherDashboard = () => {
 
   const handleRestoreClass = async (classId) => {
     try {
-      const token = localStorage.getItem('token');
-      await axios.put(`/classes/${classId}/restore`, {}, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      await axios.put(`/classes/${classId}/restore`, {});
       
       // Move the class from archived to active
       const classToRestore = archivedClasses.find(c => c.id === classId);
@@ -294,10 +266,7 @@ const TeacherDashboard = () => {
     }
     
     try {
-      const token = localStorage.getItem('token');
-      await axios.delete(`/classes/${classId}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      await axios.delete(`/classes/${classId}`);
       
       // Remove the class from the appropriate list
       if (classesTab === 'active') {

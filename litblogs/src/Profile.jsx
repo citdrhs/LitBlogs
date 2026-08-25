@@ -8,6 +8,7 @@ import Navbar from "./components/Navbar"
 import Loader from "./components/Loader"
 import Footer from "./components/Footer"
 import { mediaPath } from "./utils/urlUtils"
+import { logoutBrowserSession } from "./utils/auth"
 
 // Animated avatar options
 const AVATAR_OPTIONS = [
@@ -132,7 +133,7 @@ const StudentProfile = () => {
       return
     }
 
-    const storedUserInfo = JSON.parse(localStorage.getItem("user_info") || "{}")
+    const storedUserInfo = JSON.parse(sessionStorage.getItem("user_info") || "{}")
     const nextUserInfo = {
       ...storedUserInfo,
       role: profileData.role || storedUserInfo.role,
@@ -148,7 +149,7 @@ const StudentProfile = () => {
       avatar_color: profileData.avatar_color ?? storedUserInfo.avatar_color,
     }
 
-    localStorage.setItem("user_info", JSON.stringify(nextUserInfo))
+    sessionStorage.setItem("user_info", JSON.stringify(nextUserInfo))
   }
 
   const getClassIds = (classInfo) => {
@@ -293,18 +294,7 @@ const StudentProfile = () => {
 
     if (isOwn) {
       try {
-        const token = localStorage.getItem("token")
-        if (!token) {
-          navigate("/sign-in")
-          return
-        }
-
-        const response = await axios.get("/user/profile", {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-        })
+        const response = await axios.get("/user/profile")
 
         const profileData = response.data
         applyProfileData(profileData, true)
@@ -319,13 +309,7 @@ const StudentProfile = () => {
     }
 
     try {
-      const token = localStorage.getItem("token")
-      const response = await axios.get(`/user/profile/${targetUserId}`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-      })
+      const response = await axios.get(`/user/profile/${targetUserId}`)
 
       const profileData = response.data
       applyProfileData(profileData, false)
@@ -340,34 +324,19 @@ const StudentProfile = () => {
   }
 
   const fetchViewerContext = async () => {
-    const token = localStorage.getItem("token")
-    if (!token) {
-      navigate("/sign-in")
-      return { viewer: null, classIds: [] }
-    }
-
-    const profileResponse = await axios.get("/user/profile", {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-    })
+    const profileResponse = await axios.get("/user/profile")
 
     const viewerProfile = profileResponse.data
     setViewerInfo(viewerProfile)
 
     try {
-      const classesResponse = await axios.get("/student/classes", {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+      const classesResponse = await axios.get("/student/classes")
       const classIds = getClassIds(classesResponse.data)
       setViewerClassIds(classIds)
       return { viewer: viewerProfile, classIds }
     } catch {
       try {
-        const classesResponse = await axios.get("/classes", {
-          headers: { Authorization: `Bearer ${token}` },
-        })
+        const classesResponse = await axios.get("/classes")
         const classIds = getClassIds(classesResponse.data)
         setViewerClassIds(classIds)
         return { viewer: viewerProfile, classIds }
@@ -419,16 +388,8 @@ const StudentProfile = () => {
   // Fetch user's posts
   const fetchUserPosts = async ({ isOwn, targetUserId }) => {
     try {
-      const token = localStorage.getItem("token")
-      if (!token) {
-        navigate("/sign-in")
-        return
-      }
-
       const endpoint = isOwn ? "/user/posts" : `/user/${targetUserId}/posts`
-      const response = await axios.get(endpoint, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+      const response = await axios.get(endpoint)
 
       setUserPosts(response.data)
     } catch (error) {
@@ -439,21 +400,11 @@ const StudentProfile = () => {
 
   const fetchSavedPosts = async () => {
     try {
-      const token = localStorage.getItem("token")
-      if (!token) {
-        navigate("/sign-in")
-        return
-      }
-
       try {
-        const response = await axios.get("/user/saved-posts", {
-          headers: { Authorization: `Bearer ${token}` },
-        })
+        const response = await axios.get("/user/saved-posts")
         setSavedPosts(response.data || [])
       } catch {
-        const fallback = await axios.get("/api/user/saved-posts", {
-          headers: { Authorization: `Bearer ${token}` },
-        })
+        const fallback = await axios.get("/api/user/saved-posts")
         setSavedPosts(fallback.data || [])
       }
     } catch (error) {
@@ -474,8 +425,6 @@ const StudentProfile = () => {
 
     try {
       setSaving(true)
-      const token = localStorage.getItem("token")
-
       // Update profile information
       const response = await axios.post(
         "/user/update-profile",
@@ -487,9 +436,6 @@ const StudentProfile = () => {
           avatar_color: avatarColor,
           profile_image: image,
           cover_image: coverImage,
-        },
-        {
-          headers: { Authorization: `Bearer ${token}` },
         },
       )
 
@@ -528,12 +474,10 @@ const StudentProfile = () => {
       const formData = new FormData()
       formData.append("file", file)
 
-      const token = localStorage.getItem("token")
       setUploadProgress(0)
 
       const response = await axios.post("/user/upload-profile-image", formData, {
         headers: {
-          Authorization: `Bearer ${token}`,
           "Content-Type": "multipart/form-data",
         },
         onUploadProgress: (progressEvent) => {
@@ -578,12 +522,10 @@ const StudentProfile = () => {
       const formData = new FormData()
       formData.append("file", file)
 
-      const token = localStorage.getItem("token")
       setUploadProgress(0)
 
       const response = await axios.post("/user/upload-cover-image", formData, {
         headers: {
-          Authorization: `Bearer ${token}`,
           "Content-Type": "multipart/form-data",
         },
         onUploadProgress: (progressEvent) => {
@@ -652,13 +594,15 @@ const StudentProfile = () => {
     }))
   }
 
-  const handleSignOut = () => {
-    localStorage.removeItem("token")
-    localStorage.removeItem("user_info")
-    localStorage.removeItem("class_info")
-    setUserInfo(null)
-    setViewerInfo(null)
-    navigate("/")
+  const handleSignOut = async () => {
+    try {
+      await logoutBrowserSession()
+      setUserInfo(null)
+      setViewerInfo(null)
+      navigate("/")
+    } catch {
+      window.alert("Unable to sign out. Please try again.")
+    }
   }
 
   if (loading) {

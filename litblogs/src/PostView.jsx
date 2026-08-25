@@ -597,7 +597,7 @@ const PostView = () => {
 
   useEffect(() => {
     // Load user info
-    const storedUserInfo = localStorage.getItem('user_info');
+    const storedUserInfo = sessionStorage.getItem('user_info');
     if (storedUserInfo) {
       setUserInfo(JSON.parse(storedUserInfo));
     }
@@ -605,12 +605,8 @@ const PostView = () => {
     const fetchPost = async () => {
       try {
         setLoading(true);
-        const token = localStorage.getItem('token');
-        
         // Fetch the post
-        const response = await axios.get(`/classes/${classId}/posts/${postId}`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        const response = await axios.get(`/classes/${classId}/posts/${postId}`);
         
         // Process the post data
         const postData = response.data;
@@ -674,10 +670,7 @@ const PostView = () => {
       if (!post || !post.id) return;
       
       try {
-        const token = localStorage.getItem('token');
-        const response = await axios.get(`/classes/${classId}/posts/${post.id}/likes`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        const response = await axios.get(`/classes/${classId}/posts/${post.id}/likes`);
         
         setLiked(response.data.user_liked);
         setLikeCount(response.data.like_count);
@@ -696,10 +689,8 @@ const PostView = () => {
 
   const fetchComments = async (skip = 0) => {
     try {
-      const token = localStorage.getItem('token');
       const response = await axios.get(
-        `/classes/${classId}/posts/${postId}/comments?skip=${skip}&limit=5`,
-        { headers: { Authorization: `Bearer ${token}` } }
+        `/classes/${classId}/posts/${postId}/comments?skip=${skip}&limit=5`
       );
       
       if (skip === 0) {
@@ -762,10 +753,7 @@ const PostView = () => {
       }, 1000);
       
       // Call API
-      const token = localStorage.getItem('token');
-      const response = await axios.post(`/classes/${classId}/posts/${post.id}/like`, {}, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const response = await axios.post(`/classes/${classId}/posts/${post.id}/like`, {});
       
       // Update with actual data
       setLiked(response.data.action === 'liked');
@@ -775,10 +763,7 @@ const PostView = () => {
       toast.error('Failed to like post');
       
       // Revert on error
-      const token = localStorage.getItem('token');
-      const response = await axios.get(`/classes/${classId}/posts/${post.id}/likes`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const response = await axios.get(`/classes/${classId}/posts/${post.id}/likes`);
       
       setLiked(response.data.user_liked);
       setLikeCount(response.data.like_count);
@@ -798,11 +783,9 @@ const PostView = () => {
     setCommentSubmitting(true);
     
     try {
-      const token = localStorage.getItem('token');
       const response = await axios.post(
         `/classes/${classId}/posts/${postId}/comments`,
-        { content: newComment },
-        { headers: { Authorization: `Bearer ${token}` } }
+        { content: newComment }
       );
       
       // Add new comment to the list
@@ -832,11 +815,9 @@ const PostView = () => {
     setSaved(!previous);
 
     try {
-      const token = localStorage.getItem('token');
       const response = await axios.post(
         `/classes/${classId}/posts/${post.id}/save`,
-        {},
-        { headers: { Authorization: `Bearer ${token}` } }
+        {}
       );
       setSaved(Boolean(response.data?.is_saved));
     } catch (error) {
@@ -1690,7 +1671,6 @@ const PostView = () => {
                             comment={comment}
                             classId={classId}
                             postId={postId}
-                            token={localStorage.getItem('token')}
                             onReply={handleCommentReply}
                             onLike={handleCommentLike}
                           />

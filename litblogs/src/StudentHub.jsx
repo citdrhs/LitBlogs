@@ -6,6 +6,7 @@ import Loader from './components/Loader';
 import Navbar from './components/Navbar';
 import { toast } from 'react-hot-toast';
 import Footer from './components/Footer';
+import { logoutBrowserSession } from './utils/auth';
 
 const stripInlineTextColor = (html = '') => {
   if (!html || typeof document === 'undefined') {
@@ -50,35 +51,31 @@ const StudentHub = () => {
   const [archivedClasses, setArchivedClasses] = useState([]);
 
   useEffect(() => {
-    const storedUserInfo = localStorage.getItem('user_info');
+    const storedUserInfo = sessionStorage.getItem('user_info');
     if (storedUserInfo) {
       setUserInfo(JSON.parse(storedUserInfo));
     }
   }, []);
 
-  const handleSignOut = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user_info');
-    localStorage.removeItem('class_info');
-    setUserInfo(null);
-    navigate('/');
+  const handleSignOut = async () => {
+    try {
+      await logoutBrowserSession();
+      setUserInfo(null);
+      navigate('/');
+    } catch {
+      window.alert('Unable to sign out. Please try again.');
+    }
   };
 
   useEffect(() => {
     const fetchClasses = async () => {
       try {
         setLoading(true);
-        const token = localStorage.getItem('token');
-        
         // Fetch active classes
-        const activeResponse = await axios.get('/student/classes?status=active', {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        const activeResponse = await axios.get('/student/classes?status=active');
         
         // Fetch archived classes
-        const archivedResponse = await axios.get('/student/classes?status=archived', {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        const archivedResponse = await axios.get('/student/classes?status=archived');
         
         setClasses(activeResponse.data);
         setArchivedClasses(archivedResponse.data);
@@ -96,16 +93,11 @@ const StudentHub = () => {
   const fetchUserPosts = async () => {
     try {
       setPostsLoading(true);
-      const token = localStorage.getItem('token');
       try {
-        const response = await axios.get('/student/posts', {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        const response = await axios.get('/student/posts');
         setPosts(response.data);
       } catch {
-        const fallbackResponse = await axios.get('/api/student/posts', {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        const fallbackResponse = await axios.get('/api/student/posts');
         setPosts(fallbackResponse.data);
       }
     } catch (error) {
@@ -125,16 +117,12 @@ const StudentHub = () => {
     e.preventDefault();
     try {
       setLoading(true);
-      const token = localStorage.getItem('token');
       await axios.post('/student/join-class',
-        { access_code: classCode },
-        { headers: { Authorization: `Bearer ${token}` }}
+        { access_code: classCode }
       );
       
       // Fetch the updated list of classes
-      const activeResponse = await axios.get('/student/classes?status=active', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const activeResponse = await axios.get('/student/classes?status=active');
       
       setClasses(activeResponse.data);
       setShowJoinForm(false);

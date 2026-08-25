@@ -25,29 +25,19 @@ const StudentDetails = ({ darkMode }) => {
     const fetchStudentDetails = async () => {
       try {
         setLoading(true);
-        const token = localStorage.getItem('token');
         
         // Fetch student details
-        const studentResponse = await axios.get(
-          `/classes/${classId}/students/${studentId}`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
+        const studentResponse = await axios.get(`/classes/${classId}/students/${studentId}`);
         setStudent(studentResponse.data);
         setTeacherNotes(studentResponse.data.teacher_notes || '');
         setRecentActivity(studentResponse.data.recent_activity || []);
         
         // Fetch class details
-        const classResponse = await axios.get(
-          `/classes/${classId}/details`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
+        const classResponse = await axios.get(`/classes/${classId}/details`);
         setClassInfo(classResponse.data);
         
         // Fetch student's posts in this class
-        const postsResponse = await axios.get(
-          `/classes/${classId}/students/${studentId}/posts`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
+        const postsResponse = await axios.get(`/classes/${classId}/students/${studentId}/posts`);
         setPosts(postsResponse.data);
         
         // Fallback only when backend does not provide recent_activity.
@@ -86,12 +76,10 @@ const StudentDetails = ({ darkMode }) => {
   const saveTeacherNotes = async () => {
     try {
       setSavingNotes(true);
-      const token = localStorage.getItem('token');
       
       await axios.put(
         `/classes/${classId}/students/${studentId}/notes`,
-        { notes: teacherNotes },
-        { headers: { Authorization: `Bearer ${token}` } }
+        { notes: teacherNotes }
       );
       
       toast.success('Notes saved successfully');

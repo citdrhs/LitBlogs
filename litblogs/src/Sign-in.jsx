@@ -7,10 +7,11 @@ import Loader from './components/Loader';
 import Footer from './components/Footer';
 import { GoogleLogin } from '@react-oauth/google';
 import { useMsal } from "@azure/msal-react";
-import { loginRequest } from "./config/msalConfig";
+import { loginRequest, oauthProviderConfig } from "./config/msalConfig";
 import { FaMicrosoft } from 'react-icons/fa';
 import { resolveAppAsset } from './utils/urlUtils';
 import { applyGlobalUserSettings, saveLocalUserSettings } from './utils/userSettings';
+import { fetchBrowserSession, persistSessionMetadata } from './utils/auth';
 
 const SignIn = () => {
   const [email, setEmail] = useState("");
@@ -59,48 +60,23 @@ const SignIn = () => {
     }
   }, [darkMode]);
 
-  const buildStoredUserInfo = (authPayload = {}, profilePayload = {}) => ({
-    role: authPayload.role ?? profilePayload.role,
-    userId: authPayload.user_id ?? authPayload.id ?? profilePayload.id,
-    username: authPayload.username ?? profilePayload.username,
-    firstName: authPayload.first_name ?? profilePayload.first_name,
-    first_name: authPayload.first_name ?? profilePayload.first_name,
-    lastName: authPayload.last_name ?? profilePayload.last_name,
-    last_name: authPayload.last_name ?? profilePayload.last_name,
-    profile_image: profilePayload.profile_image ?? authPayload.profile_image ?? null,
-    cover_image: profilePayload.cover_image ?? authPayload.cover_image ?? null,
-    avatar_id: profilePayload.avatar_id ?? authPayload.avatar_id ?? null,
-    avatar_color: profilePayload.avatar_color ?? authPayload.avatar_color ?? null,
-  });
-
-  const persistSessionAndNavigate = async (authPayload = {}) => {
-    const token = authPayload?.access_token;
-    if (!token) {
-      throw new Error("Missing access token");
-    }
-
-    localStorage.setItem('token', token);
-
+  const persistSessionAndNavigate = async () => {
+    const session = await fetchBrowserSession();
     let profilePayload = {};
     try {
-      const profileResponse = await axios.get('/user/profile', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const profileResponse = await axios.get('/user/profile');
       profilePayload = profileResponse?.data || {};
-    } catch (profileError) {
-      console.warn('Unable to fetch profile during sign-in bootstrap:', profileError);
+    } catch {
+      console.warn('Unable to fetch profile during sign-in bootstrap');
     }
 
-    const userInfo = buildStoredUserInfo(authPayload, profilePayload);
-    localStorage.setItem('user_info', JSON.stringify(userInfo));
+    persistSessionMetadata({ ...session, ...profilePayload });
 
     // Pull account settings on sign-in so UI preferences apply immediately.
     try {
-      const settingsResponse = await axios.get('/user/settings', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const settingsResponse = await axios.get('/user/settings');
 
-      const normalizedSettings = saveLocalUserSettings(settingsResponse?.data || {}, authPayload.role);
+      const normalizedSettings = saveLocalUserSettings(settingsResponse?.data || {}, session.role);
       applyGlobalUserSettings(normalizedSettings);
 
       localStorage.setItem('darkMode', JSON.stringify(Boolean(normalizedSettings.darkMode)));
@@ -109,24 +85,15 @@ const SignIn = () => {
       } else {
         document.documentElement.classList.remove('dark');
       }
-    } catch (settingsError) {
-      console.warn('Unable to fetch settings during sign-in bootstrap:', settingsError);
+    } catch {
+      console.warn('Unable to fetch settings during sign-in bootstrap');
     }
 
-    if (authPayload.role === 'STUDENT' && authPayload.class_info) {
-      const classInfo = {
-        id: authPayload.class_info.id,
-        name: authPayload.class_info.name,
-        code: authPayload.class_info.access_code
-      };
-      localStorage.setItem('class_info', JSON.stringify(classInfo));
-    }
-
-    if (authPayload.role === 'STUDENT') {
+    if (session.role === 'STUDENT') {
       navigate('/student-hub');
-    } else if (authPayload.role === 'TEACHER') {
+    } else if (session.role === 'TEACHER') {
       navigate('/teacher-dashboard');
-    } else if (authPayload.role === 'ADMIN') {
+    } else if (session.role === 'ADMIN') {
       navigate('/admin-dashboard');
     }
   };
@@ -149,9 +116,9 @@ const SignIn = () => {
         return;
       }
 
-      await persistSessionAndNavigate(response.data);
+      await persistSessionAndNavigate();
     } catch (error) {
-      console.error('Login error:', error);
+      console.error('Login failed');
       
       // Check if the error is related to Google authentication
       if (error.response?.status === 401 && 
@@ -170,20 +137,20 @@ const SignIn = () => {
       setIsLoading(true);
       setErrorMessage("");
       
-      const backendResponse = await axios.post('/auth/google-login', {
-        token: response.credential
+      await axios.post('/auth/google-login', {
+        idToken: response.credential
       });
       
-      await persistSessionAndNavigate(backendResponse.data);
+      await persistSessionAndNavigate();
     } catch (error) {
-      console.error("Google Login Error:", error);
+      console.error("Google login failed");
       
       // Check if the user needs to sign up first
       if (error.response?.status === 404) {
         setErrorMessage("Account not found. Please go to Sign Up and choose your role first.");
         setShowSignUpPrompt(true);
       } else {
-        setErrorMessage(error.response?.data?.detail || "Google login failed");
+        setErrorMessage("Google sign-in failed. Please try again.");
       }
     } finally {
       setIsLoading(false);
@@ -191,8 +158,8 @@ const SignIn = () => {
   };
 
     // Missing implementation of handleGoogleFailure
-  const handleGoogleFailure = (error) => {
-    console.error('Google login error:', error);
+  const handleGoogleFailure = () => {
+    console.error('Google login failed');
     setErrorMessage('Google sign-in failed. Please try again.');
   };
 
@@ -201,24 +168,18 @@ const SignIn = () => {
       setIsLoading(true);
       const response = await instance.loginPopup(loginRequest);
       
-      // Send token to backend
-      const backendResponse = await axios.post('/auth/microsoft-login', {
-        msUserData: {
-          email: response.account.username,
-          firstName: response.account.name?.split(' ')[0] || '',
-          lastName: response.account.name?.split(' ')[1] || '',
-          microsoftId: response.account.localAccountId
-        }
+      await axios.post('/auth/microsoft-login', {
+        idToken: response.idToken,
       });
       
-      await persistSessionAndNavigate(backendResponse.data);
+      await persistSessionAndNavigate();
       
     } catch (error) {
-      console.error('Microsoft login error:', error);
+      console.error('Microsoft login failed');
       if (error.response?.status === 404) {
         setErrorMessage("Account not found. Please sign up first.");
       } else {
-        setErrorMessage(error.response?.data?.detail || error.message || 'Microsoft login failed');
+        setErrorMessage('Microsoft sign-in failed. Please try again.');
       }
     } finally {
       setIsLoading(false);
@@ -378,19 +339,20 @@ return (
         </form>
 
         {/* Divider */}
-        <div className="mt-6 mb-6 flex items-center">
+        {(oauthProviderConfig.google.enabled || oauthProviderConfig.microsoft.enabled) && <div className="mt-6 mb-6 flex items-center">
           <div className="flex-1 border-t border-gray-300 dark:border-gray-600"></div>
           <span className="mx-4 text-sm text-gray-500 dark:text-gray-400">or continue with</span>
           <div className="flex-1 border-t border-gray-300 dark:border-gray-600"></div>
-        </div>
+        </div>}
 
         {/* Social login buttons */}
         <div className="text-center">
-          <GoogleLogin
+          {oauthProviderConfig.google.enabled && <GoogleLogin
             onSuccess={handleGoogleSuccess}
             onError={handleGoogleFailure}
-          />
-          <button
+          />}
+          {oauthProviderConfig.microsoft.enabled && <button
+            type="button"
             onClick={handleMicrosoftLogin}
             className="mt-4 flex items-center gap-2 w-full p-2 text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 rounded-sm transition-all duration-300"
             style={{ height: '40px' }}
@@ -401,7 +363,7 @@ return (
             <div className="flex-[2] text-center pr-20 text-sm">
               <span>Sign in with Microsoft</span>
             </div>
-          </button>
+          </button>}
         </div>
 
         <div className="mt-6 text-center">
