@@ -1,6 +1,6 @@
 # LitBlogs Editor Third-Party Notices
 
-This release bundles the reviewed Tiptap 3.30.2 packages under the MIT License.
+This release bundles the reviewed Tiptap 3.30.3 packages under the MIT License.
 This notice is limited to the third-party packages used by the self-hosted
 LitBlogs rich-text editor.
 

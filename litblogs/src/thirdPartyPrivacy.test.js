@@ -6,21 +6,21 @@ const projectRoot = globalThis.process.cwd();
 const sourceRoot = join(projectRoot, "src");
 
 const REVIEWED_TIPTAP_RUNTIME_DEPENDENCIES = {
-  "@tiptap/core": "^3.30.2",
-  "@tiptap/extension-character-count": "^3.30.2",
-  "@tiptap/extension-color": "^3.30.2",
-  "@tiptap/extension-font-family": "^3.30.2",
-  "@tiptap/extension-highlight": "^3.30.2",
-  "@tiptap/extension-image": "^3.30.2",
-  "@tiptap/extension-link": "^3.30.2",
-  "@tiptap/extension-placeholder": "^3.30.2",
-  "@tiptap/extension-table": "^3.30.2",
-  "@tiptap/extension-text-align": "^3.30.2",
-  "@tiptap/extension-text-style": "^3.30.2",
-  "@tiptap/extension-underline": "^3.30.2",
-  "@tiptap/pm": "^3.30.2",
-  "@tiptap/react": "^3.30.2",
-  "@tiptap/starter-kit": "^3.30.2",
+  "@tiptap/core": "^3.30.3",
+  "@tiptap/extension-character-count": "^3.30.3",
+  "@tiptap/extension-color": "^3.30.3",
+  "@tiptap/extension-font-family": "^3.30.3",
+  "@tiptap/extension-highlight": "^3.30.3",
+  "@tiptap/extension-image": "^3.30.3",
+  "@tiptap/extension-link": "^3.30.3",
+  "@tiptap/extension-placeholder": "^3.30.3",
+  "@tiptap/extension-table": "^3.30.3",
+  "@tiptap/extension-text-align": "^3.30.3",
+  "@tiptap/extension-text-style": "^3.30.3",
+  "@tiptap/extension-underline": "^3.30.3",
+  "@tiptap/pm": "^3.30.3",
+  "@tiptap/react": "^3.30.3",
+  "@tiptap/starter-kit": "^3.30.3",
 };
 
 const readProjectFile = (relativePath) => (

@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND_ROOT = ROOT / "litblogs"
 EXPECTED_PYTHON = (3, 13)
-EXPECTED_PACKAGES = {"pip": "26.1.2", "pip-tools": "7.6.0"}
+EXPECTED_PACKAGES = {"pip": "26.2.1", "pip-tools": "7.6.1"}
 
 
 def _verify_toolchain() -> None:

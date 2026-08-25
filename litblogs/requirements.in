@@ -1,4 +1,4 @@
-alembic==1.19.0
+alembic==1.19.1
 bleach[css]==6.4.0
 # Click requires this only on Windows; pin it explicitly so the Linux-generated lock is portable.
 colorama==0.4.6
@@ -7,7 +7,7 @@ google-auth==2.56.3
 psycopg2-binary==2.9.12
 pydantic[email]==2.13.4
 pydantic-settings==2.15.0
-pwdlib[argon2,bcrypt]==0.3.0
+pwdlib[argon2,bcrypt]==0.3.1
 PyJWT[crypto]==2.13.0
 python-dotenv==1.2.3
 python-multipart==0.0.32

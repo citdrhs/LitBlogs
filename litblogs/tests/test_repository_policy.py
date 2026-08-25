@@ -16,21 +16,21 @@ IDENTITY_MIGRATION_PATH = BACKEND_ROOT / "migrations" / "0003_add_identity_contr
 IDENTITY_RUNBOOK_PATH = BACKEND_ROOT / "migrations" / "README-identity-controls.md"
 
 REVIEWED_TIPTAP_RUNTIME_DEPENDENCIES = {
-    "@tiptap/core": "^3.30.2",
-    "@tiptap/extension-character-count": "^3.30.2",
-    "@tiptap/extension-color": "^3.30.2",
-    "@tiptap/extension-font-family": "^3.30.2",
-    "@tiptap/extension-highlight": "^3.30.2",
-    "@tiptap/extension-image": "^3.30.2",
-    "@tiptap/extension-link": "^3.30.2",
-    "@tiptap/extension-placeholder": "^3.30.2",
-    "@tiptap/extension-table": "^3.30.2",
-    "@tiptap/extension-text-align": "^3.30.2",
-    "@tiptap/extension-text-style": "^3.30.2",
-    "@tiptap/extension-underline": "^3.30.2",
-    "@tiptap/pm": "^3.30.2",
-    "@tiptap/react": "^3.30.2",
-    "@tiptap/starter-kit": "^3.30.2",
+    "@tiptap/core": "^3.30.3",
+    "@tiptap/extension-character-count": "^3.30.3",
+    "@tiptap/extension-color": "^3.30.3",
+    "@tiptap/extension-font-family": "^3.30.3",
+    "@tiptap/extension-highlight": "^3.30.3",
+    "@tiptap/extension-image": "^3.30.3",
+    "@tiptap/extension-link": "^3.30.3",
+    "@tiptap/extension-placeholder": "^3.30.3",
+    "@tiptap/extension-table": "^3.30.3",
+    "@tiptap/extension-text-align": "^3.30.3",
+    "@tiptap/extension-text-style": "^3.30.3",
+    "@tiptap/extension-underline": "^3.30.3",
+    "@tiptap/pm": "^3.30.3",
+    "@tiptap/react": "^3.30.3",
+    "@tiptap/starter-kit": "^3.30.3",
 }
 REVIEWED_PROSEMIRROR_PACKAGES = {
     "prosemirror-changeset",
@@ -134,7 +134,7 @@ def _validate_tiptap_policy(
     package.update(package_updates or {})
     locked_packages = {
         f"node_modules/{package_name}": {
-            "version": "3.30.2",
+            "version": "3.30.3",
             "license": "MIT",
         }
         for package_name in REVIEWED_TIPTAP_RUNTIME_DEPENDENCIES
@@ -516,7 +516,7 @@ def test_tiptap_editor_policy_rejects_audited_node_metadata_substitution(
         locked_core["name"] = "innocent-editor-core"
     elif mutation == "resolved":
         locked_core["resolved"] = (
-            "https://registry.npmjs.org/@tiptap/core/-/core-3.30.2-repacked.tgz"
+            "https://registry.npmjs.org/@tiptap/core/-/core-3.30.3-repacked.tgz"
         )
     elif mutation == "integrity":
         locked_core["integrity"] = "sha512-dGVzdC1wbGFjZWhvbGRlcg=="
@@ -551,7 +551,7 @@ def test_tiptap_editor_policy_accepts_matching_explicit_lock_node_name(
     ("metadata", "expected_failure"),
     (
         ({"version": "3.30.1", "license": "MIT"}, "resolve reviewed Tiptap"),
-        ({"version": "3.30.2", "license": "SEE LICENSE"}, "MIT license"),
+        ({"version": "3.30.3", "license": "SEE LICENSE"}, "MIT license"),
     ),
 )
 def test_tiptap_editor_policy_rejects_unreviewed_lock_metadata(
