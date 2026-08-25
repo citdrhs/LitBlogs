@@ -24,6 +24,12 @@ const controlledPanel = (trigger) => (
   document.getElementById(trigger.getAttribute("aria-controls"))
 );
 
+const openPanel = (question) => {
+  const trigger = screen.getByRole("button", { name: question });
+  fireEvent.click(trigger);
+  return controlledPanel(trigger);
+};
+
 describe("FAQ student guide", () => {
   it("renders exactly seven student topics with concise numbered steps", () => {
     renderFAQ();
@@ -118,34 +124,110 @@ describe("FAQ student guide", () => {
     expect(signInPanel).toHaveAttribute("hidden");
   });
 
-  it("warns that post drafts are tab-only and explains save, resume, and discard", () => {
+  it("explains how to create a student account and links each next step", () => {
     renderFAQ();
 
-    const trigger = screen.getByRole("button", { name: "How do post drafts work?" });
-    fireEvent.click(trigger);
-    const panel = controlledPanel(trigger);
+    const panel = openPanel("How do I create a student account?");
+
+    expect(within(panel).getByRole("link", { name: "Create a student account" }))
+      .toHaveAttribute("href", "/sign-up");
+    expect(panel).toHaveTextContent(/Choose Student/);
+    expect(panel).toHaveTextContent(/Google or Microsoft account/);
+    expect(panel).toHaveTextContent(/school enables email registration/);
+    expect(within(panel).getByRole("link", { name: "sign in" }))
+      .toHaveAttribute("href", "/sign-in");
+  });
+
+  it("explains sign-in methods and the route to Student Hub", () => {
+    renderFAQ();
+
+    const panel = openPanel("How do I sign in?");
+
+    expect(within(panel).getByRole("link", { name: "LitBlog sign-in page" }))
+      .toHaveAttribute("href", "/sign-in");
+    expect(panel).toHaveTextContent(/same Google, Microsoft, or email-and-password method/);
+    expect(within(panel).getByRole("link", { name: "Student Hub" }))
+      .toHaveAttribute("href", "/student-hub");
+  });
+
+  it("explains the complete join-class flow inside its panel", () => {
+    renderFAQ();
+
+    const panel = openPanel("How can I join my teacher's class?");
+
+    expect(panel).toHaveTextContent(/After signing in/);
+    expect(within(panel).getByRole("link", { name: "Student Hub" }))
+      .toHaveAttribute("href", "/student-hub");
+    expect(panel).toHaveTextContent(/Select Join Class to open the Join a Class dialog/);
+    expect(panel).toHaveTextContent(/class code exactly as your teacher provided it/);
+    expect(panel).toHaveTextContent(/new class card to open its class feed/);
+  });
+
+  it("explains how to create, format, and publish from a class feed", () => {
+    renderFAQ();
+
+    const panel = openPanel("How do I create, format, and publish a post?");
+
+    expect(within(panel).getByRole("link", { name: "Student Hub" }))
+      .toHaveAttribute("href", "/student-hub");
+    expect(panel).toHaveTextContent(/choose the class where the post belongs/);
+    expect(panel).toHaveTextContent(/Select Create New Post/);
+    expect(panel).toHaveTextContent(/add a clear title, and write your post/);
+    expect(panel).toHaveTextContent(/rich-text toolbar for headings, bold or italic text, lists, alignment, links/);
+    expect(panel).toHaveTextContent(/select Publish/);
+    expect(within(panel).getByRole("link", { name: "Help guide" }))
+      .toHaveAttribute("href", "/help");
+  });
+
+  it("warns that post drafts are tab-only and distinguishes discard from immediate delete", () => {
+    renderFAQ();
+
+    const panel = openPanel("How do post drafts work?");
 
     expect(panel).toHaveTextContent(/Save Draft/);
     expect(panel).toHaveTextContent(/Resume/);
-    expect(panel).toHaveTextContent(/Discard Draft/);
+    expect(panel).toHaveTextContent(
+      "Select Discard Draft in the composer and confirm when you no longer need the draft.",
+    );
+    expect(panel).toHaveTextContent(
+      "From Your Drafts, select Delete to remove a saved draft immediately.",
+    );
+    expect(panel).not.toHaveTextContent(/Delete beside a saved draft, and confirm/);
     expect(panel).toHaveTextContent(/Post drafts are tab-only/i);
     expect(panel).toHaveTextContent(/refreshing the page/i);
     expect(panel).toHaveTextContent(/closing the tab/i);
     expect(panel).toHaveTextContent(/signing out clears them/i);
   });
 
-  it("states the current upload formats and size limits", () => {
+  it("explains upload and removal controls with current formats and limits", () => {
     renderFAQ();
 
-    const trigger = screen.getByRole("button", {
-      name: "How do I add or remove images, videos, and PDFs?",
-    });
-    fireEvent.click(trigger);
-    const panel = controlledPanel(trigger);
+    const panel = openPanel("How do I add or remove images, videos, and PDFs?");
 
+    expect(panel).toHaveTextContent(/place the cursor where the media belongs/);
+    expect(panel).toHaveTextContent(/image, video, or PDF control in the rich-text toolbar/);
     expect(panel).toHaveTextContent(/Images.*JPG\/JPEG, PNG, GIF, WebP, or BMP.*10 MB/i);
     expect(panel).toHaveTextContent(/PDFs.*PDF.*25 MB/i);
     expect(panel).toHaveTextContent(/Videos.*MP4, M4V, WebM, MKV, OGG, or AVI.*100 MB/i);
+    expect(panel).toHaveTextContent(/select it in the editor/);
+    expect(panel).toHaveTextContent(/Remove image, Remove video, or Remove PDF/);
+  });
+
+  it("explains the complete forgotten-password reset flow and routes", () => {
+    renderFAQ();
+
+    const panel = openPanel("I forgot my password. How do I reset it?");
+    const signInLinks = within(panel).getAllByRole("link", { name: "Sign In" });
+
+    expect(signInLinks).toHaveLength(2);
+    signInLinks.forEach((link) => expect(link).toHaveAttribute("href", "/sign-in"));
+    expect(panel).toHaveTextContent(/select Forgot Password/);
+    expect(within(panel).getByRole("link", { name: "password reset page" }))
+      .toHaveAttribute("href", "/forgot-password");
+    expect(panel).toHaveTextContent(/select Send Reset Instructions/);
+    expect(panel).toHaveTextContent(/Open the reset link sent to your email/);
+    expect(panel).toHaveTextContent(/choose a new password, confirm it, and select Reset Password/);
+    expect(panel).toHaveTextContent(/Google or Microsoft/);
   });
 
   it("uses accurate app routes and exposes four honest future screenshot slots", () => {

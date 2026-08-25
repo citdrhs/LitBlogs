@@ -158,7 +158,10 @@ const FAQ_ITEMS = Object.freeze([
         text: "Close the composer, find Your Drafts on the class feed, and select Resume to continue writing.",
       },
       {
-        text: "Select Discard Draft in the composer, or Delete beside a saved draft, and confirm when you no longer need it.",
+        text: "Select Discard Draft in the composer and confirm when you no longer need the draft.",
+      },
+      {
+        text: "From Your Drafts, select Delete to remove a saved draft immediately.",
       },
     ],
     note: {
