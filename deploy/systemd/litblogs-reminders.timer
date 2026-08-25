@@ -1,0 +1,12 @@
+[Unit]
+Description=Run LitBlogs assignment reminders hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=5m
+AccuracySec=1m
+Unit=litblogs-reminders.service
+
+[Install]
+WantedBy=timers.target

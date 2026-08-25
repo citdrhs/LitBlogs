@@ -1,63 +1,189 @@
 # main.py
 # To run locally run:
 # uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
+import hashlib
 import json
+import logging
 import os
-import random
 import re
 import secrets
-import shutil
-import smtplib
+import stat
 import string
 import threading
+import time
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from html import escape
+from http.cookies import CookieError, SimpleCookie
+from ipaddress import ip_address
 from pathlib import Path
-from typing import List
+from typing import List, Literal
+from urllib.parse import urlsplit
 
-import bleach
 import uvicorn
-from bleach.css_sanitizer import CSSSanitizer
-from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import OAuth2PasswordBearer
-from fastapi.staticfiles import StaticFiles
 from google.oauth2 import id_token
 from jwt.exceptions import InvalidTokenError
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
-from sqlalchemy import text, update
-from sqlalchemy.exc import IntegrityError
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from sqlalchemy import or_, text, update
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import MutableHeaders
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 import models
+import password_reset_delivery
 import schemas
+from access_control import (
+    can_access_class as _can_access_class,
+)
+from access_control import (
+    can_moderate_post as _can_moderate_post,
+)
+from access_control import (
+    can_view_post_analysis as _can_view_post_analysis,
+)
+from access_control import (
+    get_teacher_record as _get_teacher_record,
+)
+from access_control import (
+    require_active_class as _ensure_class_is_active,
+)
+from access_control import (
+    require_active_class_access as _ensure_active_class_access,
+)
+from access_control import (
+    require_active_class_owner as _ensure_active_class_owner,
+)
+from access_control import (
+    require_admin as _require_admin,
+)
+from access_control import (
+    require_assignment_for_class as _ensure_assignment_for_class,
+)
+from access_control import (
+    require_class_access as _ensure_class_access,
+)
+from access_control import (
+    require_class_owner as _ensure_class_owner,
+)
+from access_control import (
+    require_comment_access as _ensure_comment_access,
+)
+from access_control import (
+    require_enrolled_student as _ensure_enrolled_student,
+)
+from access_control import (
+    require_post_access as _ensure_post_access,
+)
+from access_control import (
+    require_profile_access as _ensure_profile_access,
+)
+from access_control import (
+    require_submission_access as _ensure_submission_access,
+)
+from access_control import (
+    teacher_owns_class as _teacher_owns_class,
+)
+from access_control import (
+    user_class_ids as _get_user_class_ids,
+)
 from auth_security import (
     csrf_token_matches,
     decode_access_token,
     hash_password,
     issue_access_token,
-    provisioning_code_matches,
     verify_and_update_password,
+    verify_password,
 )
 from config import get_settings
-from database import SessionLocal, get_db, initialize_database, reset_database
+from database import SessionLocal, check_database_readiness, get_db
+from identity_controls import (
+    SessionIssuanceDenied,
+    consume_teacher_invitation,
+    find_active_browser_session,
+    invalidate_password_reset_requests,
+    issue_browser_session,
+    normalize_email,
+    record_operator_audit_event,
+    revoke_all_sessions,
+    revoke_session,
+)
 from oauth_security import verify_google_id_token, verify_microsoft_id_token
+from observability import RequestObservabilityMiddleware
+from rich_text_security import sanitize_rich_text_html
+from upload_assets import (
+    add_active_profile_asset,
+    add_pending_asset,
+    bind_post_assets,
+    canonical_object_key,
+    configure_upload_transaction,
+    enforce_quota,
+    enforce_rate_limit,
+    object_matches_registration,
+    open_verified_registered_object,
+    post_asset_keys,
+    queue_assets,
+    queue_blog_assets,
+    queue_owner_assets,
+    validate_structured_upload_references,
+)
+from upload_assets import (
+    lock_blog as _lock_upload_blog,
+)
+from upload_assets import (
+    lock_owner as _lock_upload_owner,
+)
+from upload_assets import (
+    reconcile as _reconcile_upload_assets,
+)
+from upload_scanner import (
+    ClamdUploadScanner,
+    NoopUploadScanner,
+    UploadRejected,
+    UploadScannerUnavailable,
+)
 
 settings = get_settings()
+security_logger = logging.getLogger("litblogs.security")
+readiness_logger = logging.getLogger("litblogs.readiness")
+_DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(32))
+# Preserve the existing test/integration patch point while sharing the standalone
+# delivery module's SMTP client.
+smtplib = password_reset_delivery.smtplib
+
+
+def _utc_now_naive() -> datetime:
+    """Return UTC as a naive datetime for the app's existing database columns."""
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _utc_now_aware() -> datetime:
+    """Return aware UTC for TIMESTAMPTZ-backed upload lifecycle columns."""
+    return datetime.now(UTC)
+
+
+def _utc_sort_timestamp(value: datetime | None) -> datetime:
+    if value is None:
+        return datetime.min.replace(tzinfo=UTC)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
 
 try:
     from pywebpush import WebPushException, webpush
 except Exception:
     webpush = None
     WebPushException = Exception
-
-def _should_reset_database_on_startup() -> bool:
-    return settings.reset_database_on_startup
 
 def _secret_value(value) -> str | None:
     return value.get_secret_value() if value is not None else None
@@ -67,28 +193,34 @@ CORS_ALLOWED_ORIGINS = list(settings.cors_allowed_origins)
 VAPID_PUBLIC_KEY = settings.vapid_public_key
 VAPID_PRIVATE_KEY = settings.vapid_private_key.get_secret_value() if settings.vapid_private_key else ""
 VAPID_SUBJECT = settings.vapid_subject
-WEB_PUSH_ENABLED = bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY and webpush)
+WEB_PUSH_ENABLED = bool(
+    settings.push_notifications_enabled
+    and VAPID_PUBLIC_KEY
+    and VAPID_PRIVATE_KEY
+    and webpush
+)
 PUSH_REMINDER_INTERVAL_SECONDS = settings.push_reminder_interval_seconds
-
-_push_scheduler_stop_event = threading.Event()
-_push_scheduler_thread: threading.Thread | None = None
+PUSH_ALLOWED_ENDPOINT_HOSTS = settings.push_allowed_endpoint_hosts
+PUSH_DELIVERY_TIMEOUT_SECONDS = settings.push_delivery_timeout_seconds
+PASSWORD_RESET_WORKER_ENABLED = settings.password_reset_worker_enabled
+PASSWORD_RESET_WORKER_INTERVAL_SECONDS = settings.password_reset_worker_interval_seconds
+PASSWORD_RESET_CLAIM_TIMEOUT_SECONDS = settings.password_reset_claim_timeout_seconds
 
 if "*" in CORS_ALLOWED_ORIGINS:
     raise RuntimeError("CORS_ALLOWED_ORIGINS must not contain a wildcard when credentials are enabled")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if _should_reset_database_on_startup():
-        reset_database()
-        print("RESET_DATABASE_ON_STARTUP is enabled. Database was reset on startup.")
-    else:
-        initialize_database()
-
-    _start_push_scheduler()
+    if settings.upload_scanner_required:
+        await run_in_threadpool(upload_scanner.preflight)
     yield
-    _stop_push_scheduler()
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    lifespan=lifespan,
+    docs_url="/api/docs" if settings.api_docs_enabled else None,
+    redoc_url="/api/redoc" if settings.api_docs_enabled else None,
+    openapi_url="/api/openapi.json" if settings.api_docs_enabled else None,
+)
 
 OAUTH_AUTH_PATHS = frozenset(
     {
@@ -98,15 +230,35 @@ OAUTH_AUTH_PATHS = frozenset(
         "/api/auth/microsoft-signup",
     }
 )
+SENSITIVE_CREDENTIAL_AUTH_PATHS = frozenset(
+    {
+        "/api/auth/register",
+        "/api/auth/login",
+        "/api/auth/change-password",
+        "/api/auth/forgot-password",
+        "/api/auth/reset-password",
+    }
+)
 GOOGLE_IDENTITY_ISSUER = "https://accounts.google.com"
 
 
 @app.exception_handler(RequestValidationError)
-async def safe_oauth_request_validation_error(request: Request, exc: RequestValidationError):
+async def safe_auth_request_validation_error(request: Request, exc: RequestValidationError):
+    if _is_private_assignment_mutation(request):
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={"detail": "Invalid assignment request"},
+            headers=ASSIGNMENT_PRIVATE_CACHE_HEADERS,
+        )
     if request.url.path in OAUTH_AUTH_PATHS:
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={"detail": "External authentication failed"},
+        )
+    if request.url.path in SENSITIVE_CREDENTIAL_AUTH_PATHS:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={"detail": "Invalid authentication request"},
         )
     return await request_validation_exception_handler(request, exc)
 
@@ -115,12 +267,313 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Accept", "Authorization", "Content-Type", "X-CSRF-Token"],
 )
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=list(settings.allowed_hosts)
+    or ["testserver", "localhost", "127.0.0.1", "[::1]"],
+)
+app.add_middleware(RequestObservabilityMiddleware)
 
 BASE_DIR = Path(__file__).resolve().parent
-UPLOAD_DIR = BASE_DIR / "uploads"
+UPLOAD_DIR = (
+    settings.upload_root.resolve()
+    if settings.upload_root is not None
+    else BASE_DIR / "uploads"
+)
+if settings.app_env == "production" and UPLOAD_DIR.is_relative_to(BASE_DIR):
+    raise RuntimeError("UPLOAD_ROOT must be outside the application source tree")
+
+
+def _build_upload_scanner(configured_settings):
+    if configured_settings.upload_scanner_required and not configured_settings.upload_scanner_host:
+        raise RuntimeError("Required upload scanner is unavailable")
+    if configured_settings.upload_scanner_host:
+        return ClamdUploadScanner(
+            configured_settings.upload_scanner_host,
+            configured_settings.upload_scanner_port,
+            configured_settings.upload_scanner_timeout_seconds,
+        )
+    return NoopUploadScanner()
+
+
+upload_scanner = _build_upload_scanner(settings)
+UPLOAD_CHUNK_SIZE = 1024 * 1024
+UPLOAD_HEADER_BYTES = 512
+MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_VIDEO_UPLOAD_BYTES = 100 * 1024 * 1024
+MAX_PDF_UPLOAD_BYTES = 25 * 1024 * 1024
+UPLOAD_REQUEST_OVERHEAD_BYTES = 1024 * 1024
+MAX_RICH_TEXT_INPUT_LENGTH = 1_000_000
+MAX_ASSIGNMENT_REQUEST_BODY_BYTES = (
+    6 * schemas.MAX_ASSIGNMENT_CONTENT_LENGTH
+    + 64 * 1024
+)
+ASSIGNMENT_PRIVATE_CACHE_HEADERS = {
+    "Cache-Control": "private, no-store",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
+class UploadAdmissionController:
+    """Bound upload attempts and concurrent body/scanner work per process."""
+
+    def __init__(self, *, attempt_limit: int = 20, window_seconds: int = 300, max_inflight: int = 4):
+        self.attempt_limit = attempt_limit
+        self.window_seconds = window_seconds
+        self.max_inflight = max_inflight
+        self._lock = threading.Lock()
+        self._attempts = defaultdict(deque)
+        self._inflight = 0
+
+    def acquire(self, identity: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            attempts = self._attempts[identity]
+            cutoff = now - self.window_seconds
+            while attempts and attempts[0] <= cutoff:
+                attempts.popleft()
+            if len(attempts) >= self.attempt_limit:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Upload attempt rate limit exceeded",
+                )
+            if self._inflight >= self.max_inflight:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Upload capacity is temporarily unavailable",
+                )
+            attempts.append(now)
+            self._inflight += 1
+
+    def release(self) -> None:
+        with self._lock:
+            self._inflight = max(0, self._inflight - 1)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._attempts.clear()
+            self._inflight = 0
+
+
+upload_admission = UploadAdmissionController()
+
+
+def _scope_header(scope: dict, name: bytes) -> str | None:
+    for header_name, header_value in scope.get("headers", []):
+        if header_name.lower() == name:
+            try:
+                return header_value.decode("latin-1")
+            except UnicodeDecodeError:
+                return None
+    return None
+
+
+def _upload_admission_identity(scope: dict) -> str:
+    authorization = _scope_header(scope, b"authorization")
+    bearer_token = None
+    if authorization and authorization.lower().startswith("bearer "):
+        bearer_token = authorization[7:].strip()
+
+    cookie_token = None
+    raw_cookie = _scope_header(scope, b"cookie")
+    if raw_cookie:
+        try:
+            cookies = SimpleCookie()
+            cookies.load(raw_cookie)
+            morsel = cookies.get(_session_cookie_name())
+            cookie_token = morsel.value if morsel else None
+        except CookieError:
+            cookie_token = None
+
+    tokens = [token for token in (bearer_token, cookie_token) if token]
+    if len(tokens) == 1:
+        try:
+            payload = decode_access_token(tokens[0], settings=settings)
+            return f"user:{int(payload['sub'])}"
+        except (InvalidTokenError, KeyError, TypeError, ValueError):
+            pass
+
+    client = scope.get("client") or ("unknown", 0)
+    return f"ip:{client[0]}"
+
+
+class _UploadRequestTooLarge(Exception):
+    pass
+
+
+def _upload_request_body_limit(scope: dict) -> int | None:
+    if scope.get("type") != "http" or scope.get("method", "").upper() != "POST":
+        return None
+
+    path = str(scope.get("path") or "").rstrip("/") or "/"
+    upload_limits = {
+        "/api/upload/image": MAX_IMAGE_UPLOAD_BYTES,
+        "/api/upload/video": MAX_VIDEO_UPLOAD_BYTES,
+        "/api/upload/file": MAX_PDF_UPLOAD_BYTES,
+        "/api/upload": MAX_VIDEO_UPLOAD_BYTES,
+        "/api/user/upload-profile-image": MAX_IMAGE_UPLOAD_BYTES,
+        "/api/user/upload-cover-image": MAX_IMAGE_UPLOAD_BYTES,
+    }
+    file_limit = upload_limits.get(path)
+    if file_limit is None:
+        return None
+    return file_limit + UPLOAD_REQUEST_OVERHEAD_BYTES
+
+
+def _private_assignment_request_body_limit(scope: dict) -> int | None:
+    if scope.get("type") != "http":
+        return None
+
+    method = str(scope.get("method") or "").upper()
+    path = str(scope.get("path") or "").rstrip("/") or "/"
+    path_match = re.fullmatch(
+        r"/api/assignments/[^/]+/(?P<operation>draft|submit)",
+        path,
+    )
+    if not path_match:
+        return None
+
+    operation = path_match.group("operation")
+    if (
+        (operation == "draft" and method == "PUT")
+        or (operation == "submit" and method == "POST")
+    ):
+        return MAX_ASSIGNMENT_REQUEST_BODY_BYTES
+    return None
+
+
+class UploadRequestBodyLimitMiddleware:
+    """Reject bounded private and upload bodies before Starlette parses them."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        upload_limit = _upload_request_body_limit(scope)
+        assignment_limit = _private_assignment_request_body_limit(scope)
+        request_limit = (
+            assignment_limit
+            if assignment_limit is not None
+            else upload_limit
+        )
+        if request_limit is None:
+            await self.app(scope, receive, send)
+            return
+
+        admitted = False
+        if upload_limit is not None:
+            try:
+                upload_admission.acquire(_upload_admission_identity(scope))
+                admitted = True
+            except HTTPException as exc:
+                response = JSONResponse(
+                    status_code=exc.status_code,
+                    content={"detail": exc.detail},
+                    headers={"Cache-Control": "no-store"},
+                )
+                await response(scope, receive, send)
+                return
+
+        try:
+            await self._call_with_limit(
+                scope,
+                receive,
+                send,
+                request_limit=request_limit,
+                private_assignment=assignment_limit is not None,
+            )
+        finally:
+            if admitted:
+                upload_admission.release()
+
+    async def _call_with_limit(
+        self,
+        scope,
+        receive,
+        send,
+        *,
+        request_limit: int,
+        private_assignment: bool,
+    ):
+
+        for header_name, header_value in scope.get("headers", []):
+            if header_name.lower() != b"content-length":
+                continue
+            try:
+                content_length = int(header_value)
+            except (TypeError, ValueError):
+                break
+            if content_length > request_limit:
+                await self._send_too_large(
+                    scope,
+                    receive,
+                    send,
+                    private_assignment=private_assignment,
+                )
+                return
+            break
+
+        received_bytes = 0
+        response_started = False
+
+        async def limited_receive():
+            nonlocal received_bytes
+            message = await receive()
+            if message.get("type") == "http.request":
+                received_bytes += len(message.get("body", b""))
+                if received_bytes > request_limit:
+                    raise _UploadRequestTooLarge
+            return message
+
+        async def tracked_send(message):
+            nonlocal response_started
+            if message.get("type") == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, tracked_send)
+        except _UploadRequestTooLarge:
+            if response_started:
+                raise
+            await self._send_too_large(
+                scope,
+                receive,
+                send,
+                private_assignment=private_assignment,
+            )
+
+    @staticmethod
+    async def _send_too_large(
+        scope,
+        receive,
+        send,
+        *,
+        private_assignment: bool = False,
+    ):
+        response = JSONResponse(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            content={
+                "detail": (
+                    "Invalid assignment request"
+                    if private_assignment
+                    else "Upload request exceeds the allowed size"
+                )
+            },
+            headers=(
+                ASSIGNMENT_PRIVATE_CACHE_HEADERS
+                if private_assignment
+                else {"Cache-Control": "no-store"}
+            ),
+        )
+        await response(scope, receive, send)
+
+
+app.add_middleware(UploadRequestBodyLimitMiddleware)
 
 def _sanitize_filename(filename: str | None, fallback: str = "upload") -> str:
     clean_name = Path(filename or fallback).name
@@ -130,53 +583,500 @@ def _sanitize_filename(filename: str | None, fallback: str = "upload") -> str:
 
 def _build_unique_filename(filename: str | None, prefix: str | None = None) -> str:
     safe_name = _sanitize_filename(filename)
-    stem = Path(safe_name).stem or "upload"
-    suffix = Path(safe_name).suffix
-    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-    random_str = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
-    name_parts = [part for part in [prefix, timestamp, random_str, stem] if part]
-    return f"{'_'.join(name_parts)}{suffix}"
+    suffix = Path(safe_name).suffix.lower()
+    safe_prefix = _sanitize_filename(prefix, "").strip("._-") if prefix else ""
+    opaque_name = secrets.token_hex(16)
+    return f"{safe_prefix}_{opaque_name}{suffix}" if safe_prefix else f"{opaque_name}{suffix}"
 
 def _upload_path(*parts: str) -> Path:
-    return UPLOAD_DIR.joinpath(*parts)
+    upload_root = UPLOAD_DIR.resolve()
+    candidate = upload_root.joinpath(*(str(part) for part in parts)).resolve()
+    try:
+        candidate.relative_to(upload_root)
+    except ValueError as exc:
+        raise ValueError("Invalid upload path") from exc
+    return candidate
+
 
 def _upload_url(*parts: str) -> str:
     normalized_parts = [str(part).replace("\\", "/").strip("/") for part in parts if str(part).strip("/")]
-    return f"/uploads/{'/'.join(normalized_parts)}"
+    return f"/api/uploads/{'/'.join(normalized_parts)}"
 
-def _resolve_upload_bucket(file: UploadFile) -> str:
-    content_type = (file.content_type or "").lower()
-    extension = Path(file.filename or "").suffix.lower()
+@dataclass(frozen=True)
+class UploadTypeSpec:
+    kind: str
+    bucket: str
+    extension: str
+    media_type: str
+    signature: str
+    declared_media_types: frozenset[str]
 
-    image_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"}
-    video_exts = {".mp4", ".webm", ".ogg", ".mov", ".m4v", ".avi", ".mkv"}
 
-    if content_type.startswith("image/") or extension in image_exts:
-        return "images"
-    if content_type.startswith("video/") or extension in video_exts:
-        return "videos"
-    return "files"
+def _upload_type_spec(
+    kind: str,
+    bucket: str,
+    extension: str,
+    media_type: str,
+    signature: str,
+    *declared_media_types: str,
+) -> UploadTypeSpec:
+    return UploadTypeSpec(
+        kind=kind,
+        bucket=bucket,
+        extension=extension,
+        media_type=media_type,
+        signature=signature,
+        declared_media_types=frozenset(declared_media_types or (media_type,)),
+    )
 
-def _is_pdf_upload(file: UploadFile) -> bool:
-    content_type = (file.content_type or "").lower()
-    extension = Path(file.filename or "").suffix.lower()
-    return content_type == "application/pdf" or extension == ".pdf"
 
-def _is_allowed_video_upload(file: UploadFile) -> bool:
-    content_type = (file.content_type or "").lower()
-    extension = Path(file.filename or "").suffix.lower()
-
-    allowed_mime_types = {
-        "video/mp4",
-        "video/webm",
-        "video/ogg",
-        "video/x-msvideo",
-        "video/x-matroska",
-        "video/x-m4v",
+UPLOAD_TYPE_SPECS = {
+    ".jpg": _upload_type_spec("image", "images", ".jpg", "image/jpeg", "jpeg"),
+    ".jpeg": _upload_type_spec("image", "images", ".jpeg", "image/jpeg", "jpeg"),
+    ".png": _upload_type_spec("image", "images", ".png", "image/png", "png"),
+    ".gif": _upload_type_spec("image", "images", ".gif", "image/gif", "gif"),
+    ".webp": _upload_type_spec("image", "images", ".webp", "image/webp", "webp"),
+    ".bmp": _upload_type_spec("image", "images", ".bmp", "image/bmp", "bmp"),
+    ".pdf": _upload_type_spec("pdf", "files", ".pdf", "application/pdf", "pdf"),
+    ".mp4": _upload_type_spec("video", "videos", ".mp4", "video/mp4", "mp4"),
+    ".m4v": _upload_type_spec(
+        "video", "videos", ".m4v", "video/x-m4v", "mp4", "video/x-m4v", "video/mp4"
+    ),
+    ".webm": _upload_type_spec("video", "videos", ".webm", "video/webm", "ebml"),
+    ".mkv": _upload_type_spec("video", "videos", ".mkv", "video/x-matroska", "ebml"),
+    ".ogg": _upload_type_spec("video", "videos", ".ogg", "video/ogg", "ogg"),
+    ".avi": _upload_type_spec("video", "videos", ".avi", "video/x-msvideo", "avi"),
+}
+def _matches_upload_signature(spec: UploadTypeSpec, header: bytes) -> bool:
+    signatures = {
+        "jpeg": header.startswith(b"\xff\xd8\xff"),
+        "png": header.startswith(b"\x89PNG\r\n\x1a\n"),
+        "gif": header.startswith((b"GIF87a", b"GIF89a")),
+        "webp": len(header) >= 12 and header.startswith(b"RIFF") and header[8:12] == b"WEBP",
+        "bmp": header.startswith(b"BM"),
+        "pdf": header.startswith(b"%PDF-"),
+        "mp4": len(header) >= 12 and header[4:8] == b"ftyp",
+        "ebml": header.startswith(b"\x1aE\xdf\xa3"),
+        "ogg": header.startswith(b"OggS"),
+        "avi": len(header) >= 12 and header.startswith(b"RIFF") and header[8:12] == b"AVI ",
     }
-    allowed_extensions = {".mp4", ".webm", ".ogg", ".m4v", ".avi", ".mkv"}
+    return signatures.get(spec.signature, False)
 
-    return content_type in allowed_mime_types or extension in allowed_extensions
+
+def _validated_upload_spec(
+    file: UploadFile,
+    allowed_kinds: set[str],
+    header: bytes,
+) -> UploadTypeSpec:
+    extension = Path(file.filename or "").suffix.lower()
+    declared_media_type = (file.content_type or "").split(";", 1)[0].strip().lower()
+    spec = UPLOAD_TYPE_SPECS.get(extension)
+    if (
+        spec is None
+        or spec.kind not in allowed_kinds
+        or declared_media_type not in spec.declared_media_types
+        or not _matches_upload_signature(spec, header)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported or invalid upload content",
+        )
+    return spec
+
+
+@dataclass(frozen=True)
+class StoredUpload:
+    path: Path
+    url: str
+    filename: str
+    original_filename: str
+    size: int
+    spec: UploadTypeSpec
+    storage_key: str
+    sha256_digest: str
+
+
+@dataclass(frozen=True)
+class PreparedUpload:
+    staging_path: Path
+    destination_path: Path
+    url: str
+    filename: str
+    original_filename: str
+    size: int
+    spec: UploadTypeSpec
+    storage_key: str
+    sha256_digest: str
+
+
+def _write_upload_chunk(buffer, chunk: bytes) -> None:
+    buffer.write(chunk)
+
+
+def _open_private_upload(path: Path):
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        if os.name == "posix":
+            os.fchmod(descriptor, 0o600)
+            opened = os.fstat(descriptor)
+            if opened.st_uid != os.geteuid() or stat.S_IMODE(opened.st_mode) != 0o600:
+                raise OSError("Upload staging custody is invalid")
+        return os.fdopen(descriptor, "wb")
+    except Exception:
+        os.close(descriptor)
+        path.unlink(missing_ok=True)
+        raise
+
+
+def _flush_upload(buffer) -> None:
+    buffer.flush()
+    os.fsync(buffer.fileno())
+
+
+def _fsync_upload_directory(path: Path) -> None:
+    if os.name != "posix":
+        return
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _remove_upload_candidate(prepared: PreparedUpload | None) -> None:
+    if prepared is None:
+        return
+    prepared.staging_path.unlink(missing_ok=True)
+
+
+def _finalize_prepared_upload(prepared: PreparedUpload) -> StoredUpload:
+    objects_root = prepared.destination_path.parents[1]
+    if not objects_root.is_dir():
+        raise OSError("Upload object storage is unavailable")
+    shard = prepared.destination_path.parent
+    if shard.is_symlink() or getattr(shard, "is_junction", lambda: False)():
+        raise OSError("Upload object storage is unavailable")
+    shard_created = False
+    try:
+        shard.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    else:
+        shard_created = True
+    if shard.resolve(strict=True).parent != objects_root.resolve(strict=True):
+        raise OSError("Upload object storage is unavailable")
+    if os.name == "posix":
+        shard_stat = shard.stat()
+        if settings.app_env != "production" and shard_stat.st_uid == os.geteuid():
+            shard.chmod(0o700)
+            shard_stat = shard.stat()
+        if shard_stat.st_uid != os.geteuid() or stat.S_IMODE(shard_stat.st_mode) != 0o700:
+            raise OSError("Upload object storage is unavailable")
+    if shard_created:
+        _fsync_upload_directory(objects_root)
+    if prepared.destination_path.exists():
+        raise OSError("Upload object storage is unavailable")
+    prepared.staging_path.replace(prepared.destination_path)
+    if os.name == "posix":
+        prepared.destination_path.chmod(0o600)
+    os.utime(prepared.destination_path, None)
+    _fsync_upload_directory(shard)
+    return StoredUpload(
+        path=prepared.destination_path,
+        url=prepared.url,
+        filename=prepared.filename,
+        original_filename=prepared.original_filename,
+        size=prepared.size,
+        spec=prepared.spec,
+        storage_key=prepared.storage_key,
+        sha256_digest=prepared.sha256_digest,
+    )
+
+
+async def _save_validated_upload(
+    file: UploadFile,
+    *,
+    allowed_kinds: set[str],
+) -> PreparedUpload:
+    destination_path = None
+    staging_path = None
+    try:
+        await run_in_threadpool(
+            _initialize_upload_layout,
+            UPLOAD_DIR,
+            production=settings.app_env == "production",
+        )
+        header = await file.read(UPLOAD_HEADER_BYTES)
+        spec = _validated_upload_spec(file, allowed_kinds, header)
+        max_bytes = {
+            "image": MAX_IMAGE_UPLOAD_BYTES,
+            "video": MAX_VIDEO_UPLOAD_BYTES,
+            "pdf": MAX_PDF_UPLOAD_BYTES,
+        }[spec.kind]
+        object_id = secrets.token_hex(16)
+        storage_key = f"objects/{object_id[:2]}/{object_id}{spec.extension}"
+        filename = f"{object_id}{spec.extension}"
+        destination_path = _upload_path(storage_key)
+        incoming_dir = _upload_path(".incoming")
+        await run_in_threadpool(incoming_dir.mkdir, mode=0o700, exist_ok=True)
+        staging_path = _upload_path(".incoming", f"{object_id}.part")
+        size = 0
+        digest = hashlib.sha256()
+        buffer = await run_in_threadpool(_open_private_upload, staging_path)
+        try:
+            chunk = header
+            while chunk:
+                size += len(chunk)
+                if size > max_bytes:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                        detail="Upload exceeds the allowed size",
+                    )
+                await run_in_threadpool(_write_upload_chunk, buffer, chunk)
+                digest.update(chunk)
+                chunk = await file.read(UPLOAD_CHUNK_SIZE)
+        finally:
+            await run_in_threadpool(_flush_upload, buffer)
+            await run_in_threadpool(buffer.close)
+
+        try:
+            await run_in_threadpool(upload_scanner.scan, staging_path)
+        except UploadScannerUnavailable as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Upload scanning unavailable",
+            ) from exc
+        except UploadRejected as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Upload rejected by security scanner",
+            ) from exc
+
+        return PreparedUpload(
+            staging_path=staging_path,
+            destination_path=destination_path,
+            url=_upload_url(storage_key),
+            filename=filename,
+            original_filename=_sanitize_filename(file.filename),
+            size=size,
+            spec=spec,
+            storage_key=storage_key,
+            sha256_digest=digest.hexdigest(),
+        )
+    except Exception:
+        if staging_path is not None:
+            await run_in_threadpool(staging_path.unlink, missing_ok=True)
+        raise
+    finally:
+        await file.close()
+
+
+def _safe_download_filename(requested_name: str | None, actual_extension: str) -> str:
+    requested = _sanitize_filename(requested_name, "download")
+    safe_stem = Path(requested).stem[:100].strip("._-") or "download"
+    return f"{safe_stem}{actual_extension}"
+
+
+class _OpenedUploadFileResponse(FileResponse):
+    """FileResponse semantics backed by the descriptor verified for this request."""
+
+    def __init__(self, opened_object, path: Path, **kwargs):
+        self._opened_object = opened_object
+        super().__init__(path=path, stat_result=opened_object.stat_result, **kwargs)
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._opened_object.close()
+
+    async def _seek(self, offset: int) -> None:
+        await run_in_threadpool(
+            os.lseek,
+            self._opened_object.descriptor,
+            offset,
+            os.SEEK_SET,
+        )
+
+    async def _read(self, size: int) -> bytes:
+        return await run_in_threadpool(
+            os.read,
+            self._opened_object.descriptor,
+            size,
+        )
+
+    async def _handle_simple(self, send, send_header_only: bool, send_pathsend: bool) -> None:
+        await send(
+            {
+                "type": "http.response.start",
+                "status": self.status_code,
+                "headers": self.raw_headers,
+            }
+        )
+        if send_header_only:
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+            return
+        await self._seek(0)
+        more_body = True
+        while more_body:
+            chunk = await self._read(self.chunk_size)
+            more_body = len(chunk) == self.chunk_size
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": chunk,
+                    "more_body": more_body,
+                }
+            )
+
+    async def _handle_single_range(
+        self,
+        send,
+        start: int,
+        end: int,
+        file_size: int,
+        send_header_only: bool,
+    ) -> None:
+        headers = MutableHeaders(raw=list(self.raw_headers))
+        headers["content-range"] = f"bytes {start}-{end - 1}/{file_size}"
+        headers["content-length"] = str(end - start)
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 206,
+                "headers": headers.raw,
+            }
+        )
+        if send_header_only:
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+            return
+        await self._seek(start)
+        more_body = True
+        while more_body:
+            chunk = await self._read(min(self.chunk_size, end - start))
+            start += len(chunk)
+            more_body = len(chunk) == self.chunk_size and start < end
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": chunk,
+                    "more_body": more_body,
+                }
+            )
+
+    async def _handle_multiple_ranges(
+        self,
+        send,
+        ranges,
+        file_size: int,
+        send_header_only: bool,
+    ) -> None:
+        boundary = secrets.token_hex(13)
+        content_length, header_generator = self.generate_multipart(
+            ranges,
+            boundary,
+            file_size,
+            self.headers["content-type"],
+        )
+        headers = MutableHeaders(raw=list(self.raw_headers))
+        headers["content-type"] = f"multipart/byteranges; boundary={boundary}"
+        headers["content-length"] = str(content_length)
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 206,
+                "headers": headers.raw,
+            }
+        )
+        if send_header_only:
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+            return
+        for start, end in ranges:
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": header_generator(start, end),
+                    "more_body": True,
+                }
+            )
+            await self._seek(start)
+            while start < end:
+                chunk = await self._read(min(self.chunk_size, end - start))
+                start += len(chunk)
+                await send(
+                    {
+                        "type": "http.response.body",
+                        "body": chunk,
+                        "more_body": True,
+                    }
+                )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": b"\r\n",
+                    "more_body": True,
+                }
+            )
+        await send(
+            {
+                "type": "http.response.body",
+                "body": f"--{boundary}--".encode("latin-1"),
+                "more_body": False,
+            }
+        )
+
+
+def _safe_upload_file_response(
+    opened_object,
+    file_path: Path,
+    *,
+    requested_filename: str | None = None,
+    disposition: str = "inline",
+) -> FileResponse:
+    spec = UPLOAD_TYPE_SPECS.get(file_path.suffix.lower())
+    if spec is None:
+        opened_object.close()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    try:
+        os.lseek(opened_object.descriptor, 0, os.SEEK_SET)
+        header = os.read(opened_object.descriptor, UPLOAD_HEADER_BYTES)
+        os.lseek(opened_object.descriptor, 0, os.SEEK_SET)
+    except OSError as exc:
+        opened_object.close()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found") from exc
+    if not _matches_upload_signature(spec, header):
+        opened_object.close()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
+    response_filename = _safe_download_filename(
+        requested_filename or file_path.name,
+        spec.extension,
+    )
+    safe_disposition = (
+        "inline"
+        if disposition == "inline" and spec.kind in {"image", "video"}
+        else "attachment"
+    )
+    return _OpenedUploadFileResponse(
+        opened_object,
+        path=file_path,
+        media_type=spec.media_type,
+        filename=response_filename,
+        content_disposition_type=safe_disposition,
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Security-Policy": "sandbox; default-src 'none'",
+            "Cross-Origin-Resource-Policy": "same-origin",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 def _is_admin_role(role) -> bool:
     if role is None:
@@ -187,17 +1087,38 @@ def _is_admin_role(role) -> bool:
         return str(role.value).upper() == "ADMIN"
     return str(role).upper() == "ADMIN"
 
-def _sync_admin_flag(db: Session, user: models.User) -> models.User:
-    should_be_admin = _is_admin_role(user.role)
-    if user.is_admin != should_be_admin:
-        user.is_admin = should_be_admin
-        db.commit()
-        db.refresh(user)
-    return user
+
+def _push_endpoint_host_allowed(hostname: str) -> bool:
+    normalized_host = hostname.lower().rstrip(".")
+    try:
+        ip_address(normalized_host)
+    except ValueError:
+        pass
+    else:
+        return False
+
+    for rule in PUSH_ALLOWED_ENDPOINT_HOSTS:
+        normalized_rule = rule.lower().rstrip(".")
+        if normalized_rule.startswith("."):
+            base_domain = normalized_rule[1:]
+            if normalized_host == base_domain or normalized_host.endswith(normalized_rule):
+                return True
+        elif normalized_host == normalized_rule:
+            return True
+    return False
 
 class LoginRequest(BaseModel):
-    email: str
-    password: str
+    model_config = ConfigDict(extra="forbid")
+
+    # Login canonicalizes the address before the case-insensitive identity lookup.
+    # The bound matches the persisted account column.
+    email: str = Field(min_length=3, max_length=100)
+    password: str = Field(min_length=1, max_length=1_024)
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_size(cls, value: str) -> str:
+        return schemas.validate_password_request_bytes(value)
 
 
 class SessionMetadataResponse(BaseModel):
@@ -209,6 +1130,22 @@ class SessionMetadataResponse(BaseModel):
     is_admin: bool
 
 
+class RegistrationAcceptedResponse(BaseModel):
+    message: str
+
+
+class UserStatusResponse(BaseModel):
+    disabled: bool
+
+
+class PublicRuntimeConfigResponse(BaseModel):
+    csrf_cookie_name: str
+    google_client_id: str
+    microsoft_client_id: str
+    microsoft_tenant_id: str
+    local_password_registration_enabled: bool
+
+
 class OAuthLoginRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -217,10 +1154,12 @@ class OAuthLoginRequest(BaseModel):
 
 class OAuthSignupRequest(OAuthLoginRequest):
     role: str | None = Field(default=None, max_length=16)
-    accessCode: str | None = Field(default=None, max_length=256)
+    teacherInvitationToken: str | None = Field(default=None, max_length=512)
 
 
 class UserSettingsUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     darkMode: bool | None = None
     reducedMotion: bool | None = None
     emailNotifications: bool | None = None
@@ -229,17 +1168,37 @@ class UserSettingsUpdateRequest(BaseModel):
     compactFeed: bool | None = None
     rememberDrafts: bool | None = None
     showProfileToClassmates: bool | None = None
-    editorFontSize: str | None = None
+    editorFontSize: Literal["small", "medium", "large"] | None = None
 
 class PushSubscriptionKeysRequest(BaseModel):
-    p256dh: str
-    auth: str
+    model_config = ConfigDict(extra="forbid")
+
+    p256dh: str = Field(min_length=1, max_length=255)
+    auth: str = Field(min_length=1, max_length=255)
 
 class PushSubscriptionRequest(BaseModel):
-    endpoint: str
+    model_config = ConfigDict(extra="forbid")
+
+    endpoint: str = Field(min_length=12, max_length=1_024)
     keys: PushSubscriptionKeysRequest
 
+    @field_validator("endpoint")
+    @classmethod
+    def validate_https_endpoint(cls, value: str) -> str:
+        normalized = value.strip()
+        parsed = urlsplit(normalized)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.port not in {None, 443}
+            or not _push_endpoint_host_allowed(parsed.hostname)
+        ):
+            raise ValueError("push endpoint is not an approved HTTPS push service")
+        return normalized
+
 class PushSubscriptionEnvelopeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     subscription: PushSubscriptionRequest
 
 DEFAULT_USER_SETTINGS = {
@@ -338,7 +1297,7 @@ def _assignment_due_soon(due_date: datetime, now_utc: datetime) -> bool:
 
     normalized_due = due_date
     if normalized_due.tzinfo is not None:
-        normalized_due = normalized_due.astimezone(tz=None).replace(tzinfo=None)
+        normalized_due = normalized_due.astimezone(UTC).replace(tzinfo=None)
 
     window_end = now_utc + timedelta(hours=24)
     return now_utc < normalized_due <= window_end
@@ -347,7 +1306,7 @@ def _make_push_payload(assignment: models.Assignment) -> dict:
     return {
         "title": "Assignment Reminder",
         "body": f"{assignment.title} is due within 24 hours.",
-        "url": "/class-feed",
+        "url": f"/class-feed/{assignment.class_id}",
         "tag": f"assignment-reminder-{assignment.id}",
     }
 
@@ -369,6 +1328,7 @@ def _send_web_push(subscription: models.PushSubscription, payload: dict) -> bool
             data=json.dumps(payload),
             vapid_private_key=VAPID_PRIVATE_KEY,
             vapid_claims={"sub": VAPID_SUBJECT},
+            timeout=PUSH_DELIVERY_TIMEOUT_SECONDS,
         )
         return True
     except WebPushException as exc:
@@ -379,13 +1339,33 @@ def _send_web_push(subscription: models.PushSubscription, payload: dict) -> bool
     except Exception:
         return False
 
-def _dispatch_assignment_push_reminders_once() -> None:
+REMINDER_DISPATCH_LOCK_ID = 4_979_842_103
+
+
+def _try_acquire_reminder_dispatch_lock(db: Session) -> bool:
+    bind = db.get_bind()
+    if bind.dialect.name == "postgresql":
+        return bool(
+            db.execute(
+                text("SELECT pg_try_advisory_xact_lock(:lock_id)"),
+                {"lock_id": REMINDER_DISPATCH_LOCK_ID},
+            ).scalar_one()
+        )
+    if settings.app_env == "test":
+        return True
+    raise RuntimeError("Reminder dispatch requires PostgreSQL outside tests")
+
+
+def _dispatch_assignment_push_reminders_once() -> bool:
     if not WEB_PUSH_ENABLED:
-        return
+        return True
 
     db = SessionLocal()
     try:
-        now_utc = datetime.utcnow()
+        if not _try_acquire_reminder_dispatch_lock(db):
+            return True
+
+        now_utc = _utc_now_naive()
         students = (
             db.query(models.User)
             .join(models.UserSettings, models.UserSettings.user_id == models.User.id)
@@ -412,7 +1392,10 @@ def _dispatch_assignment_push_reminders_once() -> None:
 
             due_soon_assignments = (
                 db.query(models.Assignment)
-                .filter(models.Assignment.class_id.in_(class_ids))
+                .filter(
+                    models.Assignment.class_id.in_(class_ids),
+                    models.Assignment.visibility == "class",
+                )
                 .all()
             )
 
@@ -467,32 +1450,14 @@ def _dispatch_assignment_push_reminders_once() -> None:
                         )
                     )
 
-            db.commit()
-    except Exception as exc:
-        print(f"Push reminder dispatcher error: {exc}")
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        security_logger.error("push_reminder_dispatch_failed")
+        return False
     finally:
         db.close()
-
-def _push_scheduler_loop() -> None:
-    while not _push_scheduler_stop_event.is_set():
-        _dispatch_assignment_push_reminders_once()
-        _push_scheduler_stop_event.wait(PUSH_REMINDER_INTERVAL_SECONDS)
-
-def _start_push_scheduler() -> None:
-    global _push_scheduler_thread
-    if _push_scheduler_thread and _push_scheduler_thread.is_alive():
-        return
-
-    _push_scheduler_stop_event.clear()
-    _push_scheduler_thread = threading.Thread(target=_push_scheduler_loop, name="push-reminder-scheduler", daemon=True)
-    _push_scheduler_thread.start()
-
-def _stop_push_scheduler() -> None:
-    global _push_scheduler_thread
-    _push_scheduler_stop_event.set()
-    if _push_scheduler_thread and _push_scheduler_thread.is_alive():
-        _push_scheduler_thread.join(timeout=2)
-    _push_scheduler_thread = None
 
 # ---------- Authentication Endpoints ----------
 
@@ -512,11 +1477,32 @@ def _session_metadata(user: models.User) -> dict:
         "first_name": user.first_name,
         "last_name": user.last_name,
         "role": user.role.value,
-        "is_admin": bool(user.is_admin),
+        "is_admin": _is_admin_role(user.role),
     }
 
 
-def _set_browser_session(response: Response, user: models.User) -> None:
+def _set_browser_session(
+    response: Response,
+    user: models.User,
+    db: Session,
+    *,
+    expected_password_hash: str | None = None,
+    authentication_error_detail: str = "External authentication failed",
+) -> None:
+    try:
+        issued = issue_browser_session(
+            db,
+            user_id=user.id,
+            settings=settings,
+            expected_password_hash=expected_password_hash,
+        )
+    except SessionIssuanceDenied as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=authentication_error_detail,
+        ) from exc
+    db.commit()
     max_age = settings.access_token_expire_minutes * 60
     cookie_options = {
         "max_age": max_age,
@@ -526,7 +1512,7 @@ def _set_browser_session(response: Response, user: models.User) -> None:
     }
     response.set_cookie(
         _session_cookie_name(),
-        create_access_token(data={"sub": str(user.id)}),
+        issued.token,
         httponly=True,
         **cookie_options,
     )
@@ -579,7 +1565,13 @@ def _create_federated_user(
     last_name: str,
     role: models.UserRole,
 ) -> models.User:
-    if db.query(models.User).filter(models.User.email == email).first() is not None:
+    normalized_email = normalize_email(email)
+    if (
+        db.query(models.User)
+        .filter(models.User.email == normalized_email)
+        .first()
+        is not None
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="External authentication failed",
@@ -587,7 +1579,7 @@ def _create_federated_user(
 
     user = models.User(
         username=f"oauth-{secrets.token_hex(12)}",
-        email=email,
+        email=normalized_email,
         password=hash_password(secrets.token_urlsafe(32)),
         first_name=first_name[:50],
         last_name=last_name[:50],
@@ -602,7 +1594,7 @@ def _create_federated_user(
     )
     db.add_all((user, identity))
     try:
-        db.commit()
+        db.flush()
     except IntegrityError as exc:
         db.rollback()
         winner = _find_federated_user(
@@ -617,78 +1609,97 @@ def _create_federated_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="External authentication failed",
         ) from exc
-    db.refresh(user)
     return user
 
 
-@app.post("/api/auth/register", response_model=SessionMetadataResponse)
+def _require_active_federated_user(user: models.User) -> models.User:
+    if user.disabled_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="External authentication failed",
+        )
+    return user
+
+
+REGISTRATION_ACCEPTED_RESPONSE = {
+    "message": "If registration can be completed, sign in with the submitted credentials."
+}
+
+
+def _registration_email_domain_allowed(normalized_email: str) -> bool:
+    allowed_domains = settings.allowed_email_domains
+    if not allowed_domains:
+        return True
+    return normalized_email.rsplit("@", 1)[-1] in allowed_domains
+
+
+@app.post(
+    "/api/auth/register",
+    response_model=RegistrationAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def register(
     user_data: schemas.UserCreate,
-    response: Response,
     db: Session = Depends(get_db),
 ):
-    """Register a new user"""
-    # Check if email already exists
-    existing_user = db.query(models.User).filter(models.User.email == user_data.email).first()
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
-        )
-    
-    # Validate role
+    """Accept an account request without disclosing account or invite state."""
+    if not settings.local_password_registration_enabled:
+        return REGISTRATION_ACCEPTED_RESPONSE
+
+    hashed_password = await run_in_threadpool(hash_password, user_data.password)
     try:
-        role = models.UserRole[user_data.role]
-    except KeyError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid role"
-        ) from exc
+        normalized_email = normalize_email(str(user_data.email))
+    except (TypeError, ValueError):
+        return REGISTRATION_ACCEPTED_RESPONSE
+    role = models.UserRole.__members__.get(user_data.role)
+    existing_user = (
+        db.query(models.User.id)
+        .filter(
+            or_(
+                models.User.email == normalized_email,
+                models.User.username == user_data.username,
+            )
+        )
+        .first()
+    )
+    eligible = (
+        existing_user is None
+        and _registration_email_domain_allowed(normalized_email)
+        and role in {
+            models.UserRole.STUDENT,
+            models.UserRole.TEACHER,
+        }
+    )
 
-    if role == models.UserRole.ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid role",
+    if eligible and role == models.UserRole.TEACHER:
+        eligible = consume_teacher_invitation(
+            db,
+            token=user_data.teacher_invitation_token or "",
+            email=normalized_email,
+            settings=settings,
         )
 
-    # Public registration may provision teachers only with the configured code.
-    if role == models.UserRole.TEACHER:
-        if not user_data.access_code:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"{role.name.lower()} access code is required"
-            )
-        
-        # Verify the access code
-        if role == models.UserRole.TEACHER and not provisioning_code_matches(
-            user_data.access_code,
-            _secret_value(settings.teacher_access_code),
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid teacher access code"
-            )
-    
-    # Hash the password
-    hashed_password = hash_password(user_data.password)
-    
-    # Create new user
-    new_user = models.User(
-        username=user_data.username,
-        email=user_data.email,
-        password=hashed_password,
-        first_name=user_data.first_name,
-        last_name=user_data.last_name,
-        role=role,
-        is_admin=False,
+    if not eligible:
+        db.rollback()
+        return REGISTRATION_ACCEPTED_RESPONSE
+
+    db.add(
+        models.User(
+            username=user_data.username,
+            email=normalized_email,
+            password=hashed_password,
+            first_name=user_data.first_name,
+            last_name=user_data.last_name,
+            role=role,
+            is_admin=False,
+        )
     )
-    
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    
-    _set_browser_session(response, new_user)
-    return _session_metadata(new_user)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+
+    return REGISTRATION_ACCEPTED_RESPONSE
 
 def create_access_token(data: dict):
     return issue_access_token(data.get("sub"), settings=settings)
@@ -745,6 +1756,26 @@ async def get_current_user(
     except (InvalidTokenError, TypeError, ValueError) as exc:
         raise credentials_exception from exc
 
+    browser_session = find_active_browser_session(
+        db,
+        user_id=user_id,
+        jti=payload["jti"],
+    )
+    if browser_session is None:
+        raise credentials_exception
+
+    user = (
+        db.query(models.User)
+        .filter(
+            models.User.id == user_id,
+            models.User.disabled_at.is_(None),
+        )
+        .first()
+    )
+    if user is None:
+        raise credentials_exception
+    request.state.browser_session_id = browser_session.id
+
     if cookie_token and request.method.upper() in UNSAFE_HTTP_METHODS:
         if not csrf_token_matches(
             request.headers.get(CSRF_HEADER_NAME),
@@ -754,10 +1785,6 @@ async def get_current_user(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="CSRF validation failed",
             )
-    
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-    if user is None:
-        raise credentials_exception
     return user
 
 @app.get("/api/auth/session", response_model=SessionMetadataResponse)
@@ -767,11 +1794,111 @@ async def get_browser_session(current_user: models.User = Depends(get_current_us
 
 @app.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout(
+    request: Request,
     response: Response,
+    db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
     del current_user
+    revoke_session(
+        db,
+        session_id=request.state.browser_session_id,
+    )
+    db.commit()
     _clear_browser_session(response)
+
+
+@app.post("/api/auth/change-password", status_code=status.HTTP_204_NO_CONTENT)
+async def change_password(
+    payload: schemas.ChangePasswordRequest,
+    response: Response,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    verified_hash = current_user.password
+    password_valid = await run_in_threadpool(
+        verify_password,
+        payload.current_password,
+        verified_hash,
+    )
+    if not password_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+    new_password_hash = await run_in_threadpool(hash_password, payload.new_password)
+    result = db.execute(
+        update(models.User)
+        .where(
+            models.User.id == current_user.id,
+            models.User.password == verified_hash,
+            models.User.disabled_at.is_(None),
+        )
+        .values(password=new_password_hash)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Password changed concurrently; sign in again",
+        )
+    revoke_all_sessions(db, user_id=current_user.id)
+    invalidate_password_reset_requests(db, user_id=current_user.id)
+    db.commit()
+    _clear_browser_session(response)
+
+
+@app.put(
+    "/api/users/{user_id}/status",
+    response_model=UserStatusResponse,
+)
+async def update_user_status(
+    user_id: int,
+    payload: schemas.UserStatusUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    if payload.disabled and user_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Administrators cannot disable their current account",
+        )
+    target_user = (
+        db.query(models.User)
+        .filter(models.User.id == user_id)
+        .with_for_update()
+        .first()
+    )
+    if target_user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    try:
+        if payload.disabled:
+            target_user.disabled_at = _utc_now_naive()
+            revoke_all_sessions(db, user_id=target_user.id)
+            invalidate_password_reset_requests(db, user_id=target_user.id)
+            audit_action = "ACCOUNT_DISABLED"
+        else:
+            target_user.disabled_at = None
+            audit_action = "ACCOUNT_ENABLED"
+        record_operator_audit_event(
+            db,
+            actor_identifier=f"admin-user:{current_user.id}",
+            action=audit_action,
+            outcome="SUCCEEDED",
+            resource_email=target_user.email,
+            settings=settings,
+        )
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Account status could not be updated",
+        ) from None
+    return {"disabled": payload.disabled}
 
 
 @app.post("/api/auth/login", response_model=SessionMetadataResponse)
@@ -780,28 +1907,29 @@ async def login(
     response: Response,
     db: Session = Depends(get_db),
 ):
-    user = db.query(models.User).filter(models.User.email == login_data.email).first()
-    
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="Invalid email or password"
+    try:
+        normalized_email = normalize_email(str(login_data.email))
+    except (TypeError, ValueError):
+        normalized_email = ""
+    user = (
+        db.query(models.User)
+        .filter(
+            models.User.email == normalized_email,
+            models.User.disabled_at.is_(None),
         )
+        .first()
+    )
     
-    # Check if this is a social login account by trying to verify password
-    # If password verification fails, it might be a social account
-    verified_password_hash = user.password
-    password_valid, upgraded_password_hash = verify_and_update_password(
+    verified_password_hash = user.password if user is not None else _DUMMY_PASSWORD_HASH
+    password_valid, upgraded_password_hash = await run_in_threadpool(
+        verify_and_update_password,
         login_data.password,
         verified_password_hash,
     )
-    if not password_valid:
-        # Check if this user signed up with either Google or Microsoft
-        # Since we don't have the ID fields, we need to rely on other signals
-        # One approach is to tell users to use social login if password is invalid
+    if user is None or not password_valid:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="Invalid email or password. If you signed up with Google or Microsoft, please use those login methods."
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password",
         )
     if upgraded_password_hash is not None:
         if not _persist_password_upgrade_if_current(
@@ -814,8 +1942,15 @@ async def login(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid email or password",
             )
+        verified_password_hash = upgraded_password_hash
     
-    _set_browser_session(response, user)
+    _set_browser_session(
+        response,
+        user,
+        db,
+        expected_password_hash=verified_password_hash,
+        authentication_error_detail="Invalid email or password",
+    )
     return _session_metadata(user)
 
 @app.post("/api/auth/google-signup", response_model=SessionMetadataResponse)
@@ -840,24 +1975,26 @@ def google_signup(
             subject=subject,
         )
         if user is not None:
-            _set_browser_session(response, user)
+            _require_active_federated_user(user)
+            _set_browser_session(response, user, db)
             return _session_metadata(user)
 
         selected_role = (token_data.role or "STUDENT").upper()
-        access_code = token_data.accessCode
 
         if selected_role not in {"STUDENT", "TEACHER"}:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid role",
             )
-        if selected_role == "TEACHER" and not provisioning_code_matches(
-            access_code,
-            _secret_value(settings.teacher_access_code),
+        if selected_role == "TEACHER" and not consume_teacher_invitation(
+            db,
+            token=token_data.teacherInvitationToken or "",
+            email=idinfo["email"],
+            settings=settings,
         ):
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Invalid teacher access code",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="External authentication failed",
             )
 
         user = _create_federated_user(
@@ -871,17 +2008,20 @@ def google_signup(
             role=models.UserRole[selected_role],
         )
 
-        _set_browser_session(response, user)
+        _set_browser_session(response, user, db)
         return _session_metadata(user)
 
     except HTTPException:
+        db.rollback()
         raise
     except ValueError as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="External authentication failed",
         ) from exc
     except Exception as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="External authentication failed",
@@ -914,18 +2054,22 @@ def google_login(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="User not found. Please sign up and choose a role first."
             )
-        
-        _set_browser_session(response, user)
+
+        _require_active_federated_user(user)
+        _set_browser_session(response, user, db)
         return _session_metadata(user)
         
     except HTTPException:
+        db.rollback()
         raise
     except ValueError as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="External authentication failed",
         ) from exc
     except Exception as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="External authentication failed",
@@ -957,13 +2101,16 @@ def microsoft_login(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="User not found. Please sign up and choose a role first."
             )
-        
-        _set_browser_session(response, user)
+
+        _require_active_federated_user(user)
+        _set_browser_session(response, user, db)
         return _session_metadata(user)
         
     except HTTPException:
+        db.rollback()
         raise
     except Exception as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="External authentication failed",
@@ -992,24 +2139,26 @@ def microsoft_signup(
             subject=subject,
         )
         if existing_user is not None:
-            _set_browser_session(response, existing_user)
+            _require_active_federated_user(existing_user)
+            _set_browser_session(response, existing_user, db)
             return _session_metadata(existing_user)
 
         role = (microsoft_data.role or "STUDENT").upper()
-        access_code = microsoft_data.accessCode
 
         if role not in {"STUDENT", "TEACHER"}:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid role",
             )
-        if role == "TEACHER" and not provisioning_code_matches(
-            access_code,
-            _secret_value(settings.teacher_access_code),
+        if role == "TEACHER" and not consume_teacher_invitation(
+            db,
+            token=microsoft_data.teacherInvitationToken or "",
+            email=user_email,
+            settings=settings,
         ):
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Invalid teacher access code",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="External authentication failed",
             )
 
         user = _create_federated_user(
@@ -1023,12 +2172,14 @@ def microsoft_signup(
             role=models.UserRole[role],
         )
 
-        _set_browser_session(response, user)
+        _set_browser_session(response, user, db)
         return _session_metadata(user)
         
     except HTTPException:
+        db.rollback()
         raise
     except Exception as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="External authentication failed",
@@ -1043,6 +2194,7 @@ async def get_user_info(
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    _ensure_profile_access(db, current_user, user)
     
     return {
         "role": user.role.value,
@@ -1051,58 +2203,61 @@ async def get_user_info(
         "first_name": user.first_name
     }
 
-# ---------- Blog Endpoints ----------
-
-@app.get("/api/blogs", response_model=List[schemas.BlogResponse])
-def get_blogs(db: Session = Depends(get_db)):
-    blogs = db.query(models.Blog).all()
-    return blogs
-
-@app.post("/api/blogs", response_model=schemas.BlogResponse)
-def create_blog(blog: schemas.BlogCreate, owner_id: int, db: Session = Depends(get_db)):
-    # In a real application, owner_id would come from the authenticated user (e.g., JWT token)
-    new_blog = models.Blog(title=blog.title, content=blog.content, owner_id=owner_id)
-    db.add(new_blog)
-    db.commit()
-    db.refresh(new_blog)
-    return new_blog
-
-@app.delete("/api/blogs/{blog_id}")
-def delete_blog(
-    blog_id: int,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
-    blog = db.query(models.Blog).filter(models.Blog.id == blog_id).first()
-    if not blog:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Blog not found")
-    if blog.owner_id != current_user.id and not current_user.is_admin:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to delete this blog")
-    db.delete(blog)
-    db.commit()
-    return {"message": "Blog deleted"}
-
 # ---------- Home Endpoint ----------
 @app.get("/api/")
 def home():
     return {"message": "Welcome to LitBlogs Backend"}
 
-@app.get("/api/test-db")
-def test_db(db: Session = Depends(get_db)):
-    try:
-        # Execute a simple query
-        db.execute(text("SELECT 1"))
-        return {"message": "Successfully connected to the database!"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database connection failed: {str(e)}") from e
+@app.get("/api/health/live", include_in_schema=False)
+def liveness():
+    return {"status": "ok"}
 
-@app.post("/api/verify-class-code")
-def verify_class_code(code_data: dict, db: Session = Depends(get_db)):
-    code = code_data.get("code")
-    class_ = db.query(models.Class).filter(models.Class.access_code == code).first()
-    if not class_:
-        raise HTTPException(status_code=400, detail="Invalid class code")
-    return {"valid": True, "class_id": class_.id}
+
+@app.get(
+    "/api/runtime-config",
+    response_model=PublicRuntimeConfigResponse,
+    include_in_schema=False,
+)
+def public_runtime_config(response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    return PublicRuntimeConfigResponse(
+        csrf_cookie_name=settings.csrf_cookie_name or "",
+        google_client_id=settings.google_client_id or "",
+        microsoft_client_id=settings.microsoft_client_id or "",
+        microsoft_tenant_id=settings.microsoft_tenant_id or "",
+        local_password_registration_enabled=(
+            settings.local_password_registration_enabled
+            and settings.app_env != "production"
+        ),
+    )
+
+
+@app.get("/api/health/ready", include_in_schema=False)
+def readiness(request: Request):
+    try:
+        check_database_readiness()
+    except Exception as exc:
+        reason = (
+            "database_unreachable"
+            if isinstance(exc, (ConnectionError, OSError, TimeoutError, SQLAlchemyError))
+            else "migration_mismatch"
+        )
+        readiness_logger.error(
+            json.dumps(
+                {
+                    "event": "readiness_failed",
+                    "reason": reason,
+                    "request_id": getattr(request.state, "request_id", "unavailable"),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service not ready",
+        ) from None
+    return {"status": "ready"}
 
 @app.get("/api/classes/{class_id}/details")
 async def get_class_details(
@@ -1123,17 +2278,19 @@ async def get_class_details(
         models.Blog.class_id == class_id
     ).count()
     
-    return {
+    result = {
         "id": db_class.id,
         "name": db_class.name,
         "description": db_class.description,
-        "access_code": db_class.access_code,
         "created_at": db_class.created_at,
         "teacher_id": db_class.teacher_id,
         "enrollment_count": enrollment_count,
         "post_count": post_count,
         "status": db_class.status
     }
+    if _is_admin_role(current_user.role) or _teacher_owns_class(db, current_user, db_class):
+        result["access_code"] = db_class.access_code
+    return result
 
 
 # Add these new models to handle rich content
@@ -1145,79 +2302,65 @@ class PostContent(BaseModel):
     expandable_lists: List[dict] = []
 
 def sanitize_html(content: str) -> str:
-    # Define allowed tags and attributes
-    ALLOWED_TAGS = [
-        'p', 'div', 'span', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-        'strong', 'em', 'u', 'strike', 'br', 'ul', 'ol', 'li',
-        'blockquote', 'pre', 'code', 'hr', 'a', 'img', 'table',
-        'thead', 'tbody', 'tr', 'th', 'td', 'style', 'b', 'i', 's',
-        'font', 'mark', 'del'
-    ]
-    
-    ALLOWED_ATTRIBUTES = {
-        '*': ['class', 'style', 'id', 'data-mce-style'],
-        'a': ['href', 'title', 'target'],
-        'img': ['src', 'alt', 'title'],
-        'td': ['colspan', 'rowspan'],
-        'th': ['colspan', 'rowspan', 'scope'],
-        'font': ['color', 'size', 'face'],
-        'p': ['align', 'style'],
-        'div': ['align', 'style'],
-        'span': ['style'],
-        'h1': ['style'],
-        'h2': ['style'],
-        'h3': ['style'],
-        'h4': ['style'],
-        'h5': ['style'],
-        'h6': ['style']
-    }
-    
-    # Define allowed CSS properties
-    ALLOWED_STYLES = [
-        'color', 'background-color', 'font-size', 'text-align', 
-        'font-family', 'font-weight', 'font-style', 'text-decoration'
-    ]
-    
-    # Create a CSS sanitizer with allowed styles
-    css_sanitizer = CSSSanitizer(allowed_css_properties=ALLOWED_STYLES)
-    
-    # Create a Bleach cleaner with the allowed tags, attributes, and CSS sanitizer
-    cleaner = bleach.Cleaner(
-        tags=ALLOWED_TAGS,
-        attributes=ALLOWED_ATTRIBUTES,
-        css_sanitizer=css_sanitizer,
-        strip=False  # Don't strip tags that aren't in the whitelist
-    )
-    
-    # Sanitize the content
-    sanitized_content = cleaner.clean(content)
-    
-    return sanitized_content
+    raw_content = content or ""
+    if len(raw_content) > MAX_RICH_TEXT_INPUT_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Rich text exceeds the allowed size",
+        )
+    return sanitize_rich_text_html(raw_content)
 
 def _build_post_content(post: schemas.BlogCreate) -> str:
     content = sanitize_html(post.content)
 
     if post.code_snippets:
         for snippet in post.code_snippets:
-            content += f"\n[CODE:{snippet['language']}]{snippet['code']}\n"
+            language = escape(str(snippet.language), quote=True)
+            code = escape(str(snippet.code), quote=True)
+            content += f"\n[CODE:{language}]{code}\n"
 
     if post.media:
         for media in post.media:
-            if media['type'] == 'gif':
-                content += f"\n[GIF:{media['url']}]\n"
-            elif media['type'] == 'image':
-                content += f"\n[IMAGE:{media['url']}]\n"
+            media_url = escape(str(media.url), quote=True)
+            media_alt = escape(str(media.alt or "Uploaded image"), quote=True)
+            if media.type in {'gif', 'image'}:
+                content += f'\n<img src="{media_url}" alt="{media_alt}">\n'
+            elif media.type == 'video':
+                content += f'\n<video controls src="{media_url}"></video>\n'
 
     if post.polls:
         for poll in post.polls:
-            options = ','.join(poll['options'])
+            options = ",".join(
+                escape(str(option), quote=True)
+                for option in poll.options
+            )
             content += f"\n[POLL:{options}]\n"
 
     if post.files:
         for file in post.files:
-            content += f"\n[FILE:{file['name']}|{file['url']}]\n"
+            file_name = escape(str(file.name), quote=True)
+            file_url = escape(str(file.url), quote=True)
+            content += (
+                f'\n<a class="file-attachment" href="{file_url}">'
+                f'{file_name}</a>\n'
+            )
 
-    return content
+    return sanitize_html(content)
+
+
+def _post_analysis_payload(
+    db: Session,
+    current_user: models.User,
+    db_class: models.Class,
+    post: models.Blog,
+) -> dict:
+    if not _can_view_post_analysis(db, current_user, db_class, post):
+        return {}
+    return {
+        "ai_percentage": post.ai_percentage,
+        "ai_highlighted_html": post.ai_highlighted_html,
+        "ai_sentence_analysis": post.ai_sentence_analysis,
+    }
 
 @app.post("/api/classes/{class_id}/posts", response_model=schemas.BlogResponse)
 async def create_class_post(
@@ -1226,30 +2369,36 @@ async def create_class_post(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    # Verify user has access to this class
-    if current_user.role == models.UserRole.STUDENT:
-        enrollment = db.query(models.ClassEnrollment).filter(
-            models.ClassEnrollment.student_id == current_user.id,
-            models.ClassEnrollment.class_id == class_id
-        ).first()
-        if not enrollment:
-            raise HTTPException(status_code=403, detail="Not enrolled in this class")
+    try:
+        _lock_upload_owner(db, current_user.id)
+        db_class = _ensure_active_class_access(db, current_user, class_id)
+        validate_structured_upload_references(post)
+        content = _build_post_content(post)
+        asset_keys = post_asset_keys(content)
+
+        new_post = models.Blog(
+            title=post.title,
+            content=content,
+            owner_id=current_user.id,
+            class_id=class_id,
+        )
+        db.add(new_post)
+        db.flush()
+        bind_post_assets(
+            db,
+            blog=new_post,
+            actor_user_id=current_user.id,
+            storage_keys=asset_keys,
+            upload_root=UPLOAD_DIR,
+            now=_utc_now_aware(),
+        )
+        db.commit()
+        db.refresh(new_post)
+    except Exception:
+        db.rollback()
+        raise
     
-    content = _build_post_content(post)
-    
-    # Create new post with processed content
-    new_post = models.Blog(
-        title=post.title,
-        content=content,
-        owner_id=current_user.id,
-        class_id=class_id
-    )
-    
-    db.add(new_post)
-    db.commit()
-    db.refresh(new_post)
-    
-    return {
+    result = {
         "id": new_post.id,
         "title": new_post.title,
         "content": new_post.content,
@@ -1260,10 +2409,9 @@ async def create_class_post(
         "author_profile_image": current_user.profile_image,
         "likes": len(new_post.likes) if hasattr(new_post, 'likes') else 0,
         "comments": len(new_post.comments) if hasattr(new_post, 'comments') else 0,
-        "ai_percentage": new_post.ai_percentage,
-        "ai_highlighted_html": new_post.ai_highlighted_html,
-        "ai_sentence_analysis": new_post.ai_sentence_analysis
     }
+    result.update(_post_analysis_payload(db, current_user, db_class, new_post))
+    return result
 
 @app.get("/api/classes/{class_id}/posts")
 async def get_class_posts(
@@ -1271,7 +2419,7 @@ async def get_class_posts(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    _ensure_class_access(db, current_user, class_id)
+    db_class = _ensure_class_access(db, current_user, class_id)
     
     # Get posts with author information
     posts = db.query(models.Blog).filter(
@@ -1293,7 +2441,7 @@ async def get_class_posts(
     formatted_posts = []
     for post in posts:
         author = db.query(models.User).filter(models.User.id == post.owner_id).first()
-        formatted_posts.append({
+        formatted_post = {
             "id": post.id,
             "title": post.title,
             "content": post.content,  # Whitespace will be preserved
@@ -1304,32 +2452,42 @@ async def get_class_posts(
             "likes": len(post.likes) if hasattr(post, 'likes') else 0,
             "comments": len(post.comments) if hasattr(post, 'comments') else 0,
             "is_saved": post.id in saved_ids,
-            "ai_percentage": post.ai_percentage,
-            "ai_highlighted_html": post.ai_highlighted_html,
-            "ai_sentence_analysis": post.ai_sentence_analysis
-        })
+        }
+        formatted_post.update(_post_analysis_payload(db, current_user, db_class, post))
+        formatted_posts.append(formatted_post)
     
     return formatted_posts
 
-@app.get("/api/users")
+@app.get("/api/users", response_model=list[schemas.AdminUserSummary])
 async def get_users(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
+    _require_admin(current_user)
     users = db.query(models.User).all()
-    return users
+    return [
+        {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "role": user.role.value,
+            "is_admin": _is_admin_role(user.role),
+            "created_at": user.created_at,
+            "disabled": user.disabled_at is not None,
+        }
+        for user in users
+    ]
 
 @app.get("/api/classes")
 async def get_classes(
-    status: str = "active",  # Default to active classes
+    status: Literal["active", "archived"] = "active",
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     # Allow both admin and teacher access
-    if not (current_user.is_admin or current_user.role == models.UserRole.TEACHER):
+    if not (_is_admin_role(current_user.role) or current_user.role == models.UserRole.TEACHER):
         raise HTTPException(status_code=403, detail="Not authorized")
     
     # For teachers, only return their classes
@@ -1369,97 +2527,264 @@ async def get_classes(
     
     return result
 
-@app.get("/api/debug/classes")
-async def debug_classes(db: Session = Depends(get_db)):
-    classes = db.query(models.Class).all()
-    return [{"id": c.id, "name": c.name, "access_code": c.access_code} for c in classes]
+def _initialize_upload_layout(upload_root: Path, *, production: bool) -> None:
+    """Create only private child directories beneath a trusted upload root."""
 
-# Create upload directories if they don't exist
-UPLOAD_DIR.mkdir(exist_ok=True)
-(UPLOAD_DIR / "images").mkdir(exist_ok=True)
-(UPLOAD_DIR / "videos").mkdir(exist_ok=True)
-(UPLOAD_DIR / "files").mkdir(exist_ok=True)
-(UPLOAD_DIR / "profile_images").mkdir(exist_ok=True)
-(UPLOAD_DIR / "cover_images").mkdir(exist_ok=True)
+    is_root_junction = getattr(upload_root, "is_junction", lambda: False)
+    if upload_root.is_symlink() or is_root_junction():
+        raise RuntimeError("Upload storage is unavailable")
+    try:
+        if production:
+            if not upload_root.is_dir():
+                raise RuntimeError("Upload storage is unavailable")
+        else:
+            upload_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+        resolved_root = upload_root.resolve(strict=True)
+        for child_name in ("objects", ".incoming"):
+            child = upload_root / child_name
+            is_child_junction = getattr(child, "is_junction", lambda: False)
+            if child.is_symlink() or is_child_junction():
+                raise RuntimeError("Upload storage is unavailable")
+            child.mkdir(mode=0o700, exist_ok=True)
+            if (
+                not child.is_dir()
+                or child.is_symlink()
+                or getattr(child, "is_junction", lambda: False)()
+                or child.resolve(strict=True).parent != resolved_root
+            ):
+                raise RuntimeError("Upload storage is unavailable")
+            if os.name == "posix":
+                child_stat = child.stat()
+                if not production and child_stat.st_uid == os.geteuid():
+                    child.chmod(0o700)
+                    child_stat = child.stat()
+                if (
+                    child_stat.st_uid != os.geteuid()
+                    or stat.S_IMODE(child_stat.st_mode) != 0o700
+                ):
+                    raise RuntimeError("Upload storage is unavailable")
+            if not os.access(child, os.W_OK | os.X_OK):
+                raise RuntimeError("Upload storage is unavailable")
+    except OSError as exc:
+        raise RuntimeError("Upload storage is unavailable") from exc
+
+
+# Production root custody is validated before import. The application creates
+# private children, but never the configured production root or its ancestors.
+_initialize_upload_layout(
+    UPLOAD_DIR,
+    production=settings.app_env == "production",
+)
+
+
+def reconcile_upload_assets(
+    db: Session,
+    *,
+    now: datetime | None = None,
+) -> dict[str, int]:
+    return _reconcile_upload_assets(
+        db,
+        upload_root=UPLOAD_DIR,
+        now=now or _utc_now_aware(),
+    )
+
+
+def _reconcile_upload_assets_once() -> bool:
+    db = SessionLocal()
+    try:
+        reconcile_upload_assets(db)
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        security_logger.error('{"event":"upload_reconciliation_failed"}')
+        return False
+    finally:
+        db.close()
+
+
+def _rollback_upload_session(db: Session) -> None:
+    try:
+        db.rollback()
+    except Exception:
+        # Resolve an ambiguous COMMIT only through a new independent session.
+        pass
+
+
+def _pending_upload_commit_is_visible(stored: StoredUpload, owner_user_id: int) -> bool:
+    try:
+        with SessionLocal() as verification_db:
+            asset = (
+                verification_db.query(models.UploadAsset)
+                .filter(models.UploadAsset.storage_key == stored.storage_key)
+                .one_or_none()
+            )
+            return bool(
+                asset is not None
+                and asset.owner_user_id == owner_user_id
+                and asset.purpose == "POST"
+                and asset.state in {"PENDING", "ACTIVE"}
+                and asset.media_type == stored.spec.media_type
+                and asset.size_bytes == stored.size
+                and asset.sha256_digest == stored.sha256_digest
+                and object_matches_registration(
+                    UPLOAD_DIR,
+                    storage_key=stored.storage_key,
+                    size_bytes=stored.size,
+                    sha256_digest=stored.sha256_digest,
+                )
+            )
+    except Exception:
+        return False
+
+
+def _profile_upload_commit_is_visible(
+    stored: StoredUpload,
+    *,
+    owner_user_id: int,
+    purpose: str,
+    profile_field: str,
+) -> bool:
+    try:
+        with SessionLocal() as verification_db:
+            active = (
+                verification_db.query(models.UploadAsset)
+                .filter(
+                    models.UploadAsset.owner_user_id == owner_user_id,
+                    models.UploadAsset.purpose == purpose,
+                    models.UploadAsset.state == "ACTIVE",
+                )
+                .all()
+            )
+            user = verification_db.get(models.User, owner_user_id)
+            return bool(
+                len(active) == 1
+                and active[0].storage_key == stored.storage_key
+                and active[0].media_type == stored.spec.media_type
+                and active[0].size_bytes == stored.size
+                and active[0].sha256_digest == stored.sha256_digest
+                and user is not None
+                and getattr(user, profile_field) == stored.url
+                and object_matches_registration(
+                    UPLOAD_DIR,
+                    storage_key=stored.storage_key,
+                    size_bytes=stored.size,
+                    sha256_digest=stored.sha256_digest,
+                )
+            )
+    except Exception:
+        return False
+
+
+def _upload_reconciliation_error() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Upload finalization is being reconciled; refresh before retrying",
+    )
+
+
+async def _register_pending_upload(
+    file: UploadFile,
+    *,
+    allowed_kinds: set[str],
+    db: Session,
+    current_user: models.User,
+) -> StoredUpload:
+    prepared = None
+    stored = None
+    try:
+        prepared = await _save_validated_upload(file, allowed_kinds=allowed_kinds)
+        now = _utc_now_aware()
+        configure_upload_transaction(db)
+        _lock_upload_owner(db, current_user.id)
+        enforce_rate_limit(db, current_user.id, now=now)
+        enforce_quota(db, current_user.id, prepared.size)
+        stored = await run_in_threadpool(_finalize_prepared_upload, prepared)
+        add_pending_asset(
+            db,
+            owner_user_id=current_user.id,
+            stored=stored,
+            now=now,
+        )
+        db.commit()
+        return stored
+    except Exception as exc:
+        _rollback_upload_session(db)
+        await run_in_threadpool(_remove_upload_candidate, prepared)
+        if stored is not None and await run_in_threadpool(
+            _pending_upload_commit_is_visible,
+            stored,
+            current_user.id,
+        ):
+            return stored
+        if stored is not None or (
+            prepared is not None and prepared.destination_path.is_file()
+        ):
+            raise _upload_reconciliation_error() from exc
+        raise
 
 # Add these new endpoints
 @app.post("/api/upload/image")
-async def upload_image(file: UploadFile = File(...), current_user: models.User = Depends(get_current_user)):
-    try:
-        filename = _build_unique_filename(file.filename, "image")
-        file_path = _upload_path("images", filename)
-        with file_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        return {"url": _upload_url("images", filename)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+async def upload_image(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    stored = await _register_pending_upload(
+        file,
+        allowed_kinds={"image"},
+        db=db,
+        current_user=current_user,
+    )
+    return {"url": stored.url}
 
 @app.post("/api/upload/video")
-async def upload_video(file: UploadFile = File(...), current_user: models.User = Depends(get_current_user)):
-    try:
-        if not _is_allowed_video_upload(file):
-            raise HTTPException(status_code=400, detail="Unsupported video type. MOV is not allowed.")
-
-        filename = _build_unique_filename(file.filename, "video")
-        file_path = _upload_path("videos", filename)
-        with file_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        return {"url": _upload_url("videos", filename)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+async def upload_video(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    stored = await _register_pending_upload(
+        file,
+        allowed_kinds={"video"},
+        db=db,
+        current_user=current_user,
+    )
+    return {"url": stored.url}
 
 @app.post("/api/upload/file")
-async def upload_file(file: UploadFile = File(...), current_user: models.User = Depends(get_current_user)):
-    try:
-        if not _is_pdf_upload(file):
-            raise HTTPException(status_code=400, detail="Only PDF files are allowed")
-
-        filename = _build_unique_filename(file.filename, "file")
-        file_path = _upload_path("files", filename)
-        with file_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        return {"url": _upload_url("files", filename)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+async def upload_file(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    stored = await _register_pending_upload(
+        file,
+        allowed_kinds={"pdf"},
+        db=db,
+        current_user=current_user,
+    )
+    return {"url": stored.url}
 
 @app.post("/api/upload")
 async def upload_generic_file(
     file: UploadFile = File(...),
-    current_user: models.User = Depends(get_current_user)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
 ):
     """Upload a file and return its URL"""
-    try:
-        bucket = _resolve_upload_bucket(file)
-        if bucket == "files" and not _is_pdf_upload(file):
-            raise HTTPException(status_code=400, detail="Only PDF files are allowed")
-        if bucket == "videos" and not _is_allowed_video_upload(file):
-            raise HTTPException(status_code=400, detail="Unsupported video type. MOV is not allowed.")
-
-        user_dir = _upload_path(bucket, str(current_user.id))
-        user_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Generate a unique filename
-        filename = _build_unique_filename(file.filename)
-        
-        # Save the file
-        file_path = user_dir / filename
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        # Return the file URL
-        file_url = _upload_url(bucket, str(current_user.id), filename)
-        
-        return {
-            "url": file_url,
-            "filename": file.filename,
-            "size": os.path.getsize(file_path)
-        }
-    except Exception as e:
-        print(f"File upload error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to upload file: {str(e)}"
-        ) from e
+    stored = await _register_pending_upload(
+        file,
+        allowed_kinds={"image", "pdf", "video"},
+        db=db,
+        current_user=current_user,
+    )
+    return {
+        "url": stored.url,
+        "filename": stored.original_filename,
+        "size": stored.size,
+    }
 
 @app.get("/api/teacher/dashboard")
 async def get_teacher_dashboard(
@@ -1527,15 +2852,14 @@ async def get_teacher_dashboard(
         }
         
     except Exception as e:
-        print(f"Teacher dashboard error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to load dashboard: {str(e)}"
+            detail="Failed to load dashboard"
         ) from e
 
 @app.post("/api/classes")
 async def create_class(
-    class_data: dict,
+    class_data: schemas.ClassCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -1547,29 +2871,46 @@ async def create_class(
         )
     
     try:
-        # Find the teacher record for this user
-        teacher = db.query(models.Teacher).filter(
-            models.Teacher.email == current_user.email
-        ).first()
+        # Serialize creation on the canonical User -> Teacher association. This
+        # prevents concurrent requests from creating duplicate teacher rows and
+        # keeps ownership attached to user_id rather than a denormalized email.
+        locked_user = (
+            db.query(models.User)
+            .filter(
+                models.User.id == current_user.id,
+                models.User.disabled_at.is_(None),
+                models.User.role == models.UserRole.TEACHER,
+            )
+            .with_for_update(of=models.User)
+            .first()
+        )
+        if locked_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only active teachers can create classes",
+            )
+
+        teacher = _get_teacher_record(db, locked_user)
         
         if not teacher:
-            # Create a teacher record if it doesn't exist
             teacher = models.Teacher(
-                name=f"{current_user.first_name} {current_user.last_name}",
-                email=current_user.email,
-                user_id=current_user.id
+                name=f"{locked_user.first_name} {locked_user.last_name}",
+                email=locked_user.email,
+                user_id=locked_user.id,
             )
             db.add(teacher)
-            db.commit()
-            db.refresh(teacher)
+            db.flush()
+        elif teacher.email != locked_user.email:
+            # The migration performs the same reconciliation for legacy rows.
+            teacher.email = locked_user.email
         
         # Generate a unique access code
         access_code = generate_unique_code(db)
         
         # Create new class with teacher_id from the Teacher table
         new_class = models.Class(
-            name=class_data.get("name"),
-            description=class_data.get("description", ""),
+            name=class_data.name,
+            description=class_data.description or "",
             access_code=access_code,
             teacher_id=teacher.id  # Use teacher.id, not current_user.id
         )
@@ -1587,12 +2928,14 @@ async def create_class(
             "teacher_id": new_class.teacher_id
         }
     
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
-        print(f"Class creation error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create class: {str(e)}"
+            detail="Failed to create class"
         ) from e
 
 @app.post("/api/classes/{class_id}/assignments")
@@ -1602,14 +2945,7 @@ async def create_assignment(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    if current_user.role not in [models.UserRole.TEACHER, models.UserRole.ADMIN]:
-        raise HTTPException(status_code=403, detail="Not authorized")
-
-    db_class = _get_class_or_404(db, class_id)
-    if current_user.role == models.UserRole.TEACHER:
-        teacher = _get_teacher_record(db, current_user)
-        if not teacher or db_class.teacher_id != teacher.id:
-            raise HTTPException(status_code=403, detail="Not authorized")
+    _ensure_active_class_owner(db, current_user, class_id)
 
     visibility = assignment.visibility or "class"
     if visibility not in ["class", "private"]:
@@ -1648,14 +2984,7 @@ async def update_assignment(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    if current_user.role not in [models.UserRole.TEACHER, models.UserRole.ADMIN]:
-        raise HTTPException(status_code=403, detail="Not authorized")
-
-    db_class = _get_class_or_404(db, class_id)
-    if current_user.role == models.UserRole.TEACHER:
-        teacher = _get_teacher_record(db, current_user)
-        if not teacher or db_class.teacher_id != teacher.id:
-            raise HTTPException(status_code=403, detail="Not authorized")
+    _ensure_active_class_owner(db, current_user, class_id)
 
     db_assignment = db.query(models.Assignment).filter(
         models.Assignment.id == assignment_id,
@@ -1689,19 +3018,74 @@ async def update_assignment(
         "visibility": db_assignment.visibility
     }
 
+_PRIVATE_ASSIGNMENT_MUTATION_PATH = re.compile(
+    r"^/api/assignments/[^/]+/(?P<operation>draft|submit)/?$"
+)
+
+
+def _is_private_assignment_mutation(request: Request) -> bool:
+    """Keep rejected private assignment bodies out of validation responses."""
+    path_match = _PRIVATE_ASSIGNMENT_MUTATION_PATH.fullmatch(request.url.path)
+    return bool(path_match) and (
+        (path_match.group("operation") == "draft" and request.method == "PUT")
+        or (path_match.group("operation") == "submit" and request.method == "POST")
+    )
+
+
+def _set_private_no_store(response: Response) -> None:
+    response.headers.update(ASSIGNMENT_PRIVATE_CACHE_HEADERS)
+
+
+def _draft_revision_conflict() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Assignment draft changed in another session",
+        headers=ASSIGNMENT_PRIVATE_CACHE_HEADERS,
+    )
+
+
+def _advance_assignment_draft_tombstone(
+    db: Session,
+    *,
+    draft: models.AssignmentDraft | None,
+    assignment_id: int,
+    student_id: int,
+) -> models.AssignmentDraft:
+    if draft is None:
+        draft = models.AssignmentDraft(
+            assignment_id=assignment_id,
+            student_id=student_id,
+            content=None,
+            revision=1,
+        )
+        db.add(draft)
+    else:
+        draft.content = None
+        draft.revision += 1
+    draft.updated_at = _utc_now_naive()
+    return draft
+
+
 @app.get("/api/classes/{class_id}/assignments")
 async def list_assignments(
     class_id: int,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    _set_private_no_store(response)
     _ensure_class_access(db, current_user, class_id)
-    assignments = db.query(models.Assignment).filter(
+    assignments_query = db.query(models.Assignment).filter(
         models.Assignment.class_id == class_id
-    ).order_by(models.Assignment.due_date.asc()).all()
+    )
+    if current_user.role == models.UserRole.STUDENT:
+        assignments_query = assignments_query.filter(
+            models.Assignment.visibility == "class"
+        )
+    assignments = assignments_query.order_by(models.Assignment.due_date.asc()).all()
 
     total_students = _get_class_student_count(db, class_id)
-    response = []
+    assignment_items = []
 
     for assignment in assignments:
         stats = _get_assignment_stats(db, assignment, total_students)
@@ -1717,7 +3101,7 @@ async def list_assignments(
                 models.AssignmentDraft.student_id == current_user.id
             ).first()
 
-        response.append({
+        assignment_items.append({
             "id": assignment.id,
             "class_id": assignment.class_id,
             "title": assignment.title,
@@ -1739,18 +3123,33 @@ async def list_assignments(
             } if submission else None,
             "my_draft": {
                 "content": draft.content,
-                "updated_at": draft.updated_at
-            } if draft and draft.content else None
+                "updated_at": draft.updated_at,
+                "revision": draft.revision
+            } if draft and draft.content else None,
+            "my_draft_revision": draft.revision if draft else 0
         })
 
-    return response
+    return assignment_items
+
+
+def _ensure_assignment_visible_to_student(
+    current_user: models.User,
+    assignment: models.Assignment,
+) -> None:
+    if (
+        current_user.role == models.UserRole.STUDENT
+        and assignment.visibility != "class"
+    ):
+        raise HTTPException(status_code=404, detail="Assignment not found")
 
 @app.get("/api/assignments/{assignment_id}/draft")
 async def get_assignment_draft(
     assignment_id: int,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    _set_private_no_store(response)
     if current_user.role != models.UserRole.STUDENT:
         raise HTTPException(status_code=403, detail="Only students can access assignment drafts")
 
@@ -1758,6 +3157,7 @@ async def get_assignment_draft(
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
+    _ensure_assignment_visible_to_student(current_user, assignment)
     _ensure_class_access(db, current_user, assignment.class_id)
 
     draft = db.query(models.AssignmentDraft).filter(
@@ -1768,16 +3168,19 @@ async def get_assignment_draft(
     return {
         "content": draft.content if draft and draft.content else "",
         "saved_at": draft.updated_at if draft and draft.content else None,
-        "has_draft": bool(draft and draft.content)
+        "has_draft": bool(draft and draft.content),
+        "revision": draft.revision if draft else 0
     }
 
 @app.put("/api/assignments/{assignment_id}/draft")
 async def save_assignment_draft(
     assignment_id: int,
     payload: schemas.AssignmentDraftUpdate,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    _set_private_no_store(response)
     if current_user.role != models.UserRole.STUDENT:
         raise HTTPException(status_code=403, detail="Only students can save assignment drafts")
 
@@ -1785,51 +3188,58 @@ async def save_assignment_draft(
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
-    _ensure_class_access(db, current_user, assignment.class_id)
+    _ensure_assignment_visible_to_student(current_user, assignment)
+    _ensure_active_class_access(db, current_user, assignment.class_id)
+
+    # The user row is stable even when no draft row exists yet. Locking it
+    # serializes revision-zero creates as well as updates and submissions.
+    db.query(models.User).filter(
+        models.User.id == current_user.id
+    ).with_for_update().one()
 
     draft = db.query(models.AssignmentDraft).filter(
         models.AssignmentDraft.assignment_id == assignment_id,
         models.AssignmentDraft.student_id == current_user.id
     ).first()
 
-    content = payload.content if payload.content is not None else ""
-    if content == "":
-        if draft:
-            db.delete(draft)
-            db.commit()
-        return {
-            "content": "",
-            "saved_at": None,
-            "has_draft": False
-        }
+    current_revision = draft.revision if draft else 0
+    if payload.expected_revision != current_revision:
+        raise _draft_revision_conflict()
+
+    content = payload.content if payload.content else None
 
     if not draft:
         draft = models.AssignmentDraft(
             assignment_id=assignment_id,
             student_id=current_user.id,
-            content=content
+            content=content,
+            revision=1,
         )
         db.add(draft)
     else:
         draft.content = content
+        draft.revision += 1
 
-    draft.updated_at = datetime.utcnow()
+    draft.updated_at = _utc_now_naive()
     db.commit()
     db.refresh(draft)
 
     return {
-        "content": draft.content,
-        "saved_at": draft.updated_at,
-        "has_draft": True
+        "content": draft.content or "",
+        "saved_at": draft.updated_at if draft.content else None,
+        "has_draft": bool(draft.content),
+        "revision": draft.revision,
     }
 
 @app.post("/api/assignments/{assignment_id}/submit")
 async def submit_assignment(
     assignment_id: int,
     submission: schemas.AssignmentSubmissionCreate,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    _set_private_no_store(response)
     if current_user.role != models.UserRole.STUDENT:
         raise HTTPException(status_code=403, detail="Only students can submit assignments")
 
@@ -1837,14 +3247,24 @@ async def submit_assignment(
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
-    _ensure_class_access(db, current_user, assignment.class_id)
+    _ensure_assignment_visible_to_student(current_user, assignment)
+    _ensure_active_class_access(db, current_user, assignment.class_id)
+
+    # Serialize with autosave even before the first draft row is created.
+    db.query(models.User).filter(
+        models.User.id == current_user.id
+    ).with_for_update().one()
 
     draft = db.query(models.AssignmentDraft).filter(
         models.AssignmentDraft.assignment_id == assignment_id,
         models.AssignmentDraft.student_id == current_user.id
     ).first()
 
-    submitted_at = datetime.utcnow()
+    current_draft_revision = draft.revision if draft else 0
+    if submission.expected_draft_revision != current_draft_revision:
+        raise _draft_revision_conflict()
+
+    submitted_at = _utc_now_naive()
     due_date = assignment.due_date
 
     if due_date is not None:
@@ -1866,10 +3286,15 @@ async def submit_assignment(
         existing.content = submission.content
         existing.submitted_at = submitted_at
         existing.is_late = is_late
-        if draft:
-            db.delete(draft)
+        draft = _advance_assignment_draft_tombstone(
+            db,
+            draft=draft,
+            assignment_id=assignment_id,
+            student_id=current_user.id,
+        )
         db.commit()
         db.refresh(existing)
+        db.refresh(draft)
         
         return {
             "id": existing.id,
@@ -1880,7 +3305,8 @@ async def submit_assignment(
             "is_late": existing.is_late,
             "ai_percentage": existing.ai_percentage,
             "ai_highlighted_html": existing.ai_highlighted_html,
-            "ai_sentence_analysis": existing.ai_sentence_analysis
+            "ai_sentence_analysis": existing.ai_sentence_analysis,
+            "draft_revision": draft.revision,
         }
 
     new_submission = models.AssignmentSubmission(
@@ -1891,10 +3317,15 @@ async def submit_assignment(
         is_late=is_late
     )
     db.add(new_submission)
-    if draft:
-        db.delete(draft)
+    draft = _advance_assignment_draft_tombstone(
+        db,
+        draft=draft,
+        assignment_id=assignment_id,
+        student_id=current_user.id,
+    )
     db.commit()
     db.refresh(new_submission)
+    db.refresh(draft)
     
     return {
         "id": new_submission.id,
@@ -1905,7 +3336,8 @@ async def submit_assignment(
         "is_late": new_submission.is_late,
         "ai_percentage": new_submission.ai_percentage,
         "ai_highlighted_html": new_submission.ai_highlighted_html,
-        "ai_sentence_analysis": new_submission.ai_sentence_analysis
+        "ai_sentence_analysis": new_submission.ai_sentence_analysis,
+        "draft_revision": draft.revision,
     }
 
 @app.get("/api/classes/{class_id}/assignments/{assignment_id}/submissions")
@@ -1915,26 +3347,20 @@ async def list_assignment_submissions(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    db_class = _get_class_or_404(db, class_id)
-    assignment = db.query(models.Assignment).filter(models.Assignment.id == assignment_id).first()
-    if not assignment or assignment.class_id != class_id:
-        raise HTTPException(status_code=404, detail="Assignment not found")
-
-    if current_user.role == models.UserRole.ADMIN:
-        pass
-    elif current_user.role == models.UserRole.TEACHER:
-        teacher = _get_teacher_record(db, current_user)
-        if not teacher or db_class.teacher_id != teacher.id:
-            raise HTTPException(status_code=403, detail="Not authorized")
-    elif current_user.role == models.UserRole.STUDENT:
-        _ensure_class_access(db, current_user, class_id)
-        if assignment.visibility != "class":
-            raise HTTPException(status_code=403, detail="Not authorized")
-    else:
-        raise HTTPException(status_code=403, detail="Not authorized")
-    submissions = db.query(models.AssignmentSubmission).filter(
-        models.AssignmentSubmission.assignment_id == assignment_id
-    ).all()
+    _db_class, assignment = _ensure_assignment_for_class(
+        db,
+        current_user,
+        class_id,
+        assignment_id,
+    )
+    submissions_query = db.query(models.AssignmentSubmission).filter(
+        models.AssignmentSubmission.assignment_id == assignment.id
+    )
+    if current_user.role == models.UserRole.STUDENT:
+        submissions_query = submissions_query.filter(
+            models.AssignmentSubmission.student_id == current_user.id
+        )
+    submissions = submissions_query.all()
 
     results = []
     for submission in submissions:
@@ -1956,8 +3382,12 @@ async def list_assignment_submissions(
                 "id": student.id,
                 "first_name": student.first_name,
                 "last_name": student.last_name,
-                "email": student.email,
-                "username": student.username
+                "username": student.username,
+                **(
+                    {"email": student.email}
+                    if current_user.role != models.UserRole.STUDENT
+                    else {}
+                ),
             } if student else None,
             "replies": [
                 {
@@ -1987,31 +3417,13 @@ async def list_assignment_submission_replies(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    db_class = _get_class_or_404(db, class_id)
-    assignment = db.query(models.Assignment).filter(models.Assignment.id == assignment_id).first()
-    if not assignment or assignment.class_id != class_id:
-        raise HTTPException(status_code=404, detail="Assignment not found")
-
-    submission = db.query(models.AssignmentSubmission).filter(
-        models.AssignmentSubmission.id == submission_id,
-        models.AssignmentSubmission.assignment_id == assignment_id
-    ).first()
-    if not submission:
-        raise HTTPException(status_code=404, detail="Submission not found")
-
-    if current_user.role == models.UserRole.ADMIN:
-        pass
-    elif current_user.role == models.UserRole.TEACHER:
-        teacher = _get_teacher_record(db, current_user)
-        if not teacher or db_class.teacher_id != teacher.id:
-            raise HTTPException(status_code=403, detail="Not authorized")
-    elif current_user.role == models.UserRole.STUDENT:
-        _ensure_class_access(db, current_user, class_id)
-        if assignment.visibility != "class":
-            raise HTTPException(status_code=403, detail="Not authorized")
-    else:
-        raise HTTPException(status_code=403, detail="Not authorized")
-
+    _db_class, _assignment, submission = _ensure_submission_access(
+        db,
+        current_user,
+        class_id,
+        assignment_id,
+        submission_id,
+    )
     replies = db.query(models.AssignmentSubmissionReply).filter(
         models.AssignmentSubmissionReply.submission_id == submission_id
     ).order_by(models.AssignmentSubmissionReply.created_at.asc()).all()
@@ -2038,43 +3450,23 @@ async def create_assignment_submission_reply(
     class_id: int,
     assignment_id: int,
     submission_id: int,
-    payload: dict,
+    payload: schemas.SubmissionReplyCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    db_class = _get_class_or_404(db, class_id)
-    assignment = db.query(models.Assignment).filter(models.Assignment.id == assignment_id).first()
-    if not assignment or assignment.class_id != class_id:
-        raise HTTPException(status_code=404, detail="Assignment not found")
-
-    submission = db.query(models.AssignmentSubmission).filter(
-        models.AssignmentSubmission.id == submission_id,
-        models.AssignmentSubmission.assignment_id == assignment_id
-    ).first()
-    if not submission:
-        raise HTTPException(status_code=404, detail="Submission not found")
-
-    if current_user.role == models.UserRole.ADMIN:
-        pass
-    elif current_user.role == models.UserRole.TEACHER:
-        teacher = _get_teacher_record(db, current_user)
-        if not teacher or db_class.teacher_id != teacher.id:
-            raise HTTPException(status_code=403, detail="Not authorized")
-    elif current_user.role == models.UserRole.STUDENT:
-        _ensure_class_access(db, current_user, class_id)
-        if assignment.visibility != "class":
-            raise HTTPException(status_code=403, detail="Not authorized")
-    else:
-        raise HTTPException(status_code=403, detail="Not authorized")
-
-    content = (payload.get("content") or "").strip()
-    if not content:
-        raise HTTPException(status_code=400, detail="Reply content is required")
+    db_class, _assignment, submission = _ensure_submission_access(
+        db,
+        current_user,
+        class_id,
+        assignment_id,
+        submission_id,
+    )
+    _ensure_class_is_active(db_class)
 
     reply = models.AssignmentSubmissionReply(
         submission_id=submission_id,
         user_id=current_user.id,
-        content=content
+        content=payload.content,
     )
     db.add(reply)
     db.commit()
@@ -2107,12 +3499,12 @@ async def get_class_analytics(
 
     total_students = _get_class_student_count(db, class_id)
     total_posts = db.query(models.Blog).filter(models.Blog.class_id == class_id).count()
-    last_week = datetime.utcnow() - timedelta(days=7)
+    last_week = _utc_now_naive() - timedelta(days=7)
     posts_last_week = db.query(models.Blog).filter(
         models.Blog.class_id == class_id,
         models.Blog.created_at >= last_week
     ).count()
-    start_of_day = datetime.combine(datetime.utcnow().date(), datetime.min.time())
+    start_of_day = datetime.combine(_utc_now_naive().date(), datetime.min.time())
     active_today = db.query(models.Blog.owner_id).filter(
         models.Blog.class_id == class_id,
         models.Blog.created_at >= start_of_day
@@ -2214,7 +3606,7 @@ async def get_teacher_analytics(
         total_students = _get_class_student_count(db, class_.id)
         total_posts = db.query(models.Blog).filter(models.Blog.class_id == class_.id).count()
         assignments = db.query(models.Assignment).filter(models.Assignment.class_id == class_.id).all()
-        start_of_day = datetime.combine(datetime.utcnow().date(), datetime.min.time())
+        start_of_day = datetime.combine(_utc_now_naive().date(), datetime.min.time())
         active_today = db.query(models.Blog.owner_id).filter(
             models.Blog.class_id == class_.id,
             models.Blog.created_at >= start_of_day
@@ -2241,7 +3633,7 @@ async def get_teacher_analytics(
                 100,
                 round((db.query(models.Blog).filter(
                     models.Blog.class_id == class_.id,
-                    models.Blog.created_at >= datetime.utcnow() - timedelta(days=7)
+                    models.Blog.created_at >= _utc_now_naive() - timedelta(days=7)
                 ).count() / total_students) * 100)
             )
         else:
@@ -2285,22 +3677,7 @@ async def get_class_post(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    # Check access rights
-    if current_user.role == models.UserRole.STUDENT:
-        enrollment = db.query(models.ClassEnrollment).filter(
-            models.ClassEnrollment.student_id == current_user.id,
-            models.ClassEnrollment.class_id == class_id
-        ).first()
-        if not enrollment:
-            raise HTTPException(status_code=403, detail="Not enrolled in this class")
-    
-    post = db.query(models.Blog).filter(
-        models.Blog.id == post_id,
-        models.Blog.class_id == class_id
-    ).first()
-    
-    if not post:
-        raise HTTPException(status_code=404, detail="Post not found")
+    db_class, post = _ensure_post_access(db, current_user, class_id, post_id)
     
     # Get the author's information
     author = db.query(models.User).filter(models.User.id == post.owner_id).first()
@@ -2311,17 +3688,23 @@ async def get_class_post(
     ).first() is not None
 
     # Return post with author info and content
-    return {
-        **post.__dict__,
+    result = {
+        "id": post.id,
+        "title": post.title,
+        "content": post.content,
+        "created_at": post.created_at,
+        "owner_id": post.owner_id,
+        "class_id": post.class_id,
         "author": {
             "id": author.id,
             "first_name": author.first_name,
             "last_name": author.last_name,
             "profile_image": author.profile_image,
         },
-        "content": post.content,  # Content already includes the markers
         "is_saved": is_saved,
     }
+    result.update(_post_analysis_payload(db, current_user, db_class, post))
+    return result
 
 @app.put("/api/classes/{class_id}/posts/{post_id}")
 async def update_class_post(
@@ -2331,29 +3714,35 @@ async def update_class_post(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    # Get the post
-    db_post = db.query(models.Blog).filter(
-        models.Blog.id == post_id,
-        models.Blog.class_id == class_id
-    ).first()
-    
-    if not db_post:
-        raise HTTPException(status_code=404, detail="Post not found")
-    
-    # Check if user owns the post
-    if db_post.owner_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to edit this post")
-    
-    # Update the post - make sure title and content are both updated
-    db_post.title = post.title
-    db_post.content = _build_post_content(post)
-    db_post.updated_at = datetime.utcnow()
-    
-    db.commit()
-    db.refresh(db_post)
+    try:
+        db_class, db_post = _ensure_post_access(db, current_user, class_id, post_id)
+        _ensure_class_is_active(db_class)
+        if not _can_moderate_post(db, current_user, db_class, db_post):
+            raise HTTPException(status_code=403, detail="Not authorized to edit this post")
+
+        _lock_upload_owner(db, db_post.owner_id)
+        validate_structured_upload_references(post)
+        content = _build_post_content(post)
+        asset_keys = post_asset_keys(content)
+        bind_post_assets(
+            db,
+            blog=db_post,
+            actor_user_id=current_user.id,
+            storage_keys=asset_keys,
+            upload_root=UPLOAD_DIR,
+            now=_utc_now_aware(),
+        )
+        db_post.title = post.title
+        db_post.content = content
+        db_post.updated_at = _utc_now_naive()
+        db.commit()
+        db.refresh(db_post)
+    except Exception:
+        db.rollback()
+        raise
     
     # Return updated post
-    return {
+    result = {
         "id": db_post.id,
         "title": db_post.title,  # Make sure title is returned
         "content": db_post.content,
@@ -2364,10 +3753,9 @@ async def update_class_post(
         "author_profile_image": current_user.profile_image,
         "likes": len(db_post.likes) if hasattr(db_post, 'likes') else 0,
         "comments": len(db_post.comments) if hasattr(db_post, 'comments') else 0,
-        "ai_percentage": db_post.ai_percentage,
-        "ai_highlighted_html": db_post.ai_highlighted_html,
-        "ai_sentence_analysis": db_post.ai_sentence_analysis
     }
+    result.update(_post_analysis_payload(db, current_user, db_class, db_post))
+    return result
 
 @app.delete("/api/classes/{class_id}/posts/{post_id}")
 async def delete_class_post(
@@ -2376,22 +3764,18 @@ async def delete_class_post(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    # Get the post
-    post = db.query(models.Blog).filter(
-        models.Blog.id == post_id,
-        models.Blog.class_id == class_id
-    ).first()
-    
-    if not post:
-        raise HTTPException(status_code=404, detail="Post not found")
-    
-    # Check if user owns the post
-    if post.owner_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to delete this post")
-    
-    # Delete the post
-    db.delete(post)
-    db.commit()
+    try:
+        db_class, post = _ensure_post_access(db, current_user, class_id, post_id)
+        _ensure_class_is_active(db_class)
+        if not _can_moderate_post(db, current_user, db_class, post):
+            raise HTTPException(status_code=403, detail="Not authorized to delete this post")
+        _lock_upload_owner(db, post.owner_id)
+        _lock_upload_blog(db, post.id)
+        _delete_blogs_with_dependencies(db, [post.id])
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     
     return {"message": "Post deleted successfully"}
 
@@ -2399,7 +3783,8 @@ async def delete_class_post(
 
 def generate_unique_code(db: Session, length: int = 6) -> str:
     while True:
-        code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
+        alphabet = string.ascii_uppercase + string.digits
+        code = "".join(secrets.choice(alphabet) for _ in range(length))
         existing = db.query(models.Class).filter(
             models.Class.access_code == code
         ).first()
@@ -2408,7 +3793,7 @@ def generate_unique_code(db: Session, length: int = 6) -> str:
 
 @app.get("/api/student/classes")
 async def get_student_classes(
-    status: str = "active",  # Default to active classes
+    status: Literal["active", "archived"] = "active",
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -2440,7 +3825,7 @@ async def get_student_classes(
 
 @app.post("/api/student/join-class")
 async def join_class(
-    class_data: dict,
+    class_data: schemas.JoinClassRequest,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -2448,7 +3833,8 @@ async def join_class(
         raise HTTPException(status_code=403, detail="Not a student")
     
     class_ = db.query(models.Class).filter(
-        models.Class.access_code == class_data["access_code"]
+        models.Class.access_code == class_data.access_code,
+        models.Class.status == "active",
     ).first()
     
     if not class_:
@@ -2490,63 +3876,56 @@ async def get_student_posts(
     posts_with_class = []
     for post in posts:
         class_ = db.query(models.Class).filter(models.Class.id == post.class_id).first()
-        posts_with_class.append({
-            **post.__dict__,
-            "class_name": class_.name if class_ else "Unknown Class"
-        })
+        if class_ is None or not _can_access_class(db, current_user, class_):
+            continue
+        post_data = {
+            "id": post.id,
+            "title": post.title,
+            "content": post.content,
+            "created_at": post.created_at,
+            "owner_id": post.owner_id,
+            "class_id": post.class_id,
+            "class_name": class_.name,
+        }
+        post_data.update(_post_analysis_payload(db, current_user, class_, post))
+        posts_with_class.append(post_data)
     
     return posts_with_class
 
-@app.get("/api/debug/post/{post_id}")
-async def debug_post_content(
-    post_id: int,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
-    post = db.query(models.Blog).filter(models.Blog.id == post_id).first()
-    if not post:
-        raise HTTPException(status_code=404, detail="Post not found")
-    
-    return {
-        "raw_content": post.content,
-        "length": len(post.content)
-    }
-
 @app.post("/api/user/update-profile")
 async def update_profile(
-    profile_data: dict,
+    profile_data: schemas.ProfileUpdate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     """Update user profile information"""
     try:
-        # Get the user from database
-        user = db.query(models.User).filter(models.User.id == current_user.id).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        # Update fields that are present in the request
-        if "bio" in profile_data:
-            user.bio = profile_data["bio"]
-        
-        # Update name fields if provided
-        if "first_name" in profile_data:
-            user.first_name = profile_data["first_name"]
-        if "last_name" in profile_data:
-            user.last_name = profile_data["last_name"]
+        user = _lock_upload_owner(db, current_user.id)
+        update_values = profile_data.model_dump(exclude_unset=True)
+        cover_preset = update_values.pop("cover_preset", None)
+        if cover_preset is not None:
+            preset_urls = {
+                "classroom-1": "/Classroom1.jpeg",
+                "classroom-2": "/Classroom2.jpeg",
+                "classroom-3": "/Classroom3.jpeg",
+                "classroom-4": "/Classroom4.jpeg",
+            }
+            active_cover_assets = (
+                db.query(models.UploadAsset)
+                .filter(
+                    models.UploadAsset.owner_user_id == user.id,
+                    models.UploadAsset.purpose == "COVER_IMAGE",
+                    models.UploadAsset.state == "ACTIVE",
+                )
+                .order_by(models.UploadAsset.storage_key)
+                .with_for_update(of=models.UploadAsset)
+                .all()
+            )
+            queue_assets(active_cover_assets, now=_utc_now_aware())
+            user.cover_image = preset_urls[cover_preset]
 
-        # Update avatar settings if provided
-        if "avatar_id" in profile_data:
-            user.avatar_id = profile_data["avatar_id"]
-        if "avatar_color" in profile_data:
-            user.avatar_color = profile_data["avatar_color"]
-        if "profile_image" in profile_data:
-            user.profile_image = profile_data["profile_image"]
-        if "cover_image" in profile_data:
-            user.cover_image = profile_data["cover_image"]
+        for field_name, value in update_values.items():
+            setattr(user, field_name, value)
             
         db.commit()
         db.refresh(user)
@@ -2568,9 +3947,58 @@ async def update_profile(
                 "created_at": user.created_at
             }
         }
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to update profile: {str(e)}") from e
+        raise HTTPException(status_code=500, detail="Failed to update profile") from e
+
+
+async def _replace_profile_upload(
+    file: UploadFile,
+    *,
+    purpose: str,
+    profile_field: str,
+    db: Session,
+    current_user: models.User,
+) -> str:
+    prepared = None
+    stored = None
+    try:
+        prepared = await _save_validated_upload(file, allowed_kinds={"image"})
+        now = _utc_now_aware()
+        configure_upload_transaction(db)
+        user = _lock_upload_owner(db, current_user.id)
+        enforce_rate_limit(db, current_user.id, now=now)
+        enforce_quota(db, current_user.id, prepared.size)
+        stored = await run_in_threadpool(_finalize_prepared_upload, prepared)
+        add_active_profile_asset(
+            db,
+            owner_user_id=user.id,
+            purpose=purpose,
+            stored=stored,
+            now=now,
+        )
+        setattr(user, profile_field, stored.url)
+        db.commit()
+        return stored.url
+    except Exception as exc:
+        _rollback_upload_session(db)
+        await run_in_threadpool(_remove_upload_candidate, prepared)
+        if stored is not None and await run_in_threadpool(
+            _profile_upload_commit_is_visible,
+            stored,
+            owner_user_id=current_user.id,
+            purpose=purpose,
+            profile_field=profile_field,
+        ):
+            return stored.url
+        if stored is not None or (
+            prepared is not None and prepared.destination_path.is_file()
+        ):
+            raise _upload_reconciliation_error() from exc
+        raise
 
 @app.post("/api/user/upload-profile-image")
 async def upload_profile_image(
@@ -2580,25 +4008,18 @@ async def upload_profile_image(
 ):
     """Upload profile image"""
     try:
-        upload_dir = _upload_path("profile_images")
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        unique_filename = _build_unique_filename(file.filename, f"profile_{current_user.id}")
-        file_path = upload_dir / unique_filename
-        
-        # Save file
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        # Update user record in database
-        user = db.query(models.User).filter(models.User.id == current_user.id).first()
-        user.profile_image = _upload_url("profile_images", unique_filename)
-        db.commit()
-        db.refresh(user)
-        
-        return {"image_url": user.profile_image}
+        image_url = await _replace_profile_upload(
+            file,
+            purpose="PROFILE_IMAGE",
+            profile_field="profile_image",
+            db=db,
+            current_user=current_user,
+        )
+        return {"image_url": image_url}
+    except HTTPException:
+        raise
     except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to upload image: {str(e)}") from e
+        raise HTTPException(status_code=500, detail="Failed to upload image") from e
 
 @app.post("/api/user/upload-cover-image")
 async def upload_cover_image(
@@ -2608,55 +4029,18 @@ async def upload_cover_image(
 ):
     """Upload cover image"""
     try:
-        upload_dir = _upload_path("cover_images")
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        unique_filename = _build_unique_filename(file.filename, f"cover_{current_user.id}")
-        file_path = upload_dir / unique_filename
-        
-        # Save file
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        # Update user record in database
-        user = db.query(models.User).filter(models.User.id == current_user.id).first()
-        user.cover_image = _upload_url("cover_images", unique_filename)
-        db.commit()
-        db.refresh(user)
-        
-        return {"image_url": user.cover_image}
+        image_url = await _replace_profile_upload(
+            file,
+            purpose="COVER_IMAGE",
+            profile_field="cover_image",
+            db=db,
+            current_user=current_user,
+        )
+        return {"image_url": image_url}
+    except HTTPException:
+        raise
     except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to upload image: {str(e)}") from e
-
-def _get_user_class_ids(db: Session, user: models.User) -> List[int]:
-    if user.role == models.UserRole.STUDENT:
-        return [
-            enrollment.class_id
-            for enrollment in db.query(models.ClassEnrollment)
-            .filter(models.ClassEnrollment.student_id == user.id)
-            .all()
-        ]
-
-    if user.role == models.UserRole.TEACHER:
-        teacher = _get_teacher_record(db, user)
-        if not teacher:
-            return []
-        return [
-            class_.id
-            for class_ in db.query(models.Class)
-            .filter(models.Class.teacher_id == teacher.id)
-            .all()
-        ]
-
-    return []
-
-def _get_teacher_record(db: Session, user: models.User) -> models.Teacher | None:
-    if user.role != models.UserRole.TEACHER:
-        return None
-    teacher = db.query(models.Teacher).filter(models.Teacher.user_id == user.id).first()
-    if not teacher and user.email:
-        teacher = db.query(models.Teacher).filter(models.Teacher.email == user.email).first()
-    return teacher
+        raise HTTPException(status_code=500, detail="Failed to upload image") from e
 
 def _collect_ids(query) -> List[int]:
     return [record_id for (record_id,) in query.all()]
@@ -2664,6 +4048,15 @@ def _collect_ids(query) -> List[int]:
 def _delete_blogs_with_dependencies(db: Session, blog_ids: List[int]) -> None:
     if not blog_ids:
         return
+
+    (
+        db.query(models.Blog)
+        .filter(models.Blog.id.in_(sorted(blog_ids)))
+        .order_by(models.Blog.id)
+        .with_for_update(of=models.Blog)
+        .all()
+    )
+    queue_blog_assets(db, blog_ids, now=_utc_now_aware())
 
     comment_ids = _collect_ids(
         db.query(models.Comment.id).filter(models.Comment.blog_id.in_(blog_ids))
@@ -2680,6 +4073,10 @@ def _delete_blogs_with_dependencies(db: Session, blog_ids: List[int]) -> None:
 
     db.query(models.PostLike).filter(
         models.PostLike.post_id.in_(blog_ids)
+    ).delete(synchronize_session=False)
+
+    db.query(models.SavedPost).filter(
+        models.SavedPost.post_id.in_(blog_ids)
     ).delete(synchronize_session=False)
 
     db.query(models.Blog).filter(
@@ -2707,6 +4104,10 @@ def _delete_assignments_with_dependencies(db: Session, assignment_ids: List[int]
 
     db.query(models.AssignmentSubmission).filter(
         models.AssignmentSubmission.assignment_id.in_(assignment_ids)
+    ).delete(synchronize_session=False)
+
+    db.query(models.AssignmentReminderNotification).filter(
+        models.AssignmentReminderNotification.assignment_id.in_(assignment_ids)
     ).delete(synchronize_session=False)
 
     db.query(models.Assignment).filter(
@@ -2808,33 +4209,11 @@ def _delete_user_dependencies(db: Session, user: models.User) -> None:
         models.PasswordReset.user_id == user.id
     ).delete(synchronize_session=False)
 
-def _get_class_or_404(db: Session, class_id: int) -> models.Class:
-    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
-    if not db_class:
-        raise HTTPException(status_code=404, detail="Class not found")
-    return db_class
-
-def _ensure_class_access(db: Session, current_user: models.User, class_id: int) -> models.Class:
-    db_class = _get_class_or_404(db, class_id)
-
-    if current_user.role == models.UserRole.ADMIN:
-        return db_class
-
-    if current_user.role == models.UserRole.TEACHER:
-        teacher = _get_teacher_record(db, current_user)
-        if teacher and db_class.teacher_id == teacher.id:
-            return db_class
-        raise HTTPException(status_code=403, detail="Not authorized to access this class")
-
-    # Student
-    enrollment = db.query(models.ClassEnrollment).filter(
-        models.ClassEnrollment.student_id == current_user.id,
-        models.ClassEnrollment.class_id == class_id
-    ).first()
-    if not enrollment:
-        raise HTTPException(status_code=403, detail="Not enrolled in this class")
-
-    return db_class
+    queue_owner_assets(db, user.id, now=_utc_now_aware())
+    db.flush()
+    db.query(models.UploadAsset).filter(
+        models.UploadAsset.owner_user_id == user.id
+    ).update({models.UploadAsset.owner_user_id: None}, synchronize_session=False)
 
 def _get_class_student_count(db: Session, class_id: int) -> int:
     return db.query(models.ClassEnrollment).filter(
@@ -2865,7 +4244,7 @@ def _get_assignment_stats(db: Session, assignment: models.Assignment, total_stud
     }
 
 def _get_post_counts_last_days(db: Session, class_id: int, days: int = 7) -> list[dict]:
-    today = datetime.utcnow().date()
+    today = _utc_now_naive().date()
     results = []
     for offset in range(days - 1, -1, -1):
         day = today - timedelta(days=offset)
@@ -2905,7 +4284,7 @@ async def get_user_profile(
             "created_at": current_user.created_at
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch profile: {str(e)}") from e
+        raise HTTPException(status_code=500, detail="Failed to fetch profile") from e
 
 @app.get("/api/user/settings")
 async def get_user_settings(
@@ -2974,7 +4353,11 @@ async def subscribe_push_notifications(
     )
 
     if existing:
-        existing.user_id = current_user.id
+        if existing.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Push subscription is already registered",
+            )
         existing.p256dh = p256dh
         existing.auth = auth
     else:
@@ -3013,6 +4396,7 @@ async def unsubscribe_push_notifications(
 @app.delete("/api/user/account")
 async def delete_user_account(
     confirm: str,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -3020,21 +4404,34 @@ async def delete_user_account(
     if confirm.strip().upper() != "DELETE":
         raise HTTPException(status_code=400, detail="Confirmation must be DELETE")
 
-    user = db.query(models.User).filter(models.User.id == current_user.id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
     try:
+        # Every account lifecycle operation locks the parent User before child
+        # session/reset rows. This prevents reverse-order deadlocks and closes
+        # the window for a newly issued session to survive account deletion.
+        user = (
+            db.query(models.User)
+            .filter(
+                models.User.id == current_user.id,
+                models.User.disabled_at.is_(None),
+            )
+            .with_for_update(of=models.User)
+            .first()
+        )
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        revoke_all_sessions(db, user_id=user.id)
         _delete_user_dependencies(db, user)
         db.delete(user)
         db.commit()
+        _clear_browser_session(response)
         return {"message": "Account deleted successfully"}
     except HTTPException:
         db.rollback()
         raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to delete account: {str(e)}") from e
+        raise HTTPException(status_code=500, detail="Failed to delete account") from e
 
 @app.get("/api/user/profile/{user_id}")
 async def get_public_user_profile(
@@ -3046,15 +4443,10 @@ async def get_public_user_profile(
     target_user = db.query(models.User).filter(models.User.id == user_id).first()
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
-
-    if current_user.id != target_user.id and not current_user.is_admin:
-        viewer_classes = set(_get_user_class_ids(db, current_user))
-        target_classes = set(_get_user_class_ids(db, target_user))
-        if viewer_classes.isdisjoint(target_classes):
-            raise HTTPException(status_code=403, detail="Not authorized to view this profile")
+    visible_class_ids = _ensure_profile_access(db, current_user, target_user)
 
     role_value = target_user.role.value if hasattr(target_user.role, "value") else str(target_user.role)
-    is_owner_or_admin = current_user.id == target_user.id or current_user.is_admin
+    is_owner_or_admin = current_user.id == target_user.id or _is_admin_role(current_user.role)
     target_settings = _get_or_create_user_settings(db, target_user)
 
     # Keep public teacher/admin profiles minimal for non-admin viewers.
@@ -3074,7 +4466,7 @@ async def get_public_user_profile(
         "cover_image": target_user.cover_image if allow_extended_profile else None,
         "avatar_id": target_user.avatar_id,
         "avatar_color": target_user.avatar_color,
-        "class_ids": _get_user_class_ids(db, target_user),
+        "class_ids": visible_class_ids,
         "created_at": target_user.created_at
     }
 
@@ -3089,10 +4481,19 @@ async def get_current_user_posts(
     posts_with_class = []
     for post in posts:
         class_ = db.query(models.Class).filter(models.Class.id == post.class_id).first()
-        posts_with_class.append({
-            **post.__dict__,
-            "class_name": class_.name if class_ else "Unknown Class"
-        })
+        if class_ is None:
+            continue
+        post_data = {
+            "id": post.id,
+            "title": post.title,
+            "content": post.content,
+            "created_at": post.created_at,
+            "owner_id": post.owner_id,
+            "class_id": post.class_id,
+            "class_name": class_.name,
+        }
+        post_data.update(_post_analysis_payload(db, current_user, class_, post))
+        posts_with_class.append(post_data)
 
     return posts_with_class
 
@@ -3107,12 +4508,8 @@ async def get_user_posts(
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if current_user.id != target_user.id and not current_user.is_admin:
-        viewer_classes = set(_get_user_class_ids(db, current_user))
-        target_classes = set(_get_user_class_ids(db, target_user))
-        shared_classes = viewer_classes.intersection(target_classes)
-        if not shared_classes:
-            return []
+    if current_user.id != target_user.id and not _is_admin_role(current_user.role):
+        shared_classes = _ensure_profile_access(db, current_user, target_user)
         posts = db.query(models.Blog).filter(
             models.Blog.owner_id == target_user.id,
             models.Blog.class_id.in_(shared_classes)
@@ -3123,10 +4520,19 @@ async def get_user_posts(
     posts_with_class = []
     for post in posts:
         class_ = db.query(models.Class).filter(models.Class.id == post.class_id).first()
-        posts_with_class.append({
-            **post.__dict__,
-            "class_name": class_.name if class_ else "Unknown Class"
-        })
+        if class_ is None:
+            continue
+        post_data = {
+            "id": post.id,
+            "title": post.title,
+            "content": post.content,
+            "created_at": post.created_at,
+            "owner_id": post.owner_id,
+            "class_id": post.class_id,
+            "class_name": class_.name,
+        }
+        post_data.update(_post_analysis_payload(db, current_user, class_, post))
+        posts_with_class.append(post_data)
 
     return posts_with_class
 
@@ -3186,6 +4592,8 @@ async def get_saved_posts(
             continue
 
         class_ = db.query(models.Class).filter(models.Class.id == post.class_id).first()
+        if class_ is None or not _can_access_class(db, current_user, class_):
+            continue
         saved_posts.append({
             "id": post.id,
             "title": post.title,
@@ -3210,13 +4618,9 @@ async def like_post(
     current_user: models.User = Depends(get_current_user)
 ):
     """Like or unlike a post"""
-    # Find the post
-    post = db.query(models.Blog).filter(
-        models.Blog.id == post_id,
-        models.Blog.class_id == class_id
-    ).first()
-    if not post:
-        raise HTTPException(status_code=404, detail="Post not found")
+    db_class, post = _ensure_post_access(db, current_user, class_id, post_id)
+    if db_class.status != "active":
+        raise HTTPException(status_code=409, detail="This class is not active")
     
     # Check if the user already liked this post
     existing_like = db.query(models.PostLike).filter(
@@ -3258,13 +4662,7 @@ async def get_post_likes(
     current_user: models.User = Depends(get_current_user)
 ):
     """Get likes for a post"""
-    # Find the post
-    post = db.query(models.Blog).filter(
-        models.Blog.id == post_id,
-        models.Blog.class_id == class_id
-    ).first()
-    if not post:
-        raise HTTPException(status_code=404, detail="Post not found")
+    _db_class, post = _ensure_post_access(db, current_user, class_id, post_id)
     
     # Check if the current user liked this post
     user_liked = db.query(models.PostLike).filter(
@@ -3299,20 +4697,13 @@ async def get_post_likes(
 async def get_comments(
     class_id: int,
     post_id: int,
-    skip: int = 0,
-    limit: int = 20,
+    skip: int = Query(default=0, ge=0, le=10_000),
+    limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     """Get comments for a post, with pagination support"""
-    # Find the post
-    post = db.query(models.Blog).filter(
-        models.Blog.id == post_id,
-        models.Blog.class_id == class_id
-    ).first()
-    
-    if not post:
-        raise HTTPException(status_code=404, detail="Post not found")
+    _db_class, post = _ensure_post_access(db, current_user, class_id, post_id)
     
     # Get root comments first (comments without a parent)
     root_comments = db.query(models.Comment).filter(
@@ -3383,16 +4774,13 @@ async def get_comments(
 @app.get("/api/comments/{comment_id}/replies")
 async def get_comment_replies(
     comment_id: int,
-    skip: int = 0,
-    limit: int = 10,
+    skip: int = Query(default=0, ge=0, le=10_000),
+    limit: int = Query(default=10, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     """Get replies for a specific comment"""
-    # Check if comment exists
-    comment = db.query(models.Comment).filter(models.Comment.id == comment_id).first()
-    if not comment:
-        raise HTTPException(status_code=404, detail="Comment not found")
+    _db_class, _post, comment = _ensure_comment_access(db, current_user, comment_id)
     
     # Get replies with pagination
     replies = db.query(models.Comment).filter(
@@ -3452,22 +4840,17 @@ async def get_comment_replies(
 async def create_comment(
     class_id: int,
     post_id: int,
-    comment_data: dict,
+    comment_data: schemas.CommentCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     """Create a new comment on a post or reply to another comment"""
-    # Find the post
-    post = db.query(models.Blog).filter(
-        models.Blog.id == post_id,
-        models.Blog.class_id == class_id
-    ).first()
-    
-    if not post:
-        raise HTTPException(status_code=404, detail="Post not found")
+    db_class, post = _ensure_post_access(db, current_user, class_id, post_id)
+    if db_class.status != "active":
+        raise HTTPException(status_code=409, detail="This class is not active")
     
     # Check if this is a reply to another comment
-    parent_id = comment_data.get("parent_id")
+    parent_id = comment_data.parent_id
     if parent_id:
         # Verify parent comment exists
         parent_comment = db.query(models.Comment).filter(
@@ -3480,7 +4863,7 @@ async def create_comment(
     
     # Create the comment
     new_comment = models.Comment(
-        content=comment_data.get("content"),
+        content=comment_data.content,
         user_id=current_user.id,
         blog_id=post_id,
         parent_id=parent_id
@@ -3518,10 +4901,9 @@ async def like_comment(
     current_user: models.User = Depends(get_current_user)
 ):
     """Like or unlike a comment"""
-    # Find the comment
-    comment = db.query(models.Comment).filter(models.Comment.id == comment_id).first()
-    if not comment:
-        raise HTTPException(status_code=404, detail="Comment not found")
+    db_class, _post, comment = _ensure_comment_access(db, current_user, comment_id)
+    if db_class.status != "active":
+        raise HTTPException(status_code=409, detail="This class is not active")
     
     # Check if the user already liked this comment
     existing_like = db.query(models.CommentLike).filter(
@@ -3562,23 +4944,12 @@ async def get_class_students(
     current_user: models.User = Depends(get_current_user)
 ):
     """Get all students enrolled in a class"""
-    # Check if user has access to this class
-    if current_user.role == models.UserRole.TEACHER:
-        # Teachers can access classes they created
-        class_details = db.query(models.Class).filter(models.Class.id == class_id).first()
-        teacher = _get_teacher_record(db, current_user)
-        if not class_details or not teacher or class_details.teacher_id != teacher.id:
-            raise HTTPException(status_code=403, detail="Not authorized to access this class")
-    elif current_user.role == models.UserRole.STUDENT:
-        # Students can access classes they're enrolled in
-        enrollment = db.query(models.ClassEnrollment).filter(
-            models.ClassEnrollment.student_id == current_user.id,
-            models.ClassEnrollment.class_id == class_id
-        ).first()
-        if not enrollment:
-            raise HTTPException(status_code=403, detail="Not enrolled in this class")
-    else:
-        raise HTTPException(status_code=403, detail="Not authorized")
+    db_class = _ensure_class_access(db, current_user, class_id)
+    can_view_private_roster = _is_admin_role(current_user.role) or _teacher_owns_class(
+        db,
+        current_user,
+        db_class,
+    )
     
     # Get all enrollments for this class
     enrollments = db.query(models.ClassEnrollment).filter(
@@ -3596,158 +4967,145 @@ async def get_class_students(
                 models.Blog.class_id == class_id
             ).count()
             
-            students.append({
+            student_data = {
                 "id": student.id,
                 "username": student.username,
-                "email": student.email,
                 "first_name": student.first_name,
                 "last_name": student.last_name,
-                "created_at": student.created_at,
+                "profile_image": student.profile_image,
                 "posts_count": post_count,
-            })
+            }
+            if can_view_private_roster:
+                student_data.update(
+                    {
+                        "email": student.email,
+                        "created_at": student.created_at,
+                    }
+                )
+            students.append(student_data)
     
     return students
 
-# Add this after creating the app
-app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
-
 @app.get("/api/uploads/{file_path:path}")
-async def get_uploaded_file(file_path: str):
-    """Serve uploaded files with compatibility for both legacy and bucketed paths."""
-    normalized_path = file_path.replace("\\", "/").lstrip("/")
+async def get_uploaded_file(
+    file_path: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """Serve only registered objects after a database-derived ACL decision."""
+    try:
+        storage_key = canonical_object_key(f"/api/uploads/{file_path}")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid upload path",
+        ) from exc
 
-    # 1) Exact path hit (works for /api/uploads/images/<user>/<file> and legacy /api/uploads/<user>/<file>)
-    direct_path = _upload_path(normalized_path)
-    if direct_path.exists() and direct_path.is_file():
-        return FileResponse(path=direct_path)
-
-    parts = [part for part in normalized_path.split("/") if part]
-
-    # 2) Legacy URL fallback: /api/uploads/<user>/<file> -> search bucketed locations
-    if len(parts) >= 2 and parts[0].isdigit():
-        user_id = parts[0]
-        trailing_parts = parts[1:]
-        for bucket in ("images", "videos", "files"):
-            candidate = _upload_path(bucket, user_id, *trailing_parts)
-            if candidate.exists() and candidate.is_file():
-                return FileResponse(path=candidate)
-
-    # 3) Bucketed URL fallback: /api/uploads/<bucket>/<user>/<file> -> legacy location
-    if len(parts) >= 3 and parts[0] in {"images", "videos", "files"} and parts[1].isdigit():
-        user_id = parts[1]
-        trailing_parts = parts[2:]
-        legacy_candidate = _upload_path(user_id, *trailing_parts)
-        if legacy_candidate.exists() and legacy_candidate.is_file():
-            return FileResponse(path=legacy_candidate)
-
-    # 4) Filename fallback: if paths changed, try locating the same filename anywhere under uploads.
-    if parts:
-        target_name = Path(parts[-1]).name
-        if target_name:
-            for candidate in UPLOAD_DIR.rglob(target_name):
-                if candidate.is_file():
-                    return FileResponse(path=candidate)
-
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"File not found: {normalized_path}"
+    asset = (
+        db.query(models.UploadAsset)
+        .filter(models.UploadAsset.storage_key == storage_key)
+        .first()
     )
+    if asset is None or not _can_read_upload_asset(db, current_user, asset):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    opened_object = await run_in_threadpool(
+        open_verified_registered_object,
+        UPLOAD_DIR,
+        storage_key=storage_key,
+        size_bytes=asset.size_bytes,
+        sha256_digest=asset.sha256_digest,
+    )
+    if opened_object is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    return _safe_upload_file_response(
+        opened_object,
+        Path(storage_key),
+        requested_filename=asset.original_filename,
+    )
+
+
+def _can_read_upload_asset(
+    db: Session,
+    current_user: models.User,
+    asset: models.UploadAsset,
+) -> bool:
+    if _is_admin_role(current_user.role):
+        return asset.state in {"PENDING", "ACTIVE"}
+    if asset.owner_user_id == current_user.id:
+        return asset.state in {"PENDING", "ACTIVE"}
+    if asset.state != "ACTIVE":
+        return False
+    if asset.purpose == "POST":
+        blog = db.query(models.Blog).filter(models.Blog.id == asset.blog_id).first()
+        if blog is None:
+            return False
+        db_class = db.query(models.Class).filter(models.Class.id == blog.class_id).first()
+        return db_class is not None and _can_access_class(db, current_user, db_class)
+    if asset.purpose not in {"PROFILE_IMAGE", "COVER_IMAGE"}:
+        return False
+    owner = db.query(models.User).filter(models.User.id == asset.owner_user_id).first()
+    if owner is None:
+        return False
+    try:
+        _ensure_profile_access(db, current_user, owner)
+    except HTTPException:
+        return False
+    if asset.purpose == "PROFILE_IMAGE":
+        return True
+    role_value = str(getattr(owner.role, "value", owner.role)).upper()
+    if role_value != models.UserRole.STUDENT.value:
+        return False
+    owner_settings = (
+        db.query(models.UserSettings)
+        .filter(models.UserSettings.user_id == owner.id)
+        .first()
+    )
+    return owner_settings is None or owner_settings.show_profile_to_classmates
 
 @app.delete("/api/upload/{file_path:path}")
 async def delete_file(
     file_path: str,
-    current_user: models.User = Depends(get_current_user)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
 ):
-    """Delete an uploaded file"""
+    """Queue an unbound upload; active resources must be removed via their parent."""
     try:
-        # Ensure the file belongs to the current user.
-        # Supports both legacy uploads/<user_id>/... and new uploads/<bucket>/<user_id>/... layouts.
-        user_dir = f"{current_user.id}"
-        allowed_prefixes = {
-            user_dir,
-            f"images/{user_dir}",
-            f"videos/{user_dir}",
-            f"files/{user_dir}",
-        }
-        normalized_path = file_path.replace("\\", "/").lstrip("/")
-        if not any(normalized_path.startswith(prefix) for prefix in allowed_prefixes):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You don't have permission to delete this file"
-            )
-        
-        # Construct the full file path
-        full_path = _upload_path(file_path)
-        
-        # Check if file exists
-        if not full_path.exists():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="File not found"
-            )
-        
-        # Delete the file
-        full_path.unlink()
-        
-        return {"message": "File deleted successfully"}
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        print(f"File deletion error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to delete file: {str(e)}"
-        ) from e
-
-@app.get("/api/download")
-async def download_file(
-    url: str,
-    filename: str,
-    current_user: models.User = Depends(get_current_user)
-):
-    """Force download a file with the specified filename"""
-    try:        
-        # Extract the file path from the URL.
-        # Supports both /uploads/... and /api/uploads/... forms.
-        upload_match = re.search(r"(?:/api)?/uploads/(.+)$", url)
-        if upload_match:
-            file_path = upload_match.group(1)
-        elif url.startswith('/uploads/'):
-            file_path = url[9:]
-        elif url.startswith('/api/uploads/'):
-            file_path = url[13:]
-        elif url.startswith('http'):
+        try:
+            storage_key = canonical_object_key(f"/api/uploads/{file_path}")
+        except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid file URL"
-            )
-        else:
-            file_path = url
-        
-        # Construct the full path
-        full_path = _upload_path(file_path)
-        
-        # Check if file exists
-        if not full_path.exists():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"File not found: {full_path}"
-            )
-        
-        # Return the file as an attachment to force download
-        return FileResponse(
-            path=full_path,
-            filename=filename,
-            media_type='application/octet-stream',
-            headers={"Content-Disposition": f"attachment; filename=\"{filename}\""}
+                detail="Invalid upload path",
+            ) from exc
+        _lock_upload_owner(db, current_user.id)
+        asset = (
+            db.query(models.UploadAsset)
+            .filter(models.UploadAsset.storage_key == storage_key)
+            .with_for_update(of=models.UploadAsset)
+            .first()
         )
+        if asset is None or asset.owner_user_id != current_user.id:
+            raise HTTPException(status_code=404, detail="File not found")
+        if asset.state == "ACTIVE":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Active uploads must be removed from their resource",
+            )
+        if asset.state != "PENDING":
+            raise HTTPException(status_code=404, detail="File not found")
+        asset.state = "DELETE_PENDING"
+        asset.expires_at = None
+        asset.delete_after = _utc_now_aware()
+        db.commit()
+        return {"message": "File deletion queued"}
     except Exception as e:
+        db.rollback()
         if isinstance(e, HTTPException):
-            raise e
-        print(f"Download error: {str(e)}")
+            raise
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to download file: {str(e)}"
+            detail="Failed to delete file",
         ) from e
 
 # Add new endpoints for archiving and deleting classes
@@ -3759,24 +5117,7 @@ async def archive_class(
     current_user: models.User = Depends(get_current_user)
 ):
     """Archive a class (for teachers)"""
-    if current_user.role != models.UserRole.TEACHER:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only teachers can archive classes"
-        )
-    
-    # Get the class
-    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
-    if not db_class:
-        raise HTTPException(status_code=404, detail="Class not found")
-    
-    # Check if the user is the teacher of this class
-    teacher = _get_teacher_record(db, current_user)
-    if not teacher or db_class.teacher_id != teacher.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only archive your own classes"
-        )
+    db_class = _ensure_class_owner(db, current_user, class_id)
     
     # Update the class status
     db_class.status = "archived"
@@ -3791,24 +5132,7 @@ async def restore_class(
     current_user: models.User = Depends(get_current_user)
 ):
     """Restore an archived class (for teachers)"""
-    if current_user.role != models.UserRole.TEACHER:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only teachers can restore classes"
-        )
-    
-    # Get the class
-    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
-    if not db_class:
-        raise HTTPException(status_code=404, detail="Class not found")
-    
-    # Check if the user is the teacher of this class
-    teacher = _get_teacher_record(db, current_user)
-    if not teacher or db_class.teacher_id != teacher.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only restore your own classes"
-        )
+    db_class = _ensure_class_owner(db, current_user, class_id)
     
     # Update the class status
     db_class.status = "active"
@@ -3823,28 +5147,14 @@ async def delete_class(
     current_user: models.User = Depends(get_current_user)
 ):
     """Delete a class (for teachers)"""
-    if current_user.role != models.UserRole.TEACHER:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only teachers can delete classes"
-        )
-    
-    # Get the class
-    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
-    if not db_class:
-        raise HTTPException(status_code=404, detail="Class not found")
-    
-    # Check if the user is the teacher of this class
-    teacher = _get_teacher_record(db, current_user)
-    if not teacher or db_class.teacher_id != teacher.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only delete your own classes"
-        )
-    
-    # Delete the class
-    db.delete(db_class)
-    db.commit()
+    try:
+        _lock_upload_owner(db, current_user.id)
+        _ensure_class_owner(db, current_user, class_id)
+        _delete_classes_with_dependencies(db, [class_id])
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     
     return {"message": "Class deleted successfully"}
 
@@ -3856,39 +5166,8 @@ async def get_student_details(
     current_user: models.User = Depends(get_current_user)
 ):
     """Get detailed information about a student in a class"""
-    # Check if the current user is the teacher of this class
-    if current_user.role != models.UserRole.TEACHER:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only teachers can view detailed student information"
-        )
-    
-    # Get the class
-    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
-    if not db_class:
-        raise HTTPException(status_code=404, detail="Class not found")
-    
-    # Check if the user is the teacher of this class
-    teacher = _get_teacher_record(db, current_user)
-    if not teacher or db_class.teacher_id != teacher.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only view students in your own classes"
-        )
-    
-    # Get the student
-    student = db.query(models.User).filter(models.User.id == student_id).first()
-    if not student:
-        raise HTTPException(status_code=404, detail="Student not found")
-    
-    # Check if the student is enrolled in this class
-    enrollment = db.query(models.ClassEnrollment).filter(
-        models.ClassEnrollment.student_id == student_id,
-        models.ClassEnrollment.class_id == class_id
-    ).first()
-    
-    if not enrollment:
-        raise HTTPException(status_code=404, detail="Student not enrolled in this class")
+    db_class = _ensure_class_owner(db, current_user, class_id)
+    student, enrollment = _ensure_enrolled_student(db, class_id, student_id)
     
     # Core activity counts scoped to this class.
     posts_count = db.query(models.Blog).filter(
@@ -3936,7 +5215,7 @@ async def get_student_details(
 
     activity_timeline = []
 
-    enrollment_ts = enrollment.enrolled_at or student.created_at or datetime.utcnow()
+    enrollment_ts = enrollment.enrolled_at or student.created_at or _utc_now_naive()
     activity_timeline.append({
         "type": "enrollment",
         "title": "Joined Class",
@@ -3971,7 +5250,10 @@ async def get_student_details(
             "timestamp": post_like.created_at,
         })
 
-    activity_timeline.sort(key=lambda item: item.get("timestamp") or datetime.min, reverse=True)
+    activity_timeline.sort(
+        key=lambda item: _utc_sort_timestamp(item.get("timestamp")),
+        reverse=True,
+    )
 
     recent_activity = [
         {
@@ -4011,25 +5293,8 @@ async def get_student_class_posts(
     current_user: models.User = Depends(get_current_user)
 ):
     """Get posts created by a student in a class"""
-    # Check if the current user is the teacher of this class
-    if current_user.role != models.UserRole.TEACHER:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only teachers can view detailed student information"
-        )
-    
-    # Get the class
-    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
-    if not db_class:
-        raise HTTPException(status_code=404, detail="Class not found")
-    
-    # Check if the user is the teacher of this class
-    teacher = _get_teacher_record(db, current_user)
-    if not teacher or db_class.teacher_id != teacher.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only view students in your own classes"
-        )
+    _ensure_class_owner(db, current_user, class_id)
+    _ensure_enrolled_student(db, class_id, student_id)
     
     # Get the student's posts in this class
     posts = db.query(models.Blog).filter(
@@ -4068,157 +5333,216 @@ async def get_student_class_posts(
 async def update_student_notes(
     class_id: int,
     student_id: int,
-    notes_data: dict,
+    notes_data: schemas.StudentNotesUpdate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     """Update teacher notes for a student"""
-    # Check if the current user is the teacher of this class
-    if current_user.role != models.UserRole.TEACHER:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only teachers can update student notes"
-        )
+    _ensure_class_owner(db, current_user, class_id)
+    _student, enrollment = _ensure_enrolled_student(db, class_id, student_id)
     
-    # Get the class
-    db_class = db.query(models.Class).filter(models.Class.id == class_id).first()
-    if not db_class:
-        raise HTTPException(status_code=404, detail="Class not found")
-    
-    # Check if the user is the teacher of this class
-    if db_class.teacher_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only update notes for students in your own classes"
-        )
-    
-    # Get the enrollment
-    enrollment = db.query(models.ClassEnrollment).filter(
-        models.ClassEnrollment.student_id == student_id,
-        models.ClassEnrollment.class_id == class_id
-    ).first()
-    
-    if not enrollment:
-        raise HTTPException(status_code=404, detail="Student not enrolled in this class")
-    
-    # Update the notes
-    # First check if the notes field exists in the model
-    if hasattr(enrollment, 'notes'):
-        enrollment.notes = notes_data.get('notes', '')
-        db.commit()
-    else:
-        # If the field doesn't exist, we'll need to add it to the model first
-        # For now, we'll just return success without actually saving
-        pass
+    enrollment.notes = notes_data.notes
+    db.commit()
     
     return {"message": "Notes updated successfully"}
 
 class ForgotPasswordRequest(BaseModel):
-    email: EmailStr
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr = Field(max_length=100)
 
 class ResetPasswordRequest(BaseModel):
-    token: str
-    new_password: str
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=15, max_length=1_024)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_password_size(cls, value: str) -> str:
+        return schemas.validate_password_request_bytes(value)
 
 EMAIL_HOST = settings.email_host
 EMAIL_PORT = settings.email_port
+EMAIL_SMTP_TIMEOUT_SECONDS = settings.email_smtp_timeout_seconds
 EMAIL_USERNAME = settings.email_username
 EMAIL_PASSWORD = _secret_value(settings.email_password)
 EMAIL_FROM = settings.email_from
 
 
-def send_password_reset_email(email: str, token: str):
-    """Send password reset email with reset link"""
-    reset_url = f"{FRONTEND_URL}/reset-password?token={token}"
-    if not all([EMAIL_HOST, EMAIL_USERNAME, EMAIL_PASSWORD, EMAIL_FROM]):
-        return False
-    
-    message = MIMEMultipart("alternative")
-    message["Subject"] = "Reset Your LitBlog Password"
-    message["From"] = EMAIL_FROM
-    message["To"] = email
-    
-    # Create HTML version of the message
-    html = f"""
-        <html>
-            <head></head>
-            <body style="margin:0; padding:0; background-color:#f3f4f6;">
-                <div style="max-width:640px; margin:0 auto; padding:32px 16px;">
-                    <div style="background-color:#ffffff; border-radius:16px; padding:32px; font-family: Arial, sans-serif; color:#111827; box-shadow:0 10px 30px rgba(0,0,0,0.08);">
-                        <div style="text-align:center; margin-bottom:24px;">
-                            <h1 style="margin:0; font-size:24px; font-weight:700;">Reset your LitBlog password</h1>
-                            <p style="margin:8px 0 0; color:#6b7280; font-size:14px;">We received a request to reset your password.</p>
-                        </div>
-                        <p style="font-size:16px; line-height:1.6; margin:0 0 24px;">
-                            Click the button below to set a new password. This link will expire in <strong>1 hour</strong>.
-                        </p>
-                        <div style="text-align:center; margin:24px 0;">
-                            <a href="{reset_url}" style="display:inline-block; background-color:#4F46E5; color:#ffffff; text-decoration:none; padding:12px 24px; border-radius:999px; font-weight:600;">Reset Password</a>
-                        </div>
-                        <p style="font-size:14px; color:#6b7280; line-height:1.6; margin:0 0 16px;">
-                            If you didn't request a password reset, you can safely ignore this email.
-                        </p>
-                        <div style="background-color:#f9fafb; border-radius:12px; padding:16px; font-size:12px; color:#6b7280;">
-                            Having trouble with the button? Copy and paste this link into your browser:<br />
-                            <span style="word-break:break-all; color:#4F46E5;">{reset_url}</span>
-                        </div>
-                    </div>
-                    <p style="text-align:center; color:#9ca3af; font-size:12px; margin-top:16px;">© {datetime.utcnow().year} LitBlog</p>
-                </div>
-            </body>
-        </html>
-        """
-    
-    # Attach HTML part
-    part = MIMEText(html, "html")
-    message.attach(part)
-    
-    # Send email
-    try:
-        server = smtplib.SMTP(EMAIL_HOST, EMAIL_PORT)
-        server.starttls()
-        server.login(EMAIL_USERNAME, EMAIL_PASSWORD)
-        server.sendmail(EMAIL_FROM, email, message.as_string())
-        server.quit()
-        return True
-    except Exception as e:
-        print(f"Error sending email: {e}")
-        return False
+def send_password_reset_email(email: str, token: str) -> bool:
+    """Send password reset email through the shared delivery primitive."""
 
-@app.post("/api/auth/forgot-password")
-async def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    return password_reset_delivery.send_password_reset_email(
+        password_reset_delivery.PasswordResetEmailSettings(
+            frontend_url=FRONTEND_URL,
+            email_host=EMAIL_HOST,
+            email_port=EMAIL_PORT,
+            email_smtp_timeout_seconds=EMAIL_SMTP_TIMEOUT_SECONDS,
+            email_username=EMAIL_USERNAME,
+            email_password=EMAIL_PASSWORD,
+            email_from=str(EMAIL_FROM) if EMAIL_FROM is not None else None,
+        ),
+        email,
+        token,
+    )
+
+
+PASSWORD_RESET_PENDING = password_reset_delivery.PASSWORD_RESET_PENDING
+PASSWORD_RESET_PROCESSING = password_reset_delivery.PASSWORD_RESET_PROCESSING
+PASSWORD_RESET_DELIVERED = password_reset_delivery.PASSWORD_RESET_DELIVERED
+PASSWORD_RESET_FAILED = password_reset_delivery.PASSWORD_RESET_FAILED
+PASSWORD_RESET_COOLDOWN = timedelta(minutes=5)
+PASSWORD_RESET_LIFETIME = password_reset_delivery.PASSWORD_RESET_LIFETIME
+
+
+def _password_reset_token_digest(token: str) -> str:
+    return password_reset_delivery.password_reset_token_digest(token)
+
+
+def _password_reset_claim_digest(claim_nonce: str) -> str:
+    return password_reset_delivery.password_reset_claim_digest(claim_nonce)
+
+
+def _usable_password_reset_filters(raw_token: str):
+    token_digest = _password_reset_token_digest(raw_token)
+    return (
+        models.PasswordReset.token == token_digest,
+        models.PasswordReset.expires_at > _utc_now_naive(),
+        models.PasswordReset.used.is_(False),
+        models.PasswordReset.delivery_status == PASSWORD_RESET_DELIVERED,
+    )
+
+
+def _queue_password_reset(db: Session, user: models.User) -> None:
+    now = _utc_now_naive()
+    cooldown_start = now - PASSWORD_RESET_COOLDOWN
+    queued_values = {
+        models.PasswordReset.token: None,
+        models.PasswordReset.created_at: now,
+        models.PasswordReset.expires_at: None,
+        models.PasswordReset.used: False,
+        models.PasswordReset.delivery_status: PASSWORD_RESET_PENDING,
+        models.PasswordReset.delivery_attempted_at: None,
+        models.PasswordReset.delivery_claim_digest: None,
+    }
+
+    try:
+        updated = (
+            db.query(models.PasswordReset)
+            .filter(
+                models.PasswordReset.user_id == user.id,
+                models.PasswordReset.created_at <= cooldown_start,
+            )
+            .update(queued_values, synchronize_session=False)
+        )
+        if updated:
+            db.commit()
+            return
+
+        db.add(
+            models.PasswordReset(
+                user_id=user.id,
+                token=None,
+                created_at=now,
+                expires_at=None,
+                used=False,
+                delivery_status=PASSWORD_RESET_PENDING,
+            )
+        )
+        db.commit()
+    except IntegrityError:
+        # A concurrent request already inserted the single per-user queue row.
+        db.rollback()
+    except Exception:
+        db.rollback()
+
+
+def _claim_password_reset_delivery() -> tuple[int, str, str] | None:
+    return password_reset_delivery.claim_password_reset_delivery(
+        SessionLocal,
+        claim_timeout_seconds=PASSWORD_RESET_CLAIM_TIMEOUT_SECONDS,
+    )
+
+
+def _complete_password_reset_delivery(
+    reset_id: int,
+    claim_nonce: str,
+    raw_token: str,
+    delivered: bool,
+) -> bool:
+    return password_reset_delivery.complete_password_reset_delivery(
+        SessionLocal,
+        reset_id,
+        claim_nonce,
+        raw_token,
+        delivered,
+    )
+
+
+def _dispatch_password_reset_emails_once(batch_size: int = 100) -> None:
+    password_reset_delivery.dispatch_password_reset_batch(
+        batch_size=batch_size,
+        claim=_claim_password_reset_delivery,
+        send=send_password_reset_email,
+        complete=_complete_password_reset_delivery,
+    )
+
+
+@app.post("/api/auth/forgot-password", status_code=status.HTTP_202_ACCEPTED)
+def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
     """Request a password reset token"""
+    generic_response = {
+        "message": "If an account exists, password reset instructions will be sent."
+    }
+    try:
+        normalized_email = normalize_email(str(request.email))
+    except (TypeError, ValueError):
+        return generic_response
     
     # Find user by email
-    user = db.query(models.User).filter(models.User.email == request.email).first()
-    
-    if not user:
-        raise HTTPException(status_code=404, detail="No account found with this email address")
-    
-    # Create a secure token
-    token = secrets.token_urlsafe(32)
-    expires_at = datetime.utcnow() + timedelta(hours=1)
-    
-    # Store token in database
-    password_reset = models.PasswordReset(
-        user_id=user.id,
-        token=token,
-        expires_at=expires_at
+    user = (
+        db.query(models.User)
+        .filter(
+            models.User.email == normalized_email,
+            models.User.disabled_at.is_(None),
+        )
+        .with_for_update(of=models.User)
+        .first()
     )
     
-    db.add(password_reset)
-    db.commit()
-    
-    # Send email
-    if not send_password_reset_email(user.email, token):
-        db.delete(password_reset)
+    if not user:
         db.commit()
-        raise HTTPException(status_code=500, detail="Failed to send password reset email")
+        return generic_response
+
+    _queue_password_reset(db, user)
     
-    return {"message": "Password reset instructions sent to your email"}
+    return generic_response
+
+
+def _lock_usable_password_reset_user(
+    db: Session,
+    *,
+    password_reset_id: int,
+    raw_token: str,
+) -> models.User | None:
+    return (
+        db.query(models.User)
+        .join(
+            models.PasswordReset,
+            models.PasswordReset.user_id == models.User.id,
+        )
+        .filter(
+            models.PasswordReset.id == password_reset_id,
+            *_usable_password_reset_filters(raw_token),
+            models.User.disabled_at.is_(None),
+        )
+        .with_for_update(of=models.User)
+        .first()
+    )
 
 @app.post("/api/auth/reset-password")
-async def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db)):
+def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db)):
     """Reset a password using a valid token"""
 
     token = request.token
@@ -4226,30 +5550,50 @@ async def reset_password(request: ResetPasswordRequest, db: Session = Depends(ge
         raise HTTPException(status_code=400, detail="Token is required")
     
     # Find token in database
-    password_reset = db.query(models.PasswordReset).filter(
-        models.PasswordReset.token == request.token,
-        models.PasswordReset.expires_at > datetime.utcnow(),
-        models.PasswordReset.used.is_(False)
-    ).first()
+    password_reset_id = (
+        db.query(models.PasswordReset.id)
+        .join(models.User, models.User.id == models.PasswordReset.user_id)
+        .filter(
+            *_usable_password_reset_filters(request.token),
+            models.User.disabled_at.is_(None),
+        )
+        .scalar()
+    )
     
-    if not password_reset:
+    if password_reset_id is None:
         raise HTTPException(status_code=400, detail="Invalid or expired token")
-    
-    # Get the user
-    user = db.query(models.User).filter(models.User.id == password_reset.user_id).first()
-    
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
+
+    # End the read transaction before the deliberately expensive password hash.
+    # The following conditional UPDATE is the single atomic token-consumption point.
+    db.rollback()
     # Hash the new password
     hashed_password = hash_password(request.new_password)
-    
-    # Update the user's password
+
+    user = _lock_usable_password_reset_user(
+        db,
+        password_reset_id=password_reset_id,
+        raw_token=request.token,
+    )
+    if user is None:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+
+    consumed = db.execute(
+        update(models.PasswordReset)
+        .where(
+            models.PasswordReset.id == password_reset_id,
+            models.PasswordReset.user_id == user.id,
+            *_usable_password_reset_filters(request.token),
+        )
+        .values(used=True)
+        .execution_options(synchronize_session=False)
+    )
+    if consumed.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+
     user.password = hashed_password
-    
-    # Mark the token as used
-    password_reset.used = True
-    
+    revoke_all_sessions(db, user_id=user.id)
     db.commit()
     
     return {"message": "Password reset successfully"}

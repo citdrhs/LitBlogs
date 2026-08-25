@@ -1,0 +1,9 @@
+# Browser release journeys
+
+The Chromium release gate builds the React application, starts real Uvicorn, and uses a disposable PostgreSQL 17 database migrated through Alembic. It runs eight serial journeys covering authentication and role guards, teacher setup, student draft and submission privacy, upload ACLs, account disable/enable, logout storage cleanup, and one enrolled-student-authored rich post across the editor, peer and author feeds, full post view, teacher class preview, student history, and teacher student details.
+
+The CI and release browser-gate jobs provide a dedicated loopback PostgreSQL service and set both `E2E_DISPOSABLE_DATABASE_CONFIRMED=litblogs-e2e-only` and `E2E_REQUIRE_AVAILABLE=true`. The harness creates random users and a random database, migrates and seeds with the migrator credential, runs the application only as `litblogs_runtime`, verifies SCRAM plus a wrong-password rejection, and removes the database and application roles afterward.
+
+For a local run, install Chromium with `npm run test:e2e:install`, point `E2E_ADMIN_DATABASE_URL` at the `postgres` database of a disposable loopback PostgreSQL 17 service, set the same confirmation sentinel, and run `npm run test:e2e` from `litblogs/`. Unavailable local prerequisites are skips by default. They are failures whenever `CI` is nonempty or `E2E_REQUIRE_AVAILABLE` is exactly lowercase `true`. Never point the harness at a shared or remote database cluster.
+
+Screenshots, traces, and video are disabled. The sole reporter suppresses streamed standard output, standard error, and global error payloads; deletes raw attachments; and writes only an allowlisted, redacted, mode-`0600` JSON summary under `test-results/e2e/sanitized-failures/`. CI retains those files for three days. The only terminal output is a fixed aggregate total/passed/failed/skipped summary, never journey titles or arbitrary error text.

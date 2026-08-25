@@ -3,14 +3,19 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "server": "python -m uvicorn main:app --reload",
-    "test": "vitest",
-    "test:run": "vitest run",
+    "test": "vitest --exclude \"e2e/**\"",
+    "test:run": "vitest run --exclude \"e2e/**\"",
+    "test:e2e": "playwright test --project=chromium",
+    "test:e2e:install": "playwright install chromium",
     "audit:prod": "npm audit --omit=dev"
   },
   "dependencies": {
@@ -24,23 +29,37 @@
     "@react-oauth/google": "^0.12.1",
     "@tailwindcss/forms": "^0.5.10",
     "@tailwindcss/typography": "^0.5.16",
-    "@tinymce/tinymce-react": "^6.3.0",
+    "@tiptap/core": "^3.30.2",
+    "@tiptap/extension-character-count": "^3.30.2",
+    "@tiptap/extension-color": "^3.30.2",
+    "@tiptap/extension-font-family": "^3.30.2",
+    "@tiptap/extension-highlight": "^3.30.2",
+    "@tiptap/extension-image": "^3.30.2",
+    "@tiptap/extension-link": "^3.30.2",
+    "@tiptap/extension-placeholder": "^3.30.2",
+    "@tiptap/extension-table": "^3.30.2",
+    "@tiptap/extension-text-align": "^3.30.2",
+    "@tiptap/extension-text-style": "^3.30.2",
+    "@tiptap/extension-underline": "^3.30.2",
+    "@tiptap/pm": "^3.30.2",
+    "@tiptap/react": "^3.30.2",
+    "@tiptap/starter-kit": "^3.30.2",
     "@types/prismjs": "^1.26.6",
     "axios": "^1.19.0",
+    "dompurify": "^3.4.14",
     "emoji-picker-react": "^4.12.0",
     "framer-motion": "^12.40.0",
     "prismjs": "^1.29.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-hot-toast": "^2.5.2",
-    "react-html-parser": "^2.0.2",
     "react-icons": "^5.5.0",
     "react-router-dom": "^7.18.2",
-    "styled-components": "^6.5.3",
-    "tinymce": "^8.5.1"
+    "styled-components": "^6.5.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.19.0",
+    "@playwright/test": "^1.62.1",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.2",
@@ -58,10 +77,5 @@
     "tailwindcss": "^3.4.17",
     "vite": "^6.2.3",
     "vitest": "^4.1.11"
-  },
-  "overrides": {
-    "react-html-parser": {
-      "react": "$react"
-    }
   }
 }

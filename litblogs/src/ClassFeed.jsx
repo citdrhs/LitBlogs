@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import axios from 'axios';
@@ -15,7 +15,6 @@ import 'prismjs/components/prism-sql';
 import Loader from './components/Loader';
 import Navbar from "./components/Navbar";
 import Footer from "./components/Footer";
-import { Editor } from '@tinymce/tinymce-react';
 import './LitBlogs.css';
 import { toast } from 'react-hot-toast';
 import { IoMdHeart, IoMdHeartEmpty } from 'react-icons/io';
@@ -23,235 +22,61 @@ import CommentThread from './components/CommentThread';
 import { formatRelativeTime, setupTimeUpdater } from './utils/timeUtils';
 import { mediaPath } from './utils/urlUtils';
 import { logoutBrowserSession } from './utils/auth';
-import ReactHtmlParser from 'react-html-parser';
-import { openPdfViewerModal } from './components/PdfViewerModal';
+import {
+  buildPostRequestPayload,
+  MAX_POST_HTML_LENGTH,
+} from './utils/postRequestContract';
+import RichTextContent from './components/RichTextContent';
+import LitBlogsEditor from './components/LitBlogsEditor';
+import {
+  clonePrivatePostContent,
+  loadAssignmentDraft,
+  saveAssignmentDraft,
+  submitAssignment,
+} from './utils/privateDrafts';
+import { usePrivateDrafts } from './context/PrivateDraftContext';
+import { sanitizeRichText } from './utils/richTextSecurity';
 import {
   applyGlobalUserSettings,
   getEditorFontSizePx,
   getLocalUserSettings,
   normalizeUserSettings,
   saveLocalUserSettings,
-  shouldRememberDrafts,
 } from './utils/userSettings';
 
-const expandableListStyles = `
-  .expandable-list {
-    margin: 8px 0;
-  }
+const DIALOG_FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled]):not([type="hidden"])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[contenteditable="true"]',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
 
-  .expandable-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    cursor: pointer;
-    padding: 8px;
-    border-radius: 4px;
-    background: rgba(0, 0, 0, 0.05);
-  }
-
-  .dark .expandable-header {
-    background: rgba(255, 255, 255, 0.05);
-  }
-
-  .expandable-header .arrow {
-    transition: transform 0.2s;
-    display: inline-block;
-    font-size: 12px;
-  }
-
-  .expandable-header.collapsed .arrow {
-    transform: rotate(-90deg);
-  }
-
-  .expandable-content {
-    padding: 8px 8px 8px 24px;
-    margin-top: 4px;
-    display: block;
-  }
-
-  .expandable-header.collapsed + .expandable-content {
-    display: none;
-  }
-
-  .expandable-header .title {
-    font-weight: 500;
-  }
-`;
-
-const codeStyles = `
-  .code-snippet {
-    margin: 1rem 0;
-    border-radius: 0.5rem;
-    overflow: hidden;
-    background: #2d2d2d;
-  }
-
-  .code-header {
-    padding: 0.5rem 1rem;
-    background: rgba(255,255,255,0.1);
-    color: #fff;
-  }
-
-  .code-snippet pre {
-    margin: 0;
-    padding: 1rem;
-  }
-
-  .code-snippet code {
-    font-family: 'Fira Code', monospace;
-    font-size: 0.9em;
-  }
-`;
-
-const glassStyles = `
-  .glass-card {
-    background: rgba(255, 255, 255, 0.05);
-    backdrop-filter: blur(10px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    transition: all 0.3s ease;
-  }
-
-  .glass-card:hover {
-    background: rgba(255, 255, 255, 0.1);
-    transform: translateY(-2px);
-  }
-
-  .dark .glass-card {
-    background: rgba(0, 0, 0, 0.2);
-    border: 1px solid rgba(255, 255, 255, 0.05);
-  }
-
-  .dark .glass-card:hover {
-    background: rgba(0, 0, 0, 0.3);
-  }
-
-  @keyframes shimmer {
-    0% {
-      background-position: -1000px 0;
-    }
-    100% {
-      background-position: 1000px 0;
-    }
-  }
-
-  .animate-shimmer {
-    background: linear-gradient(
-      90deg,
-      rgba(255, 255, 255, 0) 0%,
-      rgba(255, 255, 255, 0.05) 50%,
-      rgba(255, 255, 255, 0) 100%
-    );
-    background-size: 1000px 100%;
-    animation: shimmer 2s infinite linear;
-  }
-`;
-
-const richTextStyles = `
-  .prose {
-    max-width: none;
-  }
-  
-  .prose p {
-    margin: 1em 0;
-  }
-  
-  .prose h1, .prose h2, .prose h3, .prose h4 {
-    margin: 1.5em 0 0.5em;
-    font-weight: 600;
-  }
-  
-  .prose ul, .prose ol {
-    margin: 1em 0;
-    padding-left: 1.5em;
-  }
-  
-  .prose li {
-    margin: 0.5em 0;
-  }
-  
-  .prose blockquote {
-    border-left: 4px solid #e5e7eb;
-    padding-left: 1em;
-    margin: 1em 0;
-    font-style: italic;
-  }
-  
-  .dark .prose blockquote {
-    border-left-color: #4b5563;
-  }
-`;
-
-// Add this after your imports
-Prism.manual = true;
-
-const getAssignmentDraftKey = ({ classId, assignmentId, userId }) => {
-  if (!classId || !assignmentId || !userId) {
-    return null;
-  }
-
-  return `assignmentDraft:${userId}:${classId}:${assignmentId}`;
-};
-
-const readAssignmentDraft = ({ classId, assignmentId, userId }) => {
-  if (!shouldRememberDrafts()) {
-    return { hasDraft: false, content: '', savedAt: null };
-  }
-
-  const key = getAssignmentDraftKey({ classId, assignmentId, userId });
-  if (!key) {
-    return { hasDraft: false, content: '', savedAt: null };
-  }
-
-  try {
-    const storedValue = localStorage.getItem(key);
-    if (!storedValue) {
-      return { hasDraft: false, content: '', savedAt: null };
-    }
-
-    const parsedValue = JSON.parse(storedValue);
-    if (typeof parsedValue === 'string') {
-      return { hasDraft: true, content: parsedValue, savedAt: null };
-    }
-
-    return {
-      hasDraft: true,
-      content: parsedValue?.content || '',
-      savedAt: parsedValue?.savedAt || null,
-    };
-  } catch (error) {
-    console.error('Failed to read assignment draft:', error);
-    return { hasDraft: false, content: '', savedAt: null };
-  }
-};
-
-const writeAssignmentDraft = ({ classId, assignmentId, userId, content, savedAt }) => {
-  if (!shouldRememberDrafts()) {
-    return null;
-  }
-
-  const key = getAssignmentDraftKey({ classId, assignmentId, userId });
-  if (!key) {
-    return null;
-  }
-
-  if (content === '') {
-    localStorage.removeItem(key);
-    return null;
-  }
-
-  const nextSavedAt = savedAt || new Date().toISOString();
-  localStorage.setItem(key, JSON.stringify({ content, savedAt: nextSavedAt }));
-  return nextSavedAt;
-};
-
-const clearAssignmentDraft = ({ classId, assignmentId, userId }) => {
-  const key = getAssignmentDraftKey({ classId, assignmentId, userId });
-  if (!key) {
+const containDialogFocus = (event, dialog) => {
+  if (event.key !== 'Tab' || !dialog) return;
+  const focusable = [...dialog.querySelectorAll(DIALOG_FOCUSABLE_SELECTOR)]
+    .filter((element) => !element.hidden && element.getAttribute('aria-hidden') !== 'true');
+  if (!focusable.length) {
+    event.preventDefault();
+    dialog.focus();
     return;
   }
 
-  localStorage.removeItem(key);
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 };
+
+// Add this after your imports
+Prism.manual = true;
 
 const createEmptyPostContent = () => ({
   text: "",
@@ -261,176 +86,8 @@ const createEmptyPostContent = () => ({
   files: []
 });
 
-const clonePostContent = (value) => {
-  if (!value) {
-    return createEmptyPostContent();
-  }
-
-  try {
-    return JSON.parse(JSON.stringify(value));
-  } catch {
-    return createEmptyPostContent();
-  }
-};
-
-const getPostDraftKey = ({ classId, userId, editingPostId }) => {
-  if (!classId || !userId) {
-    return null;
-  }
-
-  const composerScope = editingPostId ? `edit:${editingPostId}` : 'new';
-  return `postDraft:${userId}:${classId}:${composerScope}`;
-};
-
-const readPostDraft = ({ classId, userId, editingPostId }) => {
-  const key = getPostDraftKey({ classId, userId, editingPostId });
-  if (!key) {
-    return { hasDraft: false, savedAt: null, payload: null };
-  }
-
-  try {
-    const storedValue = localStorage.getItem(key);
-    if (!storedValue) {
-      return { hasDraft: false, savedAt: null, payload: null };
-    }
-
-    const parsedValue = JSON.parse(storedValue);
-    return {
-      hasDraft: true,
-      savedAt: parsedValue?.savedAt || null,
-      payload: {
-        postTitle: parsedValue?.postTitle || '',
-        content: parsedValue?.content || '',
-        postContent: clonePostContent(parsedValue?.postContent),
-      },
-    };
-  } catch (error) {
-    console.error('Failed to read post draft:', error);
-    return { hasDraft: false, savedAt: null, payload: null };
-  }
-};
-
-const writePostDraft = ({ classId, userId, editingPostId, payload, savedAt }) => {
-  const key = getPostDraftKey({ classId, userId, editingPostId });
-  if (!key) {
-    return null;
-  }
-
-  const hasMeaningfulContent = Boolean(
-    payload?.postTitle?.trim() ||
-    payload?.content?.trim() ||
-    (payload?.postContent?.media?.length || 0) > 0 ||
-    (payload?.postContent?.files?.length || 0) > 0 ||
-    (payload?.postContent?.expandableLists?.length || 0) > 0 ||
-    (payload?.postContent?.codeSnippets?.length || 0) > 0
-  );
-
-  if (!hasMeaningfulContent) {
-    localStorage.removeItem(key);
-    return null;
-  }
-
-  const nextSavedAt = savedAt || new Date().toISOString();
-  localStorage.setItem(
-    key,
-    JSON.stringify({
-      postTitle: payload.postTitle || '',
-      content: payload.content || '',
-      postContent: clonePostContent(payload.postContent),
-      savedAt: nextSavedAt,
-    })
-  );
-  return nextSavedAt;
-};
-
-const clearPostDraft = ({ classId, userId, editingPostId }) => {
-  const key = getPostDraftKey({ classId, userId, editingPostId });
-  if (!key) {
-    return;
-  }
-
-  localStorage.removeItem(key);
-};
-
-const decodeHtmlEntities = (value = '') => {
-  if (typeof document === 'undefined') {
-    return value;
-  }
-
-  const textarea = document.createElement('textarea');
-  textarea.innerHTML = value;
-  return textarea.value;
-};
-
 const normalizePostContentForEditor = (content = '') => {
-  if (!content || typeof document === 'undefined') {
-    return content;
-  }
-
-  try {
-    const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = content;
-
-    const fileActionContainers = tempDiv.querySelectorAll('.file-attachment .file-actions');
-    fileActionContainers.forEach((container) => {
-      if (container.innerHTML.includes('&lt;') || container.textContent?.includes('<button')) {
-        container.innerHTML = decodeHtmlEntities(container.innerHTML);
-      }
-
-      const removeButton = container.querySelector('.remove-btn');
-      if (removeButton && !removeButton.classList.contains('editor-only')) {
-        removeButton.classList.add('editor-only');
-      }
-    });
-
-    return tempDiv.innerHTML;
-  } catch (error) {
-    console.error('Failed to normalize post content for editor:', error);
-    return content;
-  }
-};
-
-const listPostDrafts = ({ classId, userId }) => {
-  if (!classId || !userId) {
-    return [];
-  }
-
-  const prefix = `postDraft:${userId}:${classId}:`;
-  const drafts = [];
-
-  for (let i = 0; i < localStorage.length; i += 1) {
-    const key = localStorage.key(i);
-    if (!key || !key.startsWith(prefix)) {
-      continue;
-    }
-
-    const scope = key.slice(prefix.length);
-    try {
-      const raw = localStorage.getItem(key);
-      if (!raw) {
-        continue;
-      }
-
-      const parsed = JSON.parse(raw);
-      drafts.push({
-        key,
-        scope,
-        editingPostId: scope.startsWith('edit:') ? Number(scope.split(':')[1]) : null,
-        postTitle: parsed?.postTitle || '',
-        content: parsed?.content || '',
-        postContent: clonePostContent(parsed?.postContent),
-        savedAt: parsed?.savedAt || null,
-      });
-    } catch (error) {
-      console.error('Failed to parse post draft:', error);
-    }
-  }
-
-  return drafts.sort((a, b) => {
-    const aTs = a.savedAt ? new Date(a.savedAt).getTime() : 0;
-    const bTs = b.savedAt ? new Date(b.savedAt).getTime() : 0;
-    return bTs - aTs;
-  });
+  return sanitizeRichText(content, { mode: 'editor' });
 };
 
 const MediaPreview = ({ media, files, onRemove }) => {
@@ -446,6 +103,7 @@ const MediaPreview = ({ media, files, onRemove }) => {
               className="h-32 w-32 object-cover rounded-lg"
             />
             <button
+              type="button"
               onClick={() => onRemove('media', index)}
               className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
             >
@@ -469,6 +127,7 @@ const MediaPreview = ({ media, files, onRemove }) => {
                 <span>{file.name}</span>
               </div>
               <button
+                type="button"
                 onClick={() => onRemove('files', index)}
                 className="text-red-500 hover:text-red-600"
               >
@@ -483,1066 +142,6 @@ const MediaPreview = ({ media, files, onRemove }) => {
     </div>
   );
 };
-
-// Update the TinyMCE configuration to better preserve image attributes and styles
-const TINYMCE_CONFIG = {
-  height: 520,
-  menubar: false,
-  plugins: [
-    'advlist', 'autolink', 'lists', 'link', 'image', 'charmap', 'preview',
-    'anchor', 'searchreplace', 'visualblocks', 'code', 'fullscreen',
-    'insertdatetime', 'table', 'help', 'wordcount',
-    'quickbars', 'emoticons'
-  ],
-  toolbar: [
-    'formatselect | fontsizeinput | forecolor backcolor | blocks',
-    'bold italic underline strikethrough | alignleft aligncenter alignright | bullist numlist | image customvideoupload customfileupload removeformat'
-  ],
-  block_formats: 'Paragraph=p; Title=h1; Heading=h2; Subheading=h3; Small Heading=h4; Blockquote=blockquote',
-  
-  // Use the built-in font size input instead of the fontsize plugin
-  font_size_input_default_unit: 'pt',
-  font_size_formats: '8pt 10pt 12pt 14pt 16pt 18pt 24pt 36pt 48pt',
-  
-  forced_root_block: 'p',
-  content_style: `
-    body { 
-      font-family: Arial, sans-serif;
-      font-size: 14px;
-      margin: 1rem;
-      padding-bottom: 2rem;
-      max-height: 520px;
-      overflow-y: auto !important;
-    }
-    h1 { font-size: 1.8em; font-weight: bold; margin: 0.5em 0; }
-    h2 { font-size: 1.5em; font-weight: bold; margin: 0.5em 0; }
-    h3 { font-size: 1.3em; font-weight: bold; margin: 0.5em 0; }
-    h4 { font-size: 1.1em; font-weight: bold; margin: 0.5em 0; }
-    blockquote { border-left: 3px solid #ccc; margin-left: 1em; padding-left: 1em; font-style: italic; }
-    
-    /* File attachment styles */
-    .file-attachment {
-      display: flex;
-      align-items: center;
-      padding: 10px;
-      margin: 10px 0;
-      border: 1px solid #e0e0e0;
-      border-radius: 8px;
-      background-color: #f9f9f9;
-      user-select: none; /* Prevent text selection */
-      pointer-events: auto; /* Allow clicking buttons */
-      cursor: default; /* Show default cursor for the container */
-    }
-    
-    .file-attachment * {
-      cursor: default;
-      user-select: none;
-    }
-    
-    .file-attachment .file-icon {
-      margin-right: 12px;
-      font-size: 24px;
-      color: #4a5568;
-    }
-    
-    .file-attachment .file-info {
-      flex-grow: 1;
-      flex-shrink: 1;
-      min-width: 0; /* Allow text to wrap */
-      overflow: hidden; /* Prevent overflow */
-    }
-    
-    .file-attachment .file-name {
-      font-weight: 500;
-      margin-bottom: 2px;
-      word-break: break-word;
-      overflow-wrap: break-word;
-      white-space: normal;
-    }
-    
-    .file-attachment .file-size {
-      font-size: 12px;
-      color: #718096;
-    }
-    
-    .file-attachment .file-actions {
-      display: flex;
-      gap: 8px;
-    }
-    
-    .file-attachment .file-actions button {
-      cursor: pointer !important; /* Force pointer cursor for buttons */
-      pointer-events: auto !important; /* Ensure buttons are clickable */
-      padding: 4px 8px;
-      border-radius: 4px;
-      font-size: 12px;
-    }
-    
-    .file-attachment .preview-btn {
-      background-color: #ebf8ff;
-      color: #3182ce;
-      border: 1px solid #bee3f8;
-    }
-    
-    .file-attachment .download-btn {
-      background-color: #e6fffa;
-      color: #319795;
-      border: 1px solid #b2f5ea;
-    }
-    
-    .file-attachment .remove-btn {
-      background-color: #fff5f5;
-      color: #e53e3e;
-      border: 1px solid #fed7d7;
-    }
-
-    /* Video block styling in editor */
-    figure.video-container {
-      position: relative;
-      margin: 14px 0;
-      max-width: 760px;
-      border-radius: 12px;
-      overflow: hidden;
-      background: #0f172a;
-      box-shadow: 0 8px 22px rgba(2, 6, 23, 0.24);
-    }
-
-    figure.video-container video {
-      display: block;
-      width: 100%;
-      height: auto;
-      max-width: 100%;
-      background: #0f172a;
-    }
-
-    .video-delete-overlay {
-      position: absolute;
-      top: 10px;
-      right: 10px;
-      z-index: 20;
-      opacity: 0;
-      transform: translateY(-4px);
-      transition: opacity 0.2s ease, transform 0.2s ease;
-      pointer-events: none;
-    }
-
-    figure.video-container:hover .video-delete-overlay {
-      opacity: 1;
-      transform: translateY(0);
-      pointer-events: auto;
-    }
-
-    .video-delete-btn {
-      background: rgba(239, 68, 68, 0.95) !important;
-      color: #fff !important;
-      border: none !important;
-      border-radius: 9999px !important;
-      width: 30px !important;
-      height: 30px !important;
-      cursor: pointer !important;
-      display: inline-flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-      font-size: 18px !important;
-      font-weight: 700 !important;
-      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3) !important;
-    }
-    
-    /* Fix dropdown spacing */
-    .tox-collection__item-label {
-      padding-left: 4px !important;
-    }
-    .tox-collection__item-icon {
-      padding-right: 4px !important;
-    }
-    .tox-tbtn__select-label {
-      margin-left: 0 !important;
-    }
-    
-    /* Editor-only elements - only visible in the editor */
-    .mce-content-body .editor-only {
-      display: inline-block;
-    }
-    
-    /* Hide editor-only elements in the published content */
-    .html-content .editor-only {
-      display: none;
-    }
-  `,
-  statusbar: false,
-  extended_valid_elements: 'span[style|class],div[class|data-*|contenteditable],img[*|style|class|width|height|align|data-*],a[*],button[*],figure[class|style|contenteditable|data-*],video[*|style|class|controls|preload|width|height],source[src|type]',
-  inline_styles: true,
-  paste_as_text: false,
-  paste_data_images: true,
-  automatic_uploads: true,
-  file_picker_types: 'file image media',
-  browser_spellcheck: true,
-  font_formats: 'Arial=arial,helvetica,sans-serif;' +
-                'Courier New=courier new,courier,monospace;' +
-                'Georgia=georgia,times new roman,times,serif;' +
-                'Tahoma=tahoma,arial,helvetica,sans-serif;' +
-                'Times New Roman=times new roman,times,serif;' +
-                'Trebuchet MS=trebuchet ms,geneva,sans-serif;' +
-                'Verdana=verdana,geneva,sans-serif',
-  
-  // Enhanced image handling
-  image_advtab: true,
-  image_dimensions: true,
-  image_class_list: [
-    { title: 'None', value: '' },
-    { title: 'Responsive', value: 'img-fluid' },
-    { title: 'Left Aligned', value: 'float-left' },
-    { title: 'Right Aligned', value: 'float-right' },
-    { title: 'Centered', value: 'mx-auto d-block' }
-  ],
-  
-  // Preserve styles when editing
-  preserve_styles: true,
-  
-  // Add image_upload_handler to handle direct uploads from TinyMCE's default dialog
-  images_upload_handler: async function (blobInfo, progress) {
-    return new Promise((resolve, reject) => {
-      const formData = new FormData();
-      formData.append('file', blobInfo.blob(), blobInfo.filename());
-      
-      axios.post('/upload', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data'
-        },
-        onUploadProgress: (e) => {
-          progress(e.loaded / e.total * 100);
-        }
-      })
-      .then(response => {
-        resolve(mediaPath(response.data.url));
-      })
-      .catch(error => {
-        reject('Image upload failed: ' + error.message);
-      });
-    });
-  },
-  
-  // Critical settings for image resizing and alignment
-  object_resizing: true,
-  resize_img_proportional: true,
-  
-  // Don't convert URLs - this is critical
-  convert_urls: false,
-  relative_urls: false,
-  
-  // Preserve only safe inline styles that we support end-to-end.
-  valid_styles: {
-    '*': 'color,background-color,font-size,font-family,text-align,font-weight,font-style,text-decoration'
-  },
-  
-  // Configure non-editable classes
-  noneditable_noneditable_class: 'mceNonEditable',
-  noneditable_editable_class: 'mceEditable',
-  
-  // Allow the noneditable plugin to work with our elements
-  protect: [
-    /<div[^>]*class="file-attachment"[^>]*>[\s\S]*?<\/div>/g
-  ],
-  
-  setup: function(editor) {
-    // Customize the image button to show our enhanced dialog
-    editor.ui.registry.addButton('image', {
-      icon: 'image',
-      tooltip: 'Insert image',
-      onAction: function() {
-        // Create custom image dialog
-        editor.windowManager.open({
-          title: 'Insert Image',
-          body: {
-            type: 'panel',
-            items: [
-              {
-                type: 'selectbox',
-                name: 'source',
-                label: 'Image Source',
-                items: [
-                  { value: 'upload', text: 'Upload from Computer' },
-                  { value: 'url', text: 'Insert from URL' }
-                ]
-              },
-              {
-                type: 'input',
-                name: 'url',
-                label: 'Image URL',
-                enabled: false
-              },
-              {
-                type: 'dropzone',
-                name: 'file',
-                label: 'Upload Image'
-              }
-            ]
-          },
-          buttons: [
-            {
-              type: 'cancel',
-              text: 'Cancel'
-            },
-            {
-              type: 'submit',
-              text: 'Insert',
-              primary: true
-            }
-          ],
-          initialData: {
-            source: 'upload'
-          },
-          onChange: function(api, details) {
-            if (details.name === 'source') {
-              // Toggle fields based on selected source
-              if (details.value === 'upload') {
-                api.setEnabled('file', true);
-                api.setEnabled('url', false);
-              } else {
-                api.setEnabled('file', false);
-                api.setEnabled('url', true);
-              }
-            }
-          },
-          onSubmit: async function(api) {
-            const data = api.getData();
-            
-            try {
-              if (data.source === 'upload' && data.file) {
-                // Handle file upload
-                const file = data.file;
-                const formData = new FormData();
-                formData.append('file', file);
-                
-                const response = await axios.post(
-                  '/upload',
-                  formData,
-                  {
-                    headers: {
-                      'Content-Type': 'multipart/form-data'
-                    }
-                  }
-                );
-                
-                // Insert the uploaded image
-                editor.insertContent(`<img src="${mediaPath(response.data.url)}" alt="${file.name}" style="max-width: 100%; height: auto;" />`);
-              } else if (data.source === 'url' && data.url) {
-                // Insert image from URL
-                editor.insertContent(`<img src="${data.url}" alt="Image from URL" style="max-width: 100%; height: auto;" />`);
-              }
-              
-              api.close();
-            } catch (error) {
-              console.error('Error handling image:', error);
-              editor.notificationManager.open({
-                text: 'Failed to process image. Please try again.',
-                type: 'error'
-              });
-              api.close();
-            }
-          }
-        });
-      }
-    });
-
-    // Add custom file upload button
-    editor.ui.registry.addButton('customfileupload', {
-      icon: 'upload',
-      tooltip: 'Upload PDF',
-      onAction: function() {
-        // Create a file input element
-        const input = document.createElement('input');
-        input.setAttribute('type', 'file');
-        input.setAttribute('accept', '.pdf,application/pdf');
-        
-        // Trigger click on the input element
-        input.click();
-        
-        // Handle file selection
-        input.onchange = async function() {
-          if (input.files && input.files[0]) {
-            const file = input.files[0];
-            const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-            if (!isPdf) {
-              toast.error('Only PDF files are allowed.');
-              return;
-            }
-            
-            try {
-              // Upload the file to the server
-              const formData = new FormData();
-              formData.append('file', file);
-              
-              const response = await axios.post(
-                '/upload/file',
-                formData,
-                {
-                  headers: {
-                    'Content-Type': 'multipart/form-data'
-                  }
-                }
-              );
-              
-              // Get the file URL from the response
-              const fileUrl = response.data.url;
-              const fileSize = formatFileSize(file.size);
-              const fileName = file.name;
-              const fileType = getFileType(file.name);
-              
-              // Create HTML for the file attachment
-              let fileHtml = `
-                <div class="mceNonEditable file-attachment" 
-                     data-file-url="${fileUrl}" 
-                     data-file-name="${fileName}" 
-                     data-file-size="${fileSize}" 
-                     data-file-type="${fileType}">
-                  <div class="file-icon">${getFileIcon(fileType)}</div>
-                  <div class="file-info">
-                    <div class="file-name" style="word-break: break-word; overflow-wrap: break-word;">${fileName}</div>
-                    <div class="file-size">${fileSize}</div>
-                  </div>
-                  <div class="file-actions">
-                    <button class="remove-btn editor-only" type="button" data-file-url="${fileUrl}" onclick="this.closest('.file-attachment').remove();">Remove</button>
-                  </div>
-                </div>
-              `;
-              
-              // Insert the file attachment at the cursor position
-              editor.insertContent(fileHtml);
-              
-            } catch (error) {
-              console.error('Error uploading file:', error);
-              toast.error('Failed to upload file. Please try again.');
-            }
-          }
-        };
-      }
-    });
-    
-    // Add custom handlers for file preview
-    editor.on('init', function() {
-      // Add global function for file preview
-      window.previewFile = function(url, type) {
-        if (type === 'pdf') {
-          openPdfViewerModal({ fileUrl: url, title: 'PDF Preview' });
-          return;
-        }
-
-        // Create modal for preview
-        const modal = document.createElement('div');
-        modal.style.position = 'fixed';
-        modal.style.top = '0';
-        modal.style.left = '0';
-        modal.style.width = '100%';
-        modal.style.height = '100%';
-        modal.style.backgroundColor = 'rgba(0,0,0,0.8)';
-        modal.style.zIndex = '9999';
-        modal.style.display = 'flex';
-        modal.style.alignItems = 'center';
-        modal.style.justifyContent = 'center';
-        
-        // Create close button
-        const closeBtn = document.createElement('button');
-        closeBtn.innerHTML = '&times;';
-        closeBtn.style.position = 'absolute';
-        closeBtn.style.top = '20px';
-        closeBtn.style.right = '20px';
-        closeBtn.style.fontSize = '30px';
-        closeBtn.style.color = 'white';
-        closeBtn.style.background = 'none';
-        closeBtn.style.border = 'none';
-        closeBtn.style.cursor = 'pointer';
-        closeBtn.onclick = function() {
-          document.body.removeChild(modal);
-        };
-        
-        // Create content container
-        const content = document.createElement('div');
-        content.style.maxWidth = '90%';
-        content.style.maxHeight = '90%';
-        content.style.overflow = 'auto';
-        content.style.backgroundColor = 'white';
-        content.style.borderRadius = '8px';
-        content.style.padding = '20px';
-        
-        // Add content based on file type
-        if (type === 'image') {
-          const img = document.createElement('img');
-          img.src = url;
-          img.style.maxWidth = '100%';
-          content.appendChild(img);
-        } else if (type === 'video') {
-          const video = document.createElement('video');
-          video.src = url;
-          video.controls = true;
-          video.style.maxWidth = '100%';
-          content.appendChild(video);
-        } else if (type === 'text') {
-          // For text files, fetch and display content
-          fetch(url)
-            .then(response => response.text())
-            .then(text => {
-              const pre = document.createElement('pre');
-              pre.style.whiteSpace = 'pre-wrap';
-              pre.style.fontFamily = 'monospace';
-              pre.textContent = text;
-              content.appendChild(pre);
-            });
-        } else {
-          // For unsupported preview types
-          const message = document.createElement('p');
-          message.textContent = 'Preview not available for this file type. Please download the file to view it.';
-          content.appendChild(message);
-        }
-        
-        modal.appendChild(closeBtn);
-        modal.appendChild(content);
-        document.body.appendChild(modal);
-      };
-    });
-    
-    // Register the deleteFileFromServer function with the editor
-    editor.addCommand('deleteFileFromServer', function(ui, url) {
-      deleteFileFromServer(url);
-    });
-    
-    // This is critical for preserving image dimensions
-    editor.on('ObjectResized', function(e) {
-      if (e.target.nodeName === 'IMG') {
-        // Set both style and attributes for maximum compatibility
-        e.target.setAttribute('width', e.width);
-        e.target.setAttribute('height', e.height);
-        e.target.style.width = e.width + 'px';
-        e.target.style.height = e.height + 'px';
-      }
-    });
-    
-    // Add this to ensure content is not modified during save
-    editor.on('BeforeSetContent', function(_e) {
-      // Don't modify content when setting it in the editor
-    });
-    
-    editor.on('GetContent', function(_e) {
-      // Don't modify content when retrieving it from the editor
-    });
-    
-    // Listen for clicks on the editor content
-    editor.on('click', function(e) {
-      // Check if the clicked element is a remove button
-      if (e.target.classList.contains('remove-btn') && e.target.dataset.fileUrl) {
-        // Get the file URL from the data attribute
-        const fileUrl = e.target.dataset.fileUrl;
-        
-        // Delete the file from the server
-        deleteFileFromServer(fileUrl);
-      }
-    });
-    
-    // Add custom video upload button
-    editor.ui.registry.addButton('customvideoupload', {
-      icon: 'embed',
-      tooltip: 'Upload Video',
-      onAction: function() {
-        // Create a file input element
-        const input = document.createElement('input');
-        input.setAttribute('type', 'file');
-        input.setAttribute('accept', '.mp4,.webm,.ogg,.m4v,.avi,.mkv,video/mp4,video/webm,video/ogg,video/x-m4v,video/x-msvideo,video/x-matroska');
-        
-        // Handle file selection
-        input.onchange = async function() {
-          if (input.files && input.files[0]) {
-            const file = input.files[0];
-            
-            // Check file size (limit to 100MB)
-            const maxSize = 100 * 1024 * 1024; // 100MB in bytes
-            if (file.size > maxSize) {
-              toast.error(`Video file is too large. Maximum size is 100MB.`);
-              return;
-            }
-            
-            // Check file type
-            if (!isAllowedVideoFile(file)) {
-              toast.error('Please upload a valid video file (MP4, WebM, OGG, M4V, AVI, or MKV). MOV is not supported.');
-              return;
-            }
-            
-            try {
-              // Show loading toast
-              const loadingToast = toast.loading('Uploading video...');
-              
-              // Create form data for upload
-              const formData = new FormData();
-              formData.append('file', file);
-              
-              // Upload the video
-              const response = await axios.post('/upload/video', formData, {
-                headers: {
-                  'Content-Type': 'multipart/form-data'
-                }
-              });
-              
-              // Get the uploaded file URL and log for debugging
-              console.log("Video upload response:", response.data);
-              
-              // Check if the response contains the expected data
-              // Handle both url and file_url formats
-              let videoUrl = null;
-              if (response.data && response.data.url) {
-                videoUrl = response.data.url;
-              } else if (response.data && response.data.file_url) {
-                videoUrl = response.data.file_url;
-              } else {
-                console.error("Invalid response format:", response.data);
-                toast.error('Server returned an invalid response. Please try again.');
-                toast.dismiss(loadingToast);
-                return;
-              }
-              
-              console.log("Video URL:", videoUrl);
-              
-              // Ensure the URL is properly formatted
-              const fullVideoUrl = mediaPath(videoUrl);
-                  
-              console.log("Full video URL:", fullVideoUrl);
-              
-              // Create a cleaner HTML for the video with a delete button overlay
-              const fallbackType = (() => {
-                const ext = (file.name || '').split('.').pop()?.toLowerCase() || 'mp4';
-                const map = {
-                  mp4: 'video/mp4',
-                  webm: 'video/webm',
-                  ogg: 'video/ogg',
-                  m4v: 'video/x-m4v',
-                  avi: 'video/x-msvideo',
-                  mkv: 'video/x-matroska',
-                };
-                return map[ext] || 'video/mp4';
-              })();
-
-              let videoHtml = `
-                <figure class="video-container mceNonEditable" contenteditable="false" style="position: relative; margin: 12px 0; max-width: 600px;">
-                  <video controls preload="metadata" width="100%" style="width: 100%; max-width: 600px; border-radius: 4px; display: block; background: #000;">
-                    <source src="${fullVideoUrl}" type="${file.type || fallbackType}">
-                    Your browser does not support the video tag.
-                  </video>
-                  <div class="video-delete-overlay editor-only-control">
-                    <button type="button" class="video-delete-btn" data-video-url="${videoUrl}" onclick="event.stopPropagation(); this.closest('.video-container').remove(); window.deleteVideoFromServer('${videoUrl}');">×</button>
-                  </div>
-                </figure>
-              `;
-              
-              // Insert the video HTML
-              editor.insertContent(videoHtml);
-              
-              // Dismiss loading toast and show success
-              toast.dismiss(loadingToast);
-              toast.success('Video uploaded successfully!');
-            } catch (error) {
-              console.error('Error uploading video:', error);
-              toast.error('Failed to upload video. Please try again.');
-            }
-          }
-        };
-        
-        // Trigger the file input click
-        input.click();
-      }
-    });
-    
-    // Listen for clicks on the editor content
-    editor.on('click', function(e) {
-      // Check if the clicked element is a remove button
-      if (e.target.classList.contains('remove-btn')) {
-        // Get the file or video URL from the data attribute
-        const fileUrl = e.target.dataset.fileUrl || e.target.dataset.videoUrl;
-        
-        if (fileUrl) {
-          // Delete the file from the server
-          deleteFileFromServer(fileUrl);
-        }
-      }
-    });
-  },
-};
-
-// Helper functions for file handling
-function formatFileSize(bytes) {
-  if (bytes === 0) return '0 Bytes';
-  const k = 1024;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-}
-
-function getFileType(filename) {
-  const ext = filename.split('.').pop().toLowerCase();
-  
-  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(ext)) {
-    return 'image';
-  } else if (['mp4', 'webm', 'ogg', 'mov'].includes(ext)) {
-    return 'video';
-  } else if (ext === 'pdf') {
-    return 'pdf';
-  } else if (['txt', 'md', 'html', 'css', 'js', 'json', 'xml'].includes(ext)) {
-    return 'text';
-  } else if (['doc', 'docx'].includes(ext)) {
-    return 'word';
-  } else if (['xls', 'xlsx'].includes(ext)) {
-    return 'excel';
-  } else if (['ppt', 'pptx'].includes(ext)) {
-    return 'powerpoint';
-  } else {
-    return 'other';
-  }
-}
-
-function isAllowedVideoFile(file) {
-  if (!file) return false;
-
-  const mime = (file.type || '').toLowerCase();
-  const extension = (file.name || '').split('.').pop()?.toLowerCase() || '';
-
-  const allowedMimeTypes = new Set([
-    'video/mp4',
-    'video/webm',
-    'video/ogg',
-    'video/x-msvideo',
-    'video/x-matroska',
-    'video/x-m4v',
-  ]);
-  const allowedExtensions = new Set(['mp4', 'webm', 'ogg', 'm4v', 'avi', 'mkv']);
-
-  return allowedMimeTypes.has(mime) || allowedExtensions.has(extension);
-}
-
-function getFileIcon(fileType) {
-  switch (fileType) {
-    case 'image':
-      return '🖼️';
-    case 'video':
-      return '🎬';
-    case 'pdf':
-      return '📄';
-    case 'text':
-      return '📝';
-    case 'word':
-      return '📘';
-    case 'excel':
-      return '📊';
-    case 'powerpoint':
-      return '📑';
-    default:
-      return '📁';
-  }
-}
-
-// Update the processHTMLWithDOM function to handle different media types
-
-const processHTMLWithDOM = (html) => {
-  if (!html) return '';
-
-  // Some saved editor payloads may contain escaped media markup.
-  // Decode first so parser can treat video/file blocks as HTML elements.
-  const normalizedHtml = html
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&amp;/g, '&');
-  
-  // Create a temporary div to parse the HTML
-  const tempDiv = document.createElement('div');
-  tempDiv.innerHTML = normalizedHtml;
-  
-  // Remove editor-only controls
-  const editorControls = tempDiv.querySelectorAll('.editor-only-control, .video-delete-btn');
-  editorControls.forEach(control => {
-    control.remove();
-  });
-
-  // Let post previews inherit theme text color instead of persisting editor text color.
-  tempDiv.querySelectorAll('[style]').forEach((element) => {
-    const styleAttr = element.getAttribute('style') || '';
-    const cleanedStyle = styleAttr
-      .replace(/(^|;)\s*color\s*:[^;]+;?/gi, '$1')
-      .replace(/;;+/g, ';')
-      .trim()
-      .replace(/^;|;$/g, '');
-
-    if (cleanedStyle) {
-      element.setAttribute('style', cleanedStyle);
-    } else {
-      element.removeAttribute('style');
-    }
-  });
-  
-  // Track what types of media we've found
-  let mediaTypes = {
-    video: false,
-    file: false,
-    image: false,
-    audio: false
-  };
-  
-  // First, clean up any raw HTML in text nodes
-  let mediaPlaceholderAdded = false;
-  
-  const cleanRawHTML = (node) => {
-    if (node.nodeType === Node.TEXT_NODE) {
-      // Check for various media-related HTML tags
-      if (node.textContent.includes('<video') || 
-          node.textContent.includes('</video>') ||
-          node.textContent.includes('<figure class="video-container"') ||
-          node.textContent.includes('</figure>')) {
-        mediaTypes.video = true;
-        
-        // If we haven't added a placeholder yet, add one
-        if (!mediaPlaceholderAdded) {
-          const placeholder = document.createElement('div');
-          placeholder.className = 'media-placeholder video-placeholder';
-          placeholder.innerHTML = '<span class="text-blue-500">[View post to see video content]</span>';
-          node.parentNode.replaceChild(placeholder, node);
-          mediaPlaceholderAdded = true;
-        } else {
-          // Otherwise, just remove the node
-          node.parentNode.removeChild(node);
-        }
-      } else if (node.textContent.includes('<a class="file-attachment"') ||
-                node.textContent.includes('data-file-url')) {
-        mediaTypes.file = true;
-        
-        // If we haven't added a placeholder yet, add one for files
-        if (!mediaPlaceholderAdded) {
-          const placeholder = document.createElement('div');
-          placeholder.className = 'media-placeholder file-placeholder';
-          placeholder.innerHTML = '<span class="text-blue-500">[View post to see attached files]</span>';
-          node.parentNode.replaceChild(placeholder, node);
-          mediaPlaceholderAdded = true;
-        } else {
-          // Otherwise, just remove the node
-          node.parentNode.removeChild(node);
-        }
-      }
-    } else if (node.nodeType === Node.ELEMENT_NODE) {
-      // Process all child nodes
-      const childNodes = Array.from(node.childNodes);
-      childNodes.forEach(cleanRawHTML);
-    }
-  };
-  
-  cleanRawHTML(tempDiv);
-  
-  // Now replace actual media elements with placeholders
-  if (!mediaPlaceholderAdded) {
-    // Check for different types of media elements
-    const videoElements = tempDiv.querySelectorAll('video, .video-wrapper, figure.video-container');
-    const fileElements = tempDiv.querySelectorAll('.file-attachment, a[href*=".pdf"], a[href*=".doc"], a[href*=".xls"], a[href*=".ppt"], a[href*=".zip"]');
-    const audioElements = tempDiv.querySelectorAll('audio');
-    const iframeElements = tempDiv.querySelectorAll('iframe');
-    
-    // Set flags for what we found
-    if (videoElements.length > 0) mediaTypes.video = true;
-    if (fileElements.length > 0) mediaTypes.file = true;
-    if (audioElements.length > 0) mediaTypes.audio = true;
-    
-    // Create appropriate placeholders based on what we found
-    if (mediaTypes.video) {
-      const placeholder = document.createElement('div');
-      placeholder.className = 'media-placeholder video-placeholder';
-      placeholder.innerHTML = '<span class="text-blue-500">[View post to see video content]</span>';
-      
-      // Replace the first video element with the placeholder
-      if (videoElements.length > 0) {
-        videoElements[0].parentNode.replaceChild(placeholder, videoElements[0]);
-        
-        // Remove the rest
-        for (let i = 1; i < videoElements.length; i++) {
-          videoElements[i].parentNode.removeChild(videoElements[i]);
-        }
-      }
-    }
-    
-    if (mediaTypes.file) {
-      const placeholder = document.createElement('div');
-      placeholder.className = 'media-placeholder file-placeholder';
-      placeholder.innerHTML = '<span class="text-blue-500">[View post to see attached files]</span>';
-      
-      // Replace the first file element with the placeholder
-      if (fileElements.length > 0) {
-        fileElements[0].parentNode.replaceChild(placeholder, fileElements[0]);
-        
-        // Remove the rest
-        for (let i = 1; i < fileElements.length; i++) {
-          fileElements[i].parentNode.removeChild(fileElements[i]);
-        }
-      }
-    }
-    
-    if (mediaTypes.audio) {
-      const placeholder = document.createElement('div');
-      placeholder.className = 'media-placeholder audio-placeholder';
-      placeholder.innerHTML = '<span class="text-blue-500">[View post to see audio content]</span>';
-      
-      // Replace the first audio element with the placeholder
-      if (audioElements.length > 0) {
-        audioElements[0].parentNode.replaceChild(placeholder, audioElements[0]);
-      }
-    }
-    
-    // Handle iframes (could be embedded content)
-    if (iframeElements.length > 0) {
-      const placeholder = document.createElement('div');
-      placeholder.className = 'media-placeholder embed-placeholder';
-      placeholder.innerHTML = '<span class="text-blue-500">[View post to see embedded content]</span>';
-      
-      // Replace the first iframe with the placeholder
-      iframeElements[0].parentNode.replaceChild(placeholder, iframeElements[0]);
-      
-      // Remove the rest
-      for (let i = 1; i < iframeElements.length; i++) {
-        iframeElements[i].parentNode.removeChild(iframeElements[i]);
-      }
-    }
-  }
-  
-  return tempDiv.innerHTML;
-};
-
-// Update the truncateHTML function to better preserve content structure
-
-const truncateHTML = (htmlContent, maxLength = 200) => {
-  if (!htmlContent) return '';
-  
-  // Create a temporary div to parse the HTML
-  const tempDiv = document.createElement('div');
-  tempDiv.innerHTML = htmlContent;
-  
-  // Remove videos, file attachments, and other media elements from the preview
-  const videosAndMedia = tempDiv.querySelectorAll('video, .video-wrapper, .mceNonEditable, .file-attachment, iframe, audio');
-  videosAndMedia.forEach(element => {
-    // Replace with a placeholder
-    const placeholder = document.createElement('div');
-      placeholder.className = 'media-placeholder file-placeholder';
-      placeholder.innerHTML = '<span class="text-blue-500">[View post to see attached files]</span>';
-    element.parentNode.replaceChild(placeholder, element);
-  });
-  
-  // Get text content for length check
-  const textContent = tempDiv.textContent || tempDiv.innerText || '';
-  
-  // If content is short enough, return the modified HTML
-  if (textContent.length <= maxLength) {
-    return tempDiv.innerHTML;
-  }
-  
-  // For longer content, we need to truncate while preserving HTML structure
-  return tempDiv.innerHTML + '<span class="text-blue-500">... (read more)</span>';
-};
-const getUploadRelativePath = (url = '') => {
-  const normalizedUrl = String(url || '');
-  const match = normalizedUrl.match(/(?:\/api)?\/uploads\/(.+)$/);
-  if (match && match[1]) {
-    return match[1];
-  }
-  return normalizedUrl.replace(/^\/+/, '');
-};
-
-// Add this function to handle file deletion
-async function deleteFileFromServer(url) {
-  try {
-    // Extract the file path from the URL
-    // The URL format is /uploads/user_id/filename
-    const filePath = getUploadRelativePath(url);
-    
-    await axios.delete(`/upload/${filePath}`);
-    
-    console.log('File deleted successfully from server');
-  } catch (error) {
-    console.error('Error deleting file from server:', error);
-  }
-}
-
-// Make the deleteFileFromServer function available globally
-window.deleteFileFromServer = deleteFileFromServer;
-
-// Add a global function to delete the video from the server
-if (!window.deleteVideoFromServer) {
-  window.deleteVideoFromServer = function(videoUrl) {
-    if (!videoUrl) return;
-    
-    // Extract the file path from the URL
-    const filePath = getUploadRelativePath(videoUrl);
-    
-    // Delete the file from the server
-    axios.delete(`/upload/${filePath}`)
-    .then(response => {
-      console.log('Video deleted successfully:', response.data);
-      toast.success('Video deleted successfully');
-    })
-    .catch(error => {
-      console.error('Error deleting video:', error);
-      toast.error('Failed to delete video from server');
-    });
-  };
-}
-
-// Add this function at the top of your file, before any component definitions
-// Make sure it's outside of any component or function scope
-
-// Define the deleteVideoFromServer function globally
-function defineGlobalFunctions() {
-  // Add a global function to delete the video from the server
-  window.deleteVideoFromServer = function(videoUrl) {
-    if (!videoUrl) return;
-    
-    // Extract the file path from the URL
-    const filePath = getUploadRelativePath(videoUrl);
-    
-    // Delete the file from the server
-    axios.delete(`/upload/${filePath}`)
-    .then(response => {
-      console.log('Video deleted successfully:', response.data);
-      toast.success('Video deleted successfully');
-    })
-    .catch(error => {
-      console.error('Error deleting video:', error);
-      toast.error('Failed to delete video from server');
-    });
-  };
-  
-  // Make the deleteFileFromServer function available globally if it exists
-  if (typeof deleteFileFromServer === 'function') {
-    window.deleteFileFromServer = deleteFileFromServer;
-  }
-}
-
-// Call this function immediately to define the global functions
-defineGlobalFunctions();
-
-// Add this CSS variable definition near the top of your file with the other style variables
-
-const editorStyles = `
-  /* Hide editor-only controls when not in editor */
-  .html-content .editor-only-control {
-    display: none !important;
-  }
-  
-  .html-content .video-delete-btn {
-    display: none !important;
-  }
-  
-  /* Style for media placeholders */
-  .media-placeholder {
-    padding: 12px;
-    background-color: rgba(59, 130, 246, 0.1);
-    border-radius: 6px;
-    margin: 8px 0;
-    text-align: center;
-  }
-  
-  .video-placeholder {
-    border-left: 3px solid #3b82f6;
-  }
-`;
 
 const ClassFeed = () => {
   // Move all useState hooks to the top
@@ -1582,34 +181,89 @@ const ClassFeed = () => {
   const [assignmentSubmission, setAssignmentSubmission] = useState('');
   const [assignmentDraftSavedAt, setAssignmentDraftSavedAt] = useState(null);
   const [assignmentDraftReady, setAssignmentDraftReady] = useState(false);
+  const [assignmentDraftStatus, setAssignmentDraftStatus] = useState('idle');
+  const [assignmentDraftDirty, setAssignmentDraftDirty] = useState(false);
+  const [assignmentDraftRevision, setAssignmentDraftRevision] = useState(0);
+  const [assignmentDraftClosing, setAssignmentDraftClosing] = useState(false);
   const [assignmentSubmitting, setAssignmentSubmitting] = useState(false);
   const [postDraftSavedAt, setPostDraftSavedAt] = useState(null);
-  const [postDrafts, setPostDrafts] = useState([]);
-  const suppressPostDraftAutosaveRef = useRef(false);
+  const [postComposerDirty, setPostComposerDirty] = useState(false);
+  const [editorUploadBusy, setEditorUploadBusy] = useState(false);
+  const [postHtmlLength, setPostHtmlLength] = useState(0);
+  const postComposerDialogRef = useRef(null);
+  const postComposerReturnFocusRef = useRef(null);
+  const postComposerWasOpenRef = useRef(false);
+  const assignmentDraftRequestRef = useRef(0);
+  const assignmentDraftAbortRef = useRef(null);
+  const assignmentDraftStatusRef = useRef('idle');
+  const latestAssignmentContextRef = useRef(null);
+  const previousDraftContextRef = useRef(null);
+  const latestPostComposerRef = useRef(null);
   const [userSettings, setUserSettings] = useState(() => getLocalUserSettings());
-  const isStudent = (userInfo?.role || '').toString().toUpperCase() === 'STUDENT';
+  const {
+    postDrafts,
+    savePostDraft: savePostDraftMemory,
+    getPostDraft,
+    removePostDraft: removePostDraftMemory,
+    saveAssignmentMemory,
+    getAssignmentMemory,
+    removeAssignmentMemory,
+    clearPrivateDraftMemory,
+    hasRiskyDrafts,
+  } = usePrivateDrafts();
+  const normalizedRole = (userInfo?.role || '').toString().toUpperCase();
+  const isStudent = normalizedRole === 'STUDENT';
+  const canReviewSubmissions = ['TEACHER', 'ADMIN'].includes(normalizedRole);
+  const activeAssignmentId = activeAssignment?.id;
   const assignmentDraftUserId = userInfo?.userId || userInfo?.id;
   const postDraftUserId = userInfo?.userId || userInfo?.id;
+  const activeAssignmentMemoryContext = activeAssignmentId && assignmentDraftUserId
+    ? {
+        userId: assignmentDraftUserId,
+        classId,
+        assignmentId: activeAssignmentId,
+      }
+    : null;
   const rememberDraftsEnabled = userSettings.rememberDrafts !== false;
   const editorFontSizePx = getEditorFontSizePx(userSettings.editorFontSize);
-  const tinyMceConfig = useMemo(() => {
-    const nextContentStyle = TINYMCE_CONFIG.content_style.replace(
-      /font-size:\s*\d+px;/,
-      `font-size: ${editorFontSizePx}px;`
-    );
-    return {
-      ...TINYMCE_CONFIG,
-      content_style: nextContentStyle,
-    };
-  }, [editorFontSizePx]);
+  assignmentDraftStatusRef.current = assignmentDraftStatus;
+  latestPostComposerRef.current = {
+    showNewPostForm,
+    postComposerDirty,
+    classId,
+    userId: postDraftUserId,
+    editingPostId,
+    postTitle,
+    content,
+    postContent,
+  };
+  latestAssignmentContextRef.current = {
+    classId: String(classId ?? ''),
+    userId: String(assignmentDraftUserId ?? ''),
+    assignmentId: activeAssignmentId === null || activeAssignmentId === undefined
+      ? null
+      : String(activeAssignmentId),
+  };
 
-  // Add this to your component's useEffect that runs on mount
   useEffect(() => {
-    // Ensure global functions are defined
-    defineGlobalFunctions();
-    
-    // Rest of your existing useEffect code...
-  }, []);
+    if (showNewPostForm) {
+      postComposerWasOpenRef.current = true;
+      return;
+    }
+    if (!postComposerWasOpenRef.current) return;
+
+    postComposerWasOpenRef.current = false;
+    const returnTarget = postComposerReturnFocusRef.current;
+    postComposerReturnFocusRef.current = null;
+    const returnElement = returnTarget?.element?.isConnected
+      ? returnTarget.element
+      : returnTarget?.fallbackSelector
+      ? document.querySelector(returnTarget.fallbackSelector)
+      : null;
+    if (returnElement && typeof returnElement.focus === 'function') {
+      returnElement.focus();
+    }
+  }, [showNewPostForm]);
 
   // Move all useEffect hooks together
   useEffect(() => {
@@ -1667,62 +321,173 @@ const ClassFeed = () => {
   }, [classId, navigate]);
 
   useEffect(() => {
-    if (!isStudent || !activeAssignment || !assignmentDraftUserId || !assignmentDraftReady || !rememberDraftsEnabled) {
+    if (
+      !isStudent
+      || !activeAssignmentId
+      || !assignmentDraftUserId
+      || !assignmentDraftReady
+      || !assignmentDraftDirty
+      || !rememberDraftsEnabled
+      || assignmentSubmitting
+      || assignmentDraftClosing
+      || assignmentDraftStatusRef.current === 'error'
+    ) {
       return;
     }
 
+    const requestVersion = ++assignmentDraftRequestRef.current;
+    const expectedRevision = assignmentDraftRevision;
+    const abortController = new AbortController();
+    assignmentDraftAbortRef.current?.abort();
+    assignmentDraftAbortRef.current = abortController;
+    setAssignmentDraftStatus('pending');
+    saveAssignmentMemory(
+      {
+        userId: assignmentDraftUserId,
+        classId,
+        assignmentId: activeAssignmentId,
+      },
+      {
+        content: assignmentSubmission,
+        revision: expectedRevision,
+        savedAt: assignmentDraftSavedAt,
+        dirty: true,
+        status: 'pending',
+      },
+    );
+
     const autosaveTimer = setTimeout(() => {
       const syncDraft = async () => {
+        setAssignmentDraftStatus('saving');
+        saveAssignmentMemory(
+          {
+            userId: assignmentDraftUserId,
+            classId,
+            assignmentId: activeAssignmentId,
+          },
+          {
+            content: assignmentSubmission,
+            revision: expectedRevision,
+            savedAt: assignmentDraftSavedAt,
+            dirty: true,
+            status: 'saving',
+          },
+        );
         try {
-          const response = await axios.put(
-            `/assignments/${activeAssignment.id}/draft`,
-            { content: assignmentSubmission }
+          const serverDraft = await saveAssignmentDraft(
+            axios,
+            activeAssignmentId,
+            assignmentSubmission,
+            expectedRevision,
+            { signal: abortController.signal },
           );
 
-          if (response.data?.has_draft) {
-            const savedAt = writeAssignmentDraft({
-              classId,
-              assignmentId: activeAssignment.id,
+          if (requestVersion !== assignmentDraftRequestRef.current) return;
+
+          setAssignmentDraftSavedAt(serverDraft.savedAt);
+          setAssignmentDraftRevision(serverDraft.revision);
+          setAssignmentDraftStatus('saved');
+          setAssignmentDraftDirty(false);
+          saveAssignmentMemory(
+            {
               userId: assignmentDraftUserId,
-              content: response.data.content || assignmentSubmission,
-              savedAt: response.data.saved_at,
-            });
-            setAssignmentDraftSavedAt(savedAt);
-            updateAssignmentDraftState(activeAssignment.id, {
-              content: response.data.content || assignmentSubmission,
-              updated_at: response.data.saved_at,
-            });
-          } else {
-            clearAssignmentDraft({
               classId,
-              assignmentId: activeAssignment.id,
-              userId: assignmentDraftUserId,
-            });
-            setAssignmentDraftSavedAt(null);
-            updateAssignmentDraftState(activeAssignment.id, null);
-          }
+              assignmentId: activeAssignmentId,
+            },
+            {
+              content: serverDraft.content,
+              revision: serverDraft.revision,
+              savedAt: serverDraft.savedAt,
+              dirty: false,
+              status: 'saved',
+            },
+          );
+          const nextDraft = serverDraft.hasDraft
+            ? {
+                content: serverDraft.content,
+                updated_at: serverDraft.savedAt,
+                revision: serverDraft.revision,
+              }
+            : null;
+          setAssignments((prev) => prev.map((assignment) => (
+            assignment.id === activeAssignmentId
+              ? {
+                  ...assignment,
+                  my_draft: nextDraft,
+                  my_draft_revision: serverDraft.revision,
+                }
+              : assignment
+          )));
+          setActiveAssignment((prev) => (
+            prev && prev.id === activeAssignmentId
+              ? {
+                  ...prev,
+                  my_draft: nextDraft,
+                  my_draft_revision: serverDraft.revision,
+                }
+              : prev
+          ));
         } catch (error) {
-          console.error('Error autosaving assignment draft:', error);
+          const wasCanceled = error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError';
+          if (!wasCanceled && requestVersion === assignmentDraftRequestRef.current) {
+            setAssignmentDraftStatus('error');
+            saveAssignmentMemory(
+              {
+                userId: assignmentDraftUserId,
+                classId,
+                assignmentId: activeAssignmentId,
+              },
+              {
+                content: assignmentSubmission,
+                revision: expectedRevision,
+                savedAt: assignmentDraftSavedAt,
+                dirty: true,
+                status: 'error',
+              },
+            );
+          }
+        } finally {
+          if (assignmentDraftAbortRef.current === abortController) {
+            assignmentDraftAbortRef.current = null;
+          }
         }
       };
 
       syncDraft();
     }, 500);
 
-    return () => clearTimeout(autosaveTimer);
-  }, [assignmentSubmission, activeAssignment, assignmentDraftReady, assignmentDraftUserId, classId, isStudent, rememberDraftsEnabled]);
+    return () => {
+      clearTimeout(autosaveTimer);
+      abortController.abort();
+    };
+  }, [
+    assignmentSubmission,
+    activeAssignmentId,
+    assignmentDraftReady,
+    assignmentDraftDirty,
+    assignmentDraftUserId,
+    isStudent,
+    rememberDraftsEnabled,
+    assignmentSubmitting,
+    assignmentDraftClosing,
+    assignmentDraftRevision,
+    assignmentDraftSavedAt,
+    classId,
+    saveAssignmentMemory,
+  ]);
 
   useEffect(() => {
-    if (!showNewPostForm || !postDraftUserId || !rememberDraftsEnabled) {
+    if (
+      !showNewPostForm
+      || !postDraftUserId
+      || !rememberDraftsEnabled
+      || !postComposerDirty
+    ) {
       return;
     }
 
     const autosaveTimer = setTimeout(() => {
-      if (suppressPostDraftAutosaveRef.current) {
-        return;
-      }
-
-      const savedAt = writePostDraft({
+      const result = savePostDraftMemory({
         classId,
         userId: postDraftUserId,
         editingPostId,
@@ -1732,22 +497,117 @@ const ClassFeed = () => {
           postContent,
         },
       });
-      setPostDraftSavedAt(savedAt);
-      setPostDrafts(listPostDrafts({ classId, userId: postDraftUserId }));
+      setPostDraftSavedAt(result.savedAt);
+      setPostComposerDirty(false);
     }, 500);
 
     return () => clearTimeout(autosaveTimer);
-  }, [showNewPostForm, postDraftUserId, rememberDraftsEnabled, classId, editingPostId, postTitle, content, postContent]);
+  }, [
+    showNewPostForm,
+    postDraftUserId,
+    rememberDraftsEnabled,
+    postComposerDirty,
+    classId,
+    editingPostId,
+    postTitle,
+    content,
+    postContent,
+    savePostDraftMemory,
+  ]);
 
-  useEffect(() => {
-    setPostDrafts(listPostDrafts({ classId, userId: postDraftUserId }));
-  }, [classId, postDraftUserId]);
-
-  useEffect(() => {
-    if (!showNewPostForm) {
-      suppressPostDraftAutosaveRef.current = false;
+  useEffect(() => () => {
+    const snapshot = latestPostComposerRef.current;
+    if (!snapshot?.showNewPostForm || !snapshot.postComposerDirty || !snapshot.userId) {
+      return;
     }
-  }, [showNewPostForm]);
+    savePostDraftMemory({
+      classId: snapshot.classId,
+      userId: snapshot.userId,
+      editingPostId: snapshot.editingPostId,
+      payload: {
+        postTitle: snapshot.postTitle,
+        content: snapshot.content,
+        postContent: snapshot.postContent,
+      },
+    });
+  }, [savePostDraftMemory]);
+
+  useEffect(() => {
+    const currentContext = {
+      classId: String(classId ?? ''),
+      userId: String(postDraftUserId ?? ''),
+    };
+    const previousContext = previousDraftContextRef.current;
+    const snapshot = latestPostComposerRef.current;
+
+    if (
+      previousContext
+      && (
+        previousContext.classId !== currentContext.classId
+        || previousContext.userId !== currentContext.userId
+      )
+    ) {
+      if (snapshot?.showNewPostForm && snapshot.postComposerDirty && previousContext.userId) {
+        savePostDraftMemory({
+          classId: previousContext.classId,
+          userId: previousContext.userId,
+          editingPostId: snapshot.editingPostId,
+          payload: {
+            postTitle: snapshot.postTitle,
+            content: snapshot.content,
+            postContent: snapshot.postContent,
+          },
+        });
+      }
+
+      assignmentDraftRequestRef.current += 1;
+      assignmentDraftAbortRef.current?.abort();
+      assignmentDraftAbortRef.current = null;
+      setShowAssignmentModal(false);
+      setActiveAssignment(null);
+      setAssignmentSubmission('');
+      setAssignmentDraftReady(false);
+      setAssignmentDraftSavedAt(null);
+      setAssignmentDraftStatus('idle');
+      setAssignmentDraftDirty(false);
+      setAssignmentDraftRevision(0);
+      setAssignmentDraftClosing(false);
+      setAssignmentSubmitting(false);
+      setShowNewPostForm(false);
+      setPostTitle('');
+      setContent('');
+      setPostContent(createEmptyPostContent());
+      setPostDraftSavedAt(null);
+      setPostComposerDirty(false);
+      setEditingPostId(null);
+    }
+
+    previousDraftContextRef.current = currentContext;
+  }, [classId, postDraftUserId, savePostDraftMemory]);
+
+  useEffect(() => {
+    const hasCurrentRisk = (
+      postComposerDirty
+      || assignmentDraftDirty
+      || ['pending', 'saving'].includes(assignmentDraftStatus)
+      || hasRiskyDrafts({ userId: postDraftUserId })
+    );
+    if (!hasCurrentRisk) return undefined;
+
+    const protectRefresh = (event) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', protectRefresh);
+    return () => window.removeEventListener('beforeunload', protectRefresh);
+  }, [
+    assignmentDraftDirty,
+    assignmentDraftStatus,
+    hasRiskyDrafts,
+    postComposerDirty,
+    postDraftUserId,
+    postDrafts,
+  ]);
 
   useEffect(() => {
     if (darkMode) {
@@ -1809,26 +669,6 @@ const ClassFeed = () => {
   }, [assignments, isStudent, userInfo?.id, userInfo?.userId, userSettings.assignmentReminders, userSettings.emailNotifications]);
 
   useEffect(() => {
-    const styleSheet = document.createElement("style");
-    styleSheet.innerText = expandableListStyles + codeStyles + glassStyles + richTextStyles + editorStyles;
-    document.head.appendChild(styleSheet);
-
-    const handleExpandableClick = (e) => {
-      const header = e.target.closest('.expandable-header');
-      if (header) {
-        header.classList.toggle('collapsed');
-      }
-    };
-
-    document.addEventListener('click', handleExpandableClick);
-
-    return () => {
-      document.removeEventListener('click', handleExpandableClick);
-      styleSheet.remove();
-    };
-  }, []);
-
-  useEffect(() => {
     // Get likes for all posts on initial load
     const fetchLikes = async () => {
       if (!posts.length || !classId) return;
@@ -1875,9 +715,6 @@ const ClassFeed = () => {
         // Fetch comment counts immediately after posts load
         const counts = {};
         
-        // Debug log to check if this function is running
-        console.log("Fetching comment counts for posts:", response.data.length);
-        
         // We'll fetch one by one to ensure reliability
         for (const post of response.data) {
           try {
@@ -1885,15 +722,11 @@ const ClassFeed = () => {
               `/classes/${classId}/posts/${post.id}/comments?limit=1`
             );
             counts[post.id] = commentResponse.data.total;
-            console.log(`Post ${post.id} has ${commentResponse.data.total} comments`);
           } catch (err) {
             console.error(`Failed to fetch comments for post ${post.id}:`, err);
             counts[post.id] = 0;
           }
         }
-        
-        // Log the counts before setting state
-        console.log("Final comment counts:", counts);
         
         // Update comment counts
         setCommentCounts(counts);
@@ -1916,85 +749,204 @@ const ClassFeed = () => {
     return () => clearInterval(timeUpdateInterval);
   }, []);
 
-  const refreshAssignments = async () => {
-    const assignmentsResponse = await axios.get(`/classes/${classId}/assignments`);
-    setAssignments(assignmentsResponse.data || []);
-  };
-
-  const updateAssignmentDraftState = (assignmentId, draft) => {
+  const updateAssignmentDraftState = (assignmentId, draft, revision = 0) => {
     setAssignments((prev) => prev.map((assignment) => (
       assignment.id === assignmentId
-        ? { ...assignment, my_draft: draft }
+        ? { ...assignment, my_draft: draft, my_draft_revision: revision }
         : assignment
     )));
     setActiveAssignment((prev) => (
       prev && prev.id === assignmentId
-        ? { ...prev, my_draft: draft }
+        ? { ...prev, my_draft: draft, my_draft_revision: revision }
         : prev
     ));
-  };
-
-  const persistAssignmentDraftLocally = (content, assignment = activeAssignment) => {
-    if (!assignment || !assignmentDraftUserId) {
-      return null;
-    }
-
-    const savedAt = writeAssignmentDraft({
-      classId,
-      assignmentId: assignment.id,
-      userId: assignmentDraftUserId,
-      content,
-    });
-
-    setAssignmentDraftSavedAt(savedAt);
-    updateAssignmentDraftState(
-      assignment.id,
-      savedAt
-        ? {
-            content,
-            updated_at: savedAt,
-          }
-        : null
-    );
-
-    return savedAt;
   };
 
   const handleAssignmentSubmissionChange = (event) => {
     const nextContent = event.target.value;
     setAssignmentSubmission(nextContent);
-    if (rememberDraftsEnabled) {
-      persistAssignmentDraftLocally(nextContent);
+    setAssignmentDraftDirty(true);
+    const nextStatus = rememberDraftsEnabled ? 'pending' : 'memory-only';
+    setAssignmentDraftStatus(nextStatus);
+    if (activeAssignmentMemoryContext) {
+      saveAssignmentMemory(activeAssignmentMemoryContext, {
+        content: nextContent,
+        revision: assignmentDraftRevision,
+        savedAt: assignmentDraftSavedAt,
+        dirty: true,
+        status: nextStatus,
+      });
     }
   };
 
-  const closeAssignmentModal = () => {
-    if (assignmentDraftReady) {
-      persistAssignmentDraftLocally(assignmentSubmission);
-    }
+  const assignmentRequestContext = (assignmentId) => ({
+    classId: String(classId ?? ''),
+    userId: String(assignmentDraftUserId ?? ''),
+    assignmentId: String(assignmentId),
+  });
+
+  const isCurrentAssignmentClass = (context, requestVersion) => {
+    const current = latestAssignmentContextRef.current;
+    return (
+      requestVersion === assignmentDraftRequestRef.current
+      && current?.classId === context.classId
+      && current?.userId === context.userId
+    );
+  };
+
+  const isCurrentAssignmentRequest = (context, requestVersion) => (
+    isCurrentAssignmentClass(context, requestVersion)
+    && latestAssignmentContextRef.current?.assignmentId === context.assignmentId
+  );
+
+  const isCanceledAssignmentRequest = (error) => (
+    error?.code === 'ERR_CANCELED'
+    || error?.name === 'CanceledError'
+    || error?.name === 'AbortError'
+  );
+
+  const resetAssignmentModalState = () => {
     setShowAssignmentModal(false);
     setActiveAssignment(null);
+    setAssignmentSubmission('');
     setAssignmentDraftReady(false);
     setAssignmentDraftSavedAt(null);
+    setAssignmentDraftStatus('idle');
+    setAssignmentDraftDirty(false);
+    setAssignmentDraftRevision(0);
+    setAssignmentDraftClosing(false);
+    setAssignmentSubmitting(false);
+  };
+
+  const dismissAssignmentModal = () => {
+    assignmentDraftRequestRef.current += 1;
+    assignmentDraftAbortRef.current?.abort();
+    assignmentDraftAbortRef.current = null;
+    resetAssignmentModalState();
+  };
+
+  const closeAssignmentModal = async () => {
+    if (
+      !rememberDraftsEnabled
+      || !assignmentDraftReady
+      || !assignmentDraftDirty
+      || !activeAssignmentId
+    ) {
+      dismissAssignmentModal();
+      return;
+    }
+
+    assignmentDraftAbortRef.current?.abort();
+    const requestVersion = ++assignmentDraftRequestRef.current;
+    const requestContext = assignmentRequestContext(activeAssignmentId);
+    const abortController = new AbortController();
+    assignmentDraftAbortRef.current = abortController;
+    setAssignmentDraftClosing(true);
+    setAssignmentDraftStatus('saving');
+    try {
+      const serverDraft = await saveAssignmentDraft(
+        axios,
+        activeAssignmentId,
+        assignmentSubmission,
+        assignmentDraftRevision,
+        { signal: abortController.signal },
+      );
+      if (!isCurrentAssignmentRequest(requestContext, requestVersion)) return;
+
+      updateAssignmentDraftState(
+        activeAssignmentId,
+        serverDraft.hasDraft
+          ? {
+              content: serverDraft.content,
+              updated_at: serverDraft.savedAt,
+              revision: serverDraft.revision,
+            }
+          : null,
+        serverDraft.revision,
+      );
+      removeAssignmentMemory(requestContext);
+      resetAssignmentModalState();
+    } catch (error) {
+      if (
+        isCanceledAssignmentRequest(error)
+        || !isCurrentAssignmentRequest(requestContext, requestVersion)
+      ) {
+        return;
+      }
+      setAssignmentDraftStatus('error');
+      saveAssignmentMemory(requestContext, {
+        content: assignmentSubmission,
+        revision: assignmentDraftRevision,
+        savedAt: assignmentDraftSavedAt,
+        dirty: true,
+        status: 'error',
+      });
+      toast.error('Could not save your response. Keep this tab open and try again.');
+    } finally {
+      if (assignmentDraftAbortRef.current === abortController) {
+        assignmentDraftAbortRef.current = null;
+      }
+      if (isCurrentAssignmentRequest(requestContext, requestVersion)) {
+        setAssignmentDraftClosing(false);
+      }
+    }
+  };
+
+  const discardUnsavedAssignmentChanges = () => {
+    if (!confirm('Discard these unsaved assignment changes? This cannot be undone.')) {
+      return;
+    }
+    if (activeAssignmentMemoryContext) {
+      removeAssignmentMemory(activeAssignmentMemoryContext);
+    }
+    dismissAssignmentModal();
   };
 
   const openAssignmentModal = async (assignment) => {
-    const localDraft = rememberDraftsEnabled ? readAssignmentDraft({
+    assignmentDraftAbortRef.current?.abort();
+    assignmentDraftAbortRef.current = null;
+    const requestVersion = ++assignmentDraftRequestRef.current;
+    const fallbackContent = assignment.my_draft?.content || assignment.my_submission?.content || '';
+    const fallbackSavedAt = assignment.my_draft?.updated_at || null;
+    const fallbackRevision = assignment.my_draft?.revision ?? assignment.my_draft_revision ?? 0;
+    const memoryContext = {
+      userId: assignmentDraftUserId,
       classId,
       assignmentId: assignment.id,
-      userId: assignmentDraftUserId,
-    }) : { hasDraft: false, content: '', savedAt: null };
-
-    const fallbackContent = localDraft.hasDraft
-      ? localDraft.content
-      : (assignment.my_draft?.content || assignment.my_submission?.content || '');
-    const fallbackSavedAt = localDraft.savedAt || assignment.my_draft?.updated_at || null;
+    };
+    const remembered = getAssignmentMemory(memoryContext);
+    const cleanLoadError = Boolean(
+      remembered && !remembered.dirty && remembered.status === 'error'
+    );
+    const useRememberedWithoutLoad = Boolean(
+      remembered
+      && (
+        remembered.dirty
+        || ['pending', 'saving', 'memory-only'].includes(remembered.status)
+        || !rememberDraftsEnabled
+      )
+    );
 
     setActiveAssignment(assignment);
-    setAssignmentSubmission(fallbackContent);
-    setAssignmentDraftSavedAt(fallbackSavedAt);
+    setAssignmentSubmission(remembered?.content ?? fallbackContent);
+    setAssignmentDraftSavedAt(remembered?.savedAt ?? fallbackSavedAt);
+    setAssignmentDraftRevision(remembered?.revision ?? fallbackRevision);
     setShowAssignmentModal(true);
-    setAssignmentDraftReady(false);
+    setAssignmentDraftReady(Boolean(remembered) && !cleanLoadError);
+    setAssignmentDraftDirty(Boolean(remembered?.dirty));
+    setAssignmentDraftStatus(
+      cleanLoadError
+        ? 'loading'
+        : remembered?.status
+      || (rememberDraftsEnabled ? 'loading' : 'memory-only')
+    );
+
+    if (useRememberedWithoutLoad) {
+      if (remembered.dirty && remembered.status !== 'error') {
+        setAssignmentDraftStatus(rememberDraftsEnabled ? 'pending' : 'memory-only');
+      }
+      return;
+    }
 
     if (!rememberDraftsEnabled) {
       setAssignmentDraftReady(true);
@@ -2002,67 +954,147 @@ const ClassFeed = () => {
     }
 
     try {
-      const response = await axios.get(`/assignments/${assignment.id}/draft`);
+      const serverDraft = await loadAssignmentDraft(axios, assignment.id);
+      if (requestVersion !== assignmentDraftRequestRef.current) return;
 
-      const serverHasDraft = response.data?.has_draft;
-      const serverSavedAt = response.data?.saved_at || null;
-      const localSavedAtMs = localDraft.savedAt ? new Date(localDraft.savedAt).getTime() : 0;
-      const serverSavedAtMs = serverSavedAt ? new Date(serverSavedAt).getTime() : 0;
-
-      if (serverHasDraft && serverSavedAtMs >= localSavedAtMs) {
-        setAssignmentSubmission(response.data.content || '');
-        setAssignmentDraftSavedAt(serverSavedAt);
-        writeAssignmentDraft({
-          classId,
-          assignmentId: assignment.id,
-          userId: assignmentDraftUserId,
-          content: response.data.content || '',
-          savedAt: serverSavedAt,
+      const recoveredContent = serverDraft.hasDraft
+        ? serverDraft.content
+        : (assignment.my_submission?.content || '');
+      setAssignmentSubmission(recoveredContent);
+      setAssignmentDraftSavedAt(serverDraft.savedAt);
+      setAssignmentDraftRevision(serverDraft.revision);
+      setAssignmentDraftDirty(false);
+      setAssignmentDraftStatus(serverDraft.hasDraft ? 'saved' : 'idle');
+      saveAssignmentMemory(memoryContext, {
+        content: recoveredContent,
+        revision: serverDraft.revision,
+        savedAt: serverDraft.savedAt,
+        dirty: false,
+        status: serverDraft.hasDraft ? 'saved' : 'idle',
+      });
+      updateAssignmentDraftState(
+        assignment.id,
+        serverDraft.hasDraft
+          ? {
+              content: serverDraft.content,
+              updated_at: serverDraft.savedAt,
+              revision: serverDraft.revision,
+            }
+          : null,
+        serverDraft.revision,
+      );
+    } catch {
+      if (requestVersion === assignmentDraftRequestRef.current) {
+        setAssignmentDraftStatus('error');
+        saveAssignmentMemory(memoryContext, {
+          content: fallbackContent,
+          revision: fallbackRevision,
+          savedAt: fallbackSavedAt,
+          dirty: false,
+          status: 'error',
         });
-        updateAssignmentDraftState(assignment.id, {
-          content: response.data.content || '',
-          updated_at: serverSavedAt,
-        });
-      } else if (!serverHasDraft && !localDraft.hasDraft) {
-        setAssignmentDraftSavedAt(null);
-        updateAssignmentDraftState(assignment.id, null);
       }
-    } catch (error) {
-      console.error('Error loading assignment draft:', error);
     } finally {
-      setAssignmentDraftReady(true);
+      if (requestVersion === assignmentDraftRequestRef.current) {
+        setAssignmentDraftReady(true);
+      }
     }
+  };
+
+  const retryAssignmentDraftLoad = () => {
+    if (!activeAssignment) return;
+    if (activeAssignmentMemoryContext) {
+      removeAssignmentMemory(activeAssignmentMemoryContext);
+    }
+    openAssignmentModal(activeAssignment);
   };
 
   const handleSubmitAssignment = async () => {
     if (!activeAssignment) return;
+    assignmentDraftAbortRef.current?.abort();
+    const requestVersion = ++assignmentDraftRequestRef.current;
+    const requestContext = assignmentRequestContext(activeAssignment.id);
+    const abortController = new AbortController();
+    assignmentDraftAbortRef.current = abortController;
+    setAssignmentSubmitting(true);
+
+    let submitted;
     try {
-      setAssignmentSubmitting(true);
-      await axios.post(
-        `/assignments/${activeAssignment.id}/submit`,
-        { content: assignmentSubmission }
+      submitted = await submitAssignment(
+        axios,
+        activeAssignment.id,
+        assignmentSubmission,
+        assignmentDraftRevision,
+        { signal: abortController.signal },
       );
-
-      clearAssignmentDraft({
-        classId,
-        assignmentId: activeAssignment.id,
-        userId: assignmentDraftUserId,
-      });
-      updateAssignmentDraftState(activeAssignment.id, null);
-      await refreshAssignments();
-
-      closeAssignmentModal();
-      setAssignmentSubmission('');
-      toast.success('Assignment submitted successfully!');
     } catch (error) {
-      console.error('Error submitting assignment:', error);
+      const requestIsCurrent = isCurrentAssignmentRequest(
+        requestContext,
+        requestVersion,
+      );
+      if (assignmentDraftAbortRef.current === abortController) {
+        assignmentDraftAbortRef.current = null;
+      }
+      if (
+        isCanceledAssignmentRequest(error)
+        || !requestIsCurrent
+      ) {
+        if (requestIsCurrent) setAssignmentSubmitting(false);
+        return;
+      }
+      setAssignmentDraftStatus('error');
+      setAssignmentDraftDirty(true);
+      saveAssignmentMemory(requestContext, {
+        content: assignmentSubmission,
+        revision: assignmentDraftRevision,
+        savedAt: assignmentDraftSavedAt,
+        dirty: true,
+        status: 'error',
+      });
       toast.error(error.response?.data?.detail || 'Failed to submit assignment');
-    } finally {
       setAssignmentSubmitting(false);
+      return;
+    }
+
+    if (!isCurrentAssignmentRequest(requestContext, requestVersion)) return;
+
+    setAssignments((previousAssignments) => previousAssignments.map((assignment) => (
+      assignment.id === activeAssignment.id
+        ? {
+            ...assignment,
+            my_submission: submitted,
+            my_draft: null,
+            my_draft_revision: submitted.draft_revision,
+          }
+        : assignment
+    )));
+    removeAssignmentMemory(requestContext);
+    resetAssignmentModalState();
+    toast.success('Assignment submitted successfully!');
+
+    try {
+      const assignmentsResponse = await axios.get(
+        `/classes/${requestContext.classId}/assignments`,
+        { signal: abortController.signal },
+      );
+      if (isCurrentAssignmentClass(requestContext, requestVersion)) {
+        setAssignments(assignmentsResponse.data || []);
+      }
+    } catch {
+      // Submission already succeeded and local state is authoritative until
+      // the next normal refresh. Do not resurrect the submitted draft.
+    } finally {
+      if (assignmentDraftAbortRef.current === abortController) {
+        assignmentDraftAbortRef.current = null;
+      }
+      if (isCurrentAssignmentClass(requestContext, requestVersion)) {
+        setAssignmentSubmitting(false);
+      }
     }
   };
 
   const updateExpandableList = (id, field, value) => {
+    setPostComposerDirty(true);
     setPostContent(prev => ({
       ...prev,
       expandableLists: prev.expandableLists.map(list => 
@@ -2072,6 +1104,7 @@ const ClassFeed = () => {
   };
 
   const handleRemoveMedia = (type, index) => {
+    setPostComposerDirty(true);
     setPostContent(prev => ({
       ...prev,
       [type]: prev[type].filter((_, i) => i !== index)
@@ -2145,6 +1178,12 @@ const ClassFeed = () => {
   };
 
   const visiblePostDrafts = postDrafts.filter((draft) => {
+    if (
+      String(draft.userId) !== String(postDraftUserId)
+      || String(draft.classId) !== String(classId)
+    ) {
+      return false;
+    }
     const title = (draft.postTitle || '').toLowerCase();
     const contentText = stripHtml(draft.content || '').toLowerCase();
     const label = draft.editingPostId ? `edit post ${draft.editingPostId}` : 'new post draft';
@@ -2175,16 +1214,8 @@ const ClassFeed = () => {
 
     setPostTitle(draftPayload.postTitle || '');
     setContent(normalizePostContentForEditor(draftPayload.content || ''));
-    setPostContent(clonePostContent(draftPayload.postContent));
-  };
-
-  const refreshPostDrafts = () => {
-    setPostDrafts(
-      listPostDrafts({
-        classId,
-        userId: postDraftUserId,
-      })
-    );
+    setPostContent(clonePrivatePostContent(draftPayload.postContent));
+    setPostComposerDirty(false);
   };
 
   const persistCurrentPostDraft = (savedAt = null, { silent = false } = {}) => {
@@ -2195,7 +1226,7 @@ const ClassFeed = () => {
       return null;
     }
 
-    const nextSavedAt = writePostDraft({
+    const result = savePostDraftMemory({
       classId,
       userId: postDraftUserId,
       editingPostId,
@@ -2207,9 +1238,9 @@ const ClassFeed = () => {
       savedAt,
     });
 
-    setPostDraftSavedAt(nextSavedAt);
-    refreshPostDrafts();
-    return nextSavedAt;
+    setPostDraftSavedAt(result.savedAt);
+    setPostComposerDirty(false);
+    return result.savedAt;
   };
 
   const resetPostComposer = () => {
@@ -2217,14 +1248,18 @@ const ClassFeed = () => {
     setContent('');
     setPostContent(createEmptyPostContent());
     setPostDraftSavedAt(null);
+    setPostComposerDirty(false);
+    setEditorUploadBusy(false);
+    setPostHtmlLength(0);
   };
 
   const closePostComposer = ({ persistDraft = true } = {}) => {
-    if (!persistDraft) {
-      suppressPostDraftAutosaveRef.current = true;
-    }
-
-    if (showNewPostForm && rememberDraftsEnabled && persistDraft) {
+    if (
+      showNewPostForm
+      && rememberDraftsEnabled
+      && persistDraft
+      && postComposerDirty
+    ) {
       persistCurrentPostDraft(null, { silent: true });
     }
     resetPostComposer();
@@ -2232,19 +1267,23 @@ const ClassFeed = () => {
     setShowNewPostForm(false);
   };
 
-  const openNewPostComposer = () => {
+  const openNewPostComposer = (event) => {
+    postComposerReturnFocusRef.current = {
+      element: event?.currentTarget || document.activeElement,
+    };
     resetPostComposer();
     setEditingPostId(null);
     setShowNewPostForm(true);
   };
 
-  const resumePostDraft = (draft) => {
+  const resumePostDraft = (draft, returnFocusTarget = document.activeElement) => {
     if (!draft) {
       return;
     }
 
+    postComposerReturnFocusRef.current = { element: returnFocusTarget };
     resetPostComposer();
-    setEditingPostId(draft.editingPostId || null);
+    setEditingPostId(draft.editingPostId ?? null);
     applyPostDraftToComposer({
       postTitle: draft.postTitle,
       content: draft.content,
@@ -2256,16 +1295,20 @@ const ClassFeed = () => {
   };
 
   const deletePostDraftByScope = (scope) => {
-    clearPostDraft({
+    removePostDraftMemory({
       classId,
       userId: postDraftUserId,
       editingPostId: scope.startsWith('edit:') ? Number(scope.split(':')[1]) : null,
     });
-    refreshPostDrafts();
     toast.success('Draft deleted');
   };
 
   const handleSignOut = async () => {
+    dismissAssignmentModal();
+    clearPrivateDraftMemory();
+    resetPostComposer();
+    setEditingPostId(null);
+    setShowNewPostForm(false);
     try {
       await logoutBrowserSession();
       setUserInfo(null);
@@ -2275,13 +1318,17 @@ const ClassFeed = () => {
     }
   };
 
-  const handleEditPost = async (postId) => {
+  const handleEditPost = async (postId, returnFocusTarget = document.activeElement) => {
     const targetPost = posts.find((post) => post.id === postId);
     if (!canManagePost(targetPost)) {
       toast.error('You can only edit your own posts.');
       return;
     }
 
+    postComposerReturnFocusRef.current = {
+      element: returnFocusTarget,
+      fallbackSelector: `[data-post-actions-trigger="${postId}"]`,
+    };
     try {
       setLoading(true);
       
@@ -2296,15 +1343,15 @@ const ClassFeed = () => {
       setContent(normalizePostContentForEditor(post.content || ''));
       setEditingPostId(postId);
 
-      const draft = readPostDraft({
+      const draft = getPostDraft({
         classId,
         userId: postDraftUserId,
         editingPostId: postId,
       });
-      if (draft.hasDraft && draft.payload) {
-        applyPostDraftToComposer(draft.payload);
+      if (draft) {
+        applyPostDraftToComposer(draft);
         setPostDraftSavedAt(draft.savedAt);
-        toast.success('Loaded your saved edit draft');
+        toast.success('Loaded your in-tab edit draft');
       }
 
       setShowNewPostForm(true);
@@ -2343,6 +1390,18 @@ const ClassFeed = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    if (editorUploadBusy) {
+      toast.error('Wait for the media upload to finish before publishing.');
+      return;
+    }
+    if (postHtmlLength > MAX_POST_HTML_LENGTH) {
+      toast.error('This post is too large to publish. Remove some text or formatting and try again.');
+      return;
+    }
+    if (loading) {
+      return;
+    }
     
     if (!postTitle.trim()) {
       toast.error('Please enter a post title');
@@ -2352,11 +1411,11 @@ const ClassFeed = () => {
     try {
       setLoading(true);
       
-      const postData = {
+      const postData = buildPostRequestPayload({
         title: postTitle,
-        content: content,
-        class_id: classId
-      };
+        content,
+        postContent,
+      });
       
       let response;
       
@@ -2372,12 +1431,11 @@ const ClassFeed = () => {
           post.id === editingPostId ? { ...post, ...response.data } : post
         )));
 
-        clearPostDraft({
+        removePostDraftMemory({
           classId,
           userId: postDraftUserId,
           editingPostId,
         });
-        refreshPostDrafts();
         
         toast.success('Post updated successfully');
       } else {
@@ -2390,19 +1448,17 @@ const ClassFeed = () => {
         // Add the new post to the state
         setPosts((prevPosts) => [response.data, ...prevPosts]);
 
-        clearPostDraft({
+        removePostDraftMemory({
           classId,
           userId: postDraftUserId,
           editingPostId: null,
         });
-        refreshPostDrafts();
         
         toast.success('Post created successfully');
       }
       
       closePostComposer({ persistDraft: false });
-    } catch (error) {
-      console.error('Error saving post:', error);
+    } catch {
       toast.error(editingPostId ? 'Failed to update post' : 'Failed to create post');
     } finally {
       setLoading(false);
@@ -2412,7 +1468,7 @@ const ClassFeed = () => {
   const handleSavePostDraft = () => {
     const savedAt = persistCurrentPostDraft();
     if (savedAt) {
-      toast.success('Post draft saved');
+      toast.success('Post draft saved in this tab');
     } else {
       toast.error('Nothing to save in draft yet');
     }
@@ -2423,13 +1479,13 @@ const ClassFeed = () => {
       return;
     }
 
-    clearPostDraft({
+    removePostDraftMemory({
       classId,
       userId: postDraftUserId,
       editingPostId,
     });
-    refreshPostDrafts();
     setPostDraftSavedAt(null);
+    setPostComposerDirty(false);
 
     if (!editingPostId) {
       resetPostComposer();
@@ -2444,9 +1500,9 @@ const ClassFeed = () => {
       setPostTitle(post.title || '');
       setContent(normalizePostContentForEditor(post.content || ''));
       setPostContent(createEmptyPostContent());
+      setPostComposerDirty(false);
       toast.success('Draft discarded and post reset');
-    } catch (error) {
-      console.error('Error restoring post after draft discard:', error);
+    } catch {
       resetPostComposer();
       toast.success('Draft discarded');
     }
@@ -2766,7 +1822,7 @@ const ClassFeed = () => {
                   const isOverdue = new Date() > dueDate && !submission;
                   const isDueSoon = !isOverdue && !submission && (dueDate.getTime() - Date.now()) <= (24 * 60 * 60 * 1000);
                   const isClosed = new Date() > dueDate && !assignment.allow_late && !submission;
-                  const isPublicSubmission = assignment.visibility === 'class';
+                  const isClassVisibleAssignment = assignment.visibility === 'class';
 
                   return (
                     <div
@@ -2781,9 +1837,9 @@ const ClassFeed = () => {
                           </p>
                         </div>
                         <div className="flex flex-wrap gap-2">
-                          {isPublicSubmission && (
+                          {isClassVisibleAssignment && (
                             <span className="px-3 py-1 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-500">
-                              Public Submissions
+                              Visible to Students
                             </span>
                           )}
                           <span
@@ -2822,7 +1878,7 @@ const ClassFeed = () => {
                               {submission ? 'View Submission' : draft ? 'Resume Draft' : isClosed ? 'Closed' : isOverdue ? 'Submit Late' : 'Submit'}
                             </button>
                           )}
-                          {isPublicSubmission && (
+                          {canReviewSubmissions && (
                             <button
                               onClick={() => navigate(`/class/${classId}/assignment/${assignment.id}/submissions`)}
                               className="px-4 py-2 rounded-lg text-sm font-medium bg-gray-100 text-gray-700"
@@ -2861,7 +1917,7 @@ const ClassFeed = () => {
                 <div>
                   <h2 className="text-xl font-semibold">Your Drafts</h2>
                   <p className="text-sm text-gray-500">
-                    Only visible to you. Click Resume to continue writing.
+                    Only visible in this tab and cleared on refresh or sign out. Click Resume to continue writing.
                   </p>
                 </div>
                 <span className="text-xs font-semibold px-3 py-1 rounded-full bg-amber-500/10 text-amber-500">
@@ -2898,7 +1954,7 @@ const ClassFeed = () => {
                         </div>
                         <div className="flex gap-2">
                           <button
-                            onClick={() => resumePostDraft(draft)}
+                            onClick={(event) => resumePostDraft(draft, event.currentTarget)}
                             className="px-4 py-2 rounded-lg text-sm font-medium bg-blue-500/10 text-blue-500 hover:bg-blue-500/20"
                           >
                             Resume
@@ -2963,10 +2019,12 @@ const ClassFeed = () => {
                   {canManagePost(post) && (
                     <div className="relative flex items-center gap-2">
                       <button
+                        data-post-actions-trigger={post.id}
                         onClick={(e) => {
                           e.stopPropagation();
                           setMenuOpen(menuOpen === post.id ? null : post.id);
                         }}
+                        aria-label={`Post actions for ${post.title || 'untitled post'}`}
                         className="p-1 rounded-full hover:bg-gray-200 transition-colors"
                       >
                         <svg className="w-5 h-5 text-gray-500" fill="currentColor" viewBox="0 0 20 20">
@@ -2982,7 +2040,11 @@ const ClassFeed = () => {
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                handleEditPost(post.id);
+                                const actionsTrigger = e.currentTarget
+                                  .closest('[role="menu"]')
+                                  ?.parentElement
+                                  ?.previousElementSibling;
+                                handleEditPost(post.id, actionsTrigger);
                                 setMenuOpen(null);
                               }}
                               className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
@@ -3019,11 +2081,14 @@ const ClassFeed = () => {
                 </div>
               
                 {/* Post Content */}
-                <div 
-                  className="html-content mb-4 cursor-pointer max-w-none text-gray-800 line-clamp-3"
-                  onClick={() => openPost(post.id)}
-                >
-                  {ReactHtmlParser(processHTMLWithDOM(truncateHTML(post.content, 150)))}
+                <div onClick={() => openPost(post.id)}>
+                  <RichTextContent
+                    html={post.content}
+                    compact
+                    className="html-content mb-4 cursor-pointer max-w-none text-gray-800"
+                    testId={`class-feed-post-preview-${post.id}`}
+                    ariaLabel={`Preview of ${post.title || 'untitled post'}`}
+                  />
                 </div>
                 
                 {/* Comments Section */}
@@ -3242,17 +2307,26 @@ const ClassFeed = () => {
                       <span className="font-medium text-gray-700">Your Response</span>
                       <span className="text-xs text-gray-500">
                         {!rememberDraftsEnabled
-                          ? 'Draft autosave is turned off in Settings'
+                          ? 'Kept only in this tab; account autosave is off'
                           : !assignmentDraftReady
                           ? 'Loading saved draft...'
+                          : assignmentDraftClosing || assignmentDraftStatus === 'saving'
+                          ? 'Saving securely to your account...'
+                          : assignmentDraftStatus === 'error' && !assignmentDraftDirty
+                          ? 'Could not load your saved draft; retry when ready'
+                          : assignmentDraftStatus === 'error'
+                          ? 'Autosave failed — keep this tab open'
+                          : assignmentDraftStatus === 'pending'
+                          ? 'Waiting to save securely...'
                           : assignmentDraftSavedAt
-                          ? `Autosaved ${new Date(assignmentDraftSavedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
-                          : 'Draft autosaves to your account while you type'}
+                          ? `Saved to your account ${new Date(assignmentDraftSavedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+                          : 'Draft autosaves securely to your account'}
                       </span>
                     </div>
                     <textarea
                       value={assignmentSubmission}
                       onChange={handleAssignmentSubmissionChange}
+                      disabled={!assignmentDraftReady || assignmentDraftClosing || assignmentSubmitting}
                       rows={14}
                       placeholder="Write your submission..."
                       className="w-full min-h-[320px] p-3 rounded-lg border bg-white border-gray-300 text-gray-900"
@@ -3261,15 +2335,34 @@ const ClassFeed = () => {
                   </div>
                 </div>
                 <div className="mt-4 flex justify-end gap-3">
+                  {assignmentDraftStatus === 'error' && !assignmentDraftDirty && (
+                    <button
+                      onClick={retryAssignmentDraftLoad}
+                      disabled={assignmentDraftClosing || assignmentSubmitting}
+                      className="px-4 py-2 rounded-lg bg-amber-100 text-amber-700"
+                    >
+                      Retry loading
+                    </button>
+                  )}
+                  {assignmentDraftStatus === 'error' && assignmentDraftDirty && (
+                    <button
+                      onClick={discardUnsavedAssignmentChanges}
+                      disabled={assignmentDraftClosing || assignmentSubmitting}
+                      className="px-4 py-2 rounded-lg bg-rose-100 text-rose-700"
+                    >
+                      Discard unsaved changes
+                    </button>
+                  )}
                   <button
                     onClick={closeAssignmentModal}
+                    disabled={assignmentDraftClosing || assignmentSubmitting}
                     className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700"
                   >
-                    Cancel
+                    {assignmentDraftClosing ? 'Saving...' : 'Cancel'}
                   </button>
                   <button
                     onClick={handleSubmitAssignment}
-                    disabled={assignmentSubmitting}
+                    disabled={assignmentSubmitting || assignmentDraftClosing || !assignmentDraftReady}
                     className="px-4 py-2 rounded-lg text-white bg-blue-600 hover:bg-blue-500"
                   >
                     {assignmentSubmitting ? 'Submitting...' : 'Submit'}
@@ -3290,11 +2383,31 @@ const ClassFeed = () => {
             className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
           >
             <motion.div
+              ref={postComposerDialogRef}
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-white rounded-lg p-6 max-w-4xl w-full shadow-xl max-h-[90vh] overflow-y-auto text-gray-900"
+              className="bg-white rounded-lg p-6 max-w-4xl min-w-0 w-full shadow-xl max-h-[90vh] overflow-y-auto text-gray-900"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="post-composer-dialog-title"
+              tabIndex={-1}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  if (event.defaultPrevented) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  if (!loading && !editorUploadBusy) {
+                    closePostComposer();
+                  }
+                  return;
+                }
+                containDialogFocus(event, postComposerDialogRef.current);
+              }}
             >
+              <h2 id="post-composer-dialog-title" className="mb-4 text-2xl font-bold text-gray-900">
+                {editingPostId ? 'Edit post' : 'Create post'}
+              </h2>
               <div className="mb-4 flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-gray-300 flex items-center justify-center">
                   {userInfo?.profile_image ? (
@@ -3331,10 +2444,14 @@ const ClassFeed = () => {
                     Post Title (Required)
                   </label>
                 <input
+                  autoFocus
                   type="text"
                     id="post-title"
                     value={postTitle}
-                    onChange={(e) => setPostTitle(e.target.value)}
+                    onChange={(e) => {
+                      setPostTitle(e.target.value);
+                      setPostComposerDirty(true);
+                    }}
                     className="w-full p-3 rounded-lg border text-lg bg-white border-blue-200 text-gray-800"
                     placeholder="Enter a descriptive title for your post"
                   required
@@ -3346,14 +2463,27 @@ const ClassFeed = () => {
 
                 {/* Content Input */}
                 <div className="relative">
-                  <Editor
-                    apiKey="edr7zffd9q7v6okan1ka9dbc23ugp710ycjhcfroxd9undjo"
-                    init={tinyMceConfig}
+                  <LitBlogsEditor
                     value={content}
-                    onEditorChange={(content) => {
-                      setContent(content);
+                    editorFontSize={userSettings.editorFontSize}
+                    disabled={loading}
+                    onUploadStateChange={setEditorUploadBusy}
+                    onContentLimitChange={({ length }) => setPostHtmlLength(length)}
+                    onChange={(nextContent) => {
+                      setContent(nextContent);
+                      setPostComposerDirty(true);
                     }}
                   />
+                  {postHtmlLength > MAX_POST_HTML_LENGTH && (
+                    <div
+                      className="mt-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
+                      role="alert"
+                    >
+                      This post is too large to publish. Remove some text or formatting until the
+                      formatted content is {MAX_POST_HTML_LENGTH.toLocaleString('en-US')} characters
+                      or fewer ({postHtmlLength.toLocaleString('en-US')} currently).
+                    </div>
+                  )}
                   
                   {/* Add the MediaPreview component here */}
                   <MediaPreview 
@@ -3372,7 +2502,9 @@ const ClassFeed = () => {
                           </span>
                         </div>
                         <button
+                          type="button"
                           onClick={() => {
+                            setPostComposerDirty(true);
                             setPostContent(prev => ({
                               ...prev,
                               codeSnippets: prev.codeSnippets.filter(s => s.id !== snippet.id)
@@ -3415,8 +2547,10 @@ const ClassFeed = () => {
                         onClick={e => e.stopPropagation()}
                       />
                       <button
+                        type="button"
                         onClick={(e) => {
                           e.stopPropagation();
+                          setPostComposerDirty(true);
                           setPostContent(prev => ({
                             ...prev,
                             expandableLists: prev.expandableLists.filter(item => item.id !== list.id)
@@ -3445,15 +2579,16 @@ const ClassFeed = () => {
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-xs text-gray-500">
                     {!rememberDraftsEnabled
-                      ? 'Draft autosave is turned off in Settings'
+                      ? 'Kept only in this tab until you close the editor'
                       : postDraftSavedAt
-                      ? `Autosaved ${new Date(postDraftSavedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
-                      : 'Draft autosaves while you type'}
+                      ? `Kept only in this tab · Saved ${new Date(postDraftSavedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+                      : 'Kept only in this tab; it is cleared on refresh or sign out'}
                   </span>
                   <div className="flex gap-4">
                     <motion.button
                       type="button"
                       onClick={handleSavePostDraft}
+                      disabled={loading || editorUploadBusy || postHtmlLength > MAX_POST_HTML_LENGTH}
                       className="px-6 py-2 rounded-lg bg-amber-500 text-white hover:bg-amber-400"
                       whileHover={{ scale: 1.05 }}
                       whileTap={{ scale: 0.95 }}
@@ -3463,6 +2598,7 @@ const ClassFeed = () => {
                     <motion.button
                       type="button"
                       onClick={handleDiscardPostDraft}
+                      disabled={loading || editorUploadBusy}
                       className="px-6 py-2 rounded-lg bg-rose-600 text-white hover:bg-rose-500"
                       whileHover={{ scale: 1.05 }}
                       whileTap={{ scale: 0.95 }}
@@ -3472,6 +2608,7 @@ const ClassFeed = () => {
                   <motion.button
                     type="button"
                     onClick={closePostComposer}
+                    disabled={loading || editorUploadBusy}
                     className="px-6 py-2 rounded-lg bg-gray-200 hover:bg-gray-300"
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
@@ -3480,11 +2617,18 @@ const ClassFeed = () => {
                   </motion.button>
                   <motion.button
                     type="submit"
+                    disabled={loading || editorUploadBusy || postHtmlLength > MAX_POST_HTML_LENGTH}
                     className="px-6 py-2 rounded-lg text-white bg-blue-600 hover:bg-blue-700"
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
                   >
-                    {editingPostId ? 'Update Post' : 'Publish'}
+                    {editorUploadBusy
+                      ? 'Uploading media…'
+                      : loading
+                      ? 'Saving…'
+                      : editingPostId
+                      ? 'Update Post'
+                      : 'Publish'}
                   </motion.button>
                   </div>
                 </div>

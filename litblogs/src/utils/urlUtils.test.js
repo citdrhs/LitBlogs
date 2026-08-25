@@ -80,4 +80,22 @@ describe("mediaPath", () => {
       "/litblogs/api/uploads/images/avatar.png",
     );
   });
+
+  it("resolves only bounded server cover presets at the frontend base", async () => {
+    const { profileCoverPath } = await loadUrlUtils("/litblogs/");
+
+    expect(profileCoverPath("/Classroom2.jpeg")).toBe("/litblogs/Classroom2.jpeg");
+    expect(profileCoverPath("/api/uploads/objects/aa/asset.png")).toBe(
+      "/litblogs/api/uploads/objects/aa/asset.png",
+    );
+    expect(profileCoverPath("student-private-name.png")).toBe(
+      "/student-private-name.png",
+    );
+  });
+
+  it("does not infer an upload location from a bare filename", async () => {
+    const { mediaPath } = await loadUrlUtils("/litblogs/");
+
+    expect(mediaPath("student-private-name.png")).toBe("/student-private-name.png");
+  });
 });

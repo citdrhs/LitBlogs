@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import Loader from './Loader';
-import ReactHtmlParser from 'react-html-parser';
+import RichTextContent from './RichTextContent';
 
 // Format relative time (e.g., "2 hours ago")
 const formatRelativeTime = (dateString) => {
@@ -169,25 +169,6 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
     fetchClassDetails();
   }, [classData.id]);
   
-  // Function to truncate HTML content for preview
-  const truncateHTML = (htmlContent, maxLength = 100) => {
-    if (!htmlContent) return '';
-    
-    // Create a div to hold the HTML content
-    const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = htmlContent;
-    
-    // Get text content
-    const textContent = tempDiv.textContent || tempDiv.innerText || '';
-    
-    // Truncate text content
-    if (textContent.length <= maxLength) {
-      return htmlContent;
-    }
-    
-    return textContent.substring(0, maxLength) + '...';
-  };
-
   const handleSaveAssignment = async () => {
     try {
       setSavingAssignment(true);
@@ -447,9 +428,13 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
                         <div className="mb-2">
                           <h2 className="text-xl font-semibold text-gray-900">{post.title}</h2>
                         </div>
-                        <div className="text-gray-600 line-clamp-3">
-                          {ReactHtmlParser(truncateHTML(post.content, 150))}
-                        </div>
+                        <RichTextContent
+                          html={post.content || ''}
+                          compact
+                          className="text-gray-600"
+                          testId={`class-details-post-preview-${post.id}`}
+                          ariaLabel={`Preview of ${post.title}`}
+                        />
 
                         {/* Post Stats */}
                         <div className="mt-4 flex items-center space-x-4 text-gray-500">
@@ -547,7 +532,7 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
                       </label>
                       <div className="flex flex-col gap-2">
                         <label className="text-sm font-medium text-gray-600 dark:text-gray-300">
-                          Submission Visibility
+                          Assignment Audience
                         </label>
                         <div className="flex flex-wrap gap-3">
                           <button
@@ -561,7 +546,7 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
                                   : 'bg-gray-100 text-gray-700'
                             }`}
                           >
-                            Visible to Class
+                            Visible to Students
                           </button>
                           <button
                             type="button"
@@ -644,7 +629,7 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
                               ? 'bg-blue-500/10 text-blue-500'
                               : 'bg-purple-500/10 text-purple-500'
                           }`}>
-                            {assignment.visibility === 'class' ? 'Public Submissions' : 'Teacher/Admin Only'}
+                            {assignment.visibility === 'class' ? 'Visible to Students' : 'Teacher/Admin Only'}
                           </span>
                           <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${
                             assignment.allow_late

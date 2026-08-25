@@ -1,4 +1,5 @@
 import axios from "axios";
+import { requestPrivateDraftMemoryClear } from "./privateDraftMemory.js";
 
 const USER_INFO_KEY = "user_info";
 const CLASS_INFO_KEY = "class_info";
@@ -11,10 +12,7 @@ const storageKeys = (storage) => Array.from(
   (_unused, index) => storage.key(index),
 ).filter(Boolean);
 
-const clearStorageKeys = (storage) => {
-  for (const key of LEGACY_AUTH_KEYS) {
-    storage.removeItem(key);
-  }
+const clearDraftKeys = (storage) => {
   for (const key of storageKeys(storage)) {
     if (DRAFT_PREFIXES.some((prefix) => key.startsWith(prefix))) {
       storage.removeItem(key);
@@ -22,13 +20,28 @@ const clearStorageKeys = (storage) => {
   }
 };
 
+const clearStorageKeys = (storage) => {
+  for (const key of LEGACY_AUTH_KEYS) {
+    storage.removeItem(key);
+  }
+  clearDraftKeys(storage);
+};
+
+export const purgeLegacyPrivateDrafts = () => {
+  requestPrivateDraftMemoryClear();
+  clearDraftKeys(localStorage);
+  clearDraftKeys(sessionStorage);
+};
+
 export const clearStoredAuth = () => {
+  requestPrivateDraftMemoryClear();
   clearStorageKeys(localStorage);
   clearStorageKeys(sessionStorage);
 };
 
 export const purgeLegacyPersistentAuth = () => {
   clearStorageKeys(localStorage);
+  clearDraftKeys(sessionStorage);
   sessionStorage.removeItem("token");
 };
 
@@ -141,9 +154,12 @@ export const configureAuthHttpClient = (
   httpClient = axios,
   {
     apiBasePath = "/api",
-    csrfCookieName = import.meta.env.VITE_CSRF_COOKIE_NAME || "litblog-csrf",
+    csrfCookieName,
   } = {},
 ) => {
+  if (!csrfCookieName) {
+    throw new Error("Browser configuration is unavailable");
+  }
   httpClient.defaults.baseURL = httpClient.defaults.baseURL || apiBasePath;
   httpClient.defaults.withCredentials = false;
   httpClient.interceptors.request.use((config) => {
@@ -182,6 +198,7 @@ export const fetchBrowserSession = async (httpClient = axios) => {
 };
 
 export const logoutBrowserSession = async (httpClient = axios) => {
+  purgeLegacyPrivateDrafts();
   const response = await httpClient.post("/auth/logout");
   if (response.status !== 204) {
     throw new Error("Logout was not confirmed by the server");

@@ -1,10 +1,14 @@
 import { useState, useEffect, useRef } from "react";
-import { Link, useNavigate, useLocation } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import axios from 'axios';
 import Loader from './components/Loader';
 import Footer from './components/Footer';
 import { resolveAppAsset } from './utils/urlUtils';
+import {
+  clearBootstrappedPasswordResetToken,
+  getBootstrappedPasswordResetToken,
+} from './utils/resetToken';
 
 const ResetPassword = () => {
   const [password, setPassword] = useState("");
@@ -23,12 +27,9 @@ const ResetPassword = () => {
   const dropdownRef = useRef(null);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const navigate = useNavigate();
-  const location = useLocation();
 
   useEffect(() => {
-    // Extract token from URL query parameters
-    const queryParams = new URLSearchParams(location.search);
-    const resetToken = queryParams.get('token');
+    const resetToken = getBootstrappedPasswordResetToken();
     
     if (!resetToken) {
       setMessage("Invalid or missing reset token. Please request a new password reset.");
@@ -36,7 +37,7 @@ const ResetPassword = () => {
     }
     
     setToken(resetToken);
-  }, [location]);
+  }, []);
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -128,8 +129,8 @@ const ResetPassword = () => {
     }
     
     // Validate password strength
-    if (password.length < 8) {
-      setMessage("Password must be at least 8 characters long");
+    if (password.length < 15) {
+      setMessage("Password must be at least 15 characters long");
       return;
     }
     
@@ -141,6 +142,7 @@ const ResetPassword = () => {
         token,
         new_password: password
       });
+      clearBootstrappedPasswordResetToken();
       
       setIsSuccess(true);
       setMessage("Your password has been reset successfully!");
@@ -324,10 +326,10 @@ const ResetPassword = () => {
                   checkPasswordStrength(e.target.value);
                 }}
                 required
-                minLength={8}
+                minLength={15}
               />
               <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                Password must be at least 8 characters and include uppercase, lowercase, number, and special character.
+                Password must be at least 15 characters and include uppercase, lowercase, number, and special character.
               </p>
               {password && (
                 <div className="mt-2">

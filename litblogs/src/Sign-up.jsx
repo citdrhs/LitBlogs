@@ -11,8 +11,11 @@ import { loginRequest, oauthProviderConfig } from "./config/msalConfig";
 import { FaMicrosoft } from 'react-icons/fa';
 import { resolveAppAsset } from './utils/urlUtils';
 import { fetchBrowserSession } from './utils/auth';
+import { localPasswordRegistrationEnabled as configuredLocalPasswordRegistrationEnabled } from './config/registrationConfig';
 
-const SignUp = () => {
+const SignUp = ({
+  localPasswordRegistrationEnabled = configuredLocalPasswordRegistrationEnabled,
+}) => {
   const { instance } = useMsal();
   // State variables for form inputs
   const [firstName, setFirstName] = useState("");
@@ -25,7 +28,7 @@ const SignUp = () => {
   const dropdownRef = useRef(null);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [role, setRole] = useState('');
-  const [accessCode, setAccessCode] = useState('');
+  const [teacherInvitationToken, setTeacherInvitationToken] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [successData, setSuccessData] = useState(null);
@@ -83,8 +86,8 @@ const SignUp = () => {
   // Add this function to your Sign-up.jsx file
   const validatePassword = (password) => {
     // Check minimum length
-    if (password.length < 8) {
-      return "Password must be at least 8 characters long";
+    if (password.length < 15) {
+      return "Password must be at least 15 characters long";
     }
     
     // Check for uppercase letter
@@ -115,7 +118,7 @@ const SignUp = () => {
     let score = 0;
     
     // Basic requirements
-    if (password.length >= 8) score++;
+    if (password.length >= 15) score++;
     if (/[A-Z]/.test(password)) score++;
     if (/[a-z]/.test(password)) score++;
     if (/[0-9]/.test(password)) score++;
@@ -156,6 +159,11 @@ const SignUp = () => {
   // Form submission handler
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    if (!localPasswordRegistrationEnabled) {
+      setErrorMessage("Password registration is not available.");
+      return;
+    }
     
     try {
       // Check if role is selected
@@ -164,9 +172,9 @@ const SignUp = () => {
         return;
       }
 
-      // Validate the teacher provisioning code.
-      if (role === 'TEACHER' && !accessCode) {
-        setErrorMessage(`Please enter the ${role.toLowerCase()} access code`);
+      // Teacher provisioning uses an email-bound, one-time invitation.
+      if (role === 'TEACHER' && !teacherInvitationToken) {
+        setErrorMessage("Please enter your teacher invitation token");
         return;
       }
 
@@ -197,14 +205,17 @@ const SignUp = () => {
         first_name: firstName,  // Changed from firstName to first_name
         last_name: lastName,    // Changed from lastName to last_name
         role: role,
-        access_code: accessCode // Changed from accessCode to access_code
+        ...(role === 'TEACHER' ? {
+          teacher_invitation_token: teacherInvitationToken,
+        } : {}),
       });
 
-      const session = await fetchBrowserSession();
-
-      // Show success modal
+      // Password registration deliberately does not create a browser session.
+      setPassword("");
+      setConfirmPassword("");
+      setTeacherInvitationToken("");
       setSuccessData({
-        role: session.role
+        requiresSignIn: true,
       });
       setShowSuccessModal(true);
 
@@ -227,9 +238,8 @@ const SignUp = () => {
         return;
       }
 
-      // Check if the teacher access code is provided.
-      if (role === 'TEACHER' && !accessCode) {
-        setErrorMessage(`Please enter an access code for ${role.toLowerCase()} role`);
+      if (role === 'TEACHER' && !teacherInvitationToken) {
+        setErrorMessage("Please enter your teacher invitation token");
         return;
       }
 
@@ -242,8 +252,9 @@ const SignUp = () => {
       await axios.post('/auth/google-signup', {
           idToken: credential,
           role,
-          ...(role === 'TEACHER' ? { accessCode } : {}),
+          ...(role === 'TEACHER' ? { teacherInvitationToken } : {}),
       });
+      setTeacherInvitationToken("");
       const session = await fetchBrowserSession();
       
       // Show success modal with user role information
@@ -273,9 +284,8 @@ const SignUp = () => {
         return;
       }
 
-      // Validate the teacher provisioning code.
-      if (role === 'TEACHER' && !accessCode) {
-        setErrorMessage(`Please enter the ${role.toLowerCase()} access code`);
+      if (role === 'TEACHER' && !teacherInvitationToken) {
+        setErrorMessage("Please enter your teacher invitation token");
         return;
       }
 
@@ -285,8 +295,9 @@ const SignUp = () => {
       await axios.post('/auth/microsoft-signup', {
         idToken: response.idToken,
         role,
-        ...(role === 'TEACHER' ? { accessCode } : {}),
+        ...(role === 'TEACHER' ? { teacherInvitationToken } : {}),
       });
+      setTeacherInvitationToken("");
       
       const session = await fetchBrowserSession();
 
@@ -298,8 +309,8 @@ const SignUp = () => {
       
     } catch (error) {
       console.error('Microsoft signup failed');
-      if (error.response?.status === 403) {
-        setErrorMessage("Invalid access code");
+      if (error.response?.status === 401 || error.response?.status === 403) {
+        setErrorMessage("Teacher invitation could not be accepted");
       } else if (error.response?.status === 400) {
         setErrorMessage("User already exists. Please sign in instead.");
       } else {
@@ -402,7 +413,15 @@ const SignUp = () => {
           Sign Up
         </motion.h2>
 
+        {!localPasswordRegistrationEnabled && (
+          <p className="mb-6 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-100">
+            Use your verified school account to sign up.
+          </p>
+        )}
+
         <form onSubmit={handleSubmit}>
+          {localPasswordRegistrationEnabled && (
+            <>
           {/* First Name Input */}
           <motion.div
             className="mb-4"
@@ -481,7 +500,7 @@ const SignUp = () => {
               required
             />
             <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-              Password must be at least 8 characters long and include uppercase, lowercase, number, and special character.
+              Password must be at least 15 characters long and include uppercase, lowercase, number, and special character.
             </p>
           </motion.div>
 
@@ -525,6 +544,8 @@ const SignUp = () => {
               required
             />
           </motion.div>
+            </>
+          )}
 
           <motion.div className="mb-4">
             <label htmlFor="role" className="block text-sm font-medium mb-2">Role</label>
@@ -545,17 +566,21 @@ const SignUp = () => {
 
           {role === 'TEACHER' && (
             <div>
-              <label className="block text-sm font-medium mb-2">Access Code</label>
+              <label htmlFor="teacherInvitationToken" className="block text-sm font-medium mb-2">
+                Teacher invitation token
+              </label>
               <input
-                type="text"
-                value={accessCode}
-                onChange={(e) => setAccessCode(e.target.value)}
+                id="teacherInvitationToken"
+                type="password"
+                autoComplete="off"
+                value={teacherInvitationToken}
+                onChange={(e) => setTeacherInvitationToken(e.target.value)}
                 className={`w-full p-3 rounded-lg border ${
                   darkMode 
                     ? 'bg-gray-700 border-gray-600 text-white' 
                     : 'bg-white border-gray-300'
                 }`}
-                placeholder={`Enter ${role.toLowerCase()} access code`}
+                placeholder="Enter the one-time token provided by your school"
                 required
               />
             </div>
@@ -572,19 +597,20 @@ const SignUp = () => {
             </motion.p>
           )}
 
-          {/* Regular sign up button */}
-          <motion.button
-            type="submit"
-            className={`w-full p-4 text-white rounded-lg text-lg focus:outline-none ${darkMode ? 'bg-teal-700 hover:bg-teal-600' : 'bg-blue-600 hover:bg-blue-700'} transition-colors duration-300`}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-          >
-            Sign Up
-          </motion.button>
+          {localPasswordRegistrationEnabled && (
+            <motion.button
+              type="submit"
+              className={`w-full p-4 text-white rounded-lg text-lg focus:outline-none ${darkMode ? 'bg-teal-700 hover:bg-teal-600' : 'bg-blue-600 hover:bg-blue-700'} transition-colors duration-300`}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+            >
+              Sign Up
+            </motion.button>
+          )}
         </form>
 
         {/* Divider */}
-        {(oauthProviderConfig.google.enabled || oauthProviderConfig.microsoft.enabled) && <div className="mt-6 mb-6 flex items-center">
+        {localPasswordRegistrationEnabled && (oauthProviderConfig.google.enabled || oauthProviderConfig.microsoft.enabled) && <div className="mt-6 mb-6 flex items-center">
           <div className="flex-1 border-t border-gray-300 dark:border-gray-600"></div>
           <span className="mx-4 text-sm text-gray-500 dark:text-gray-400">or continue with</span>
           <div className="flex-1 border-t border-gray-300 dark:border-gray-600"></div>
@@ -657,13 +683,28 @@ const SignUp = () => {
                 darkMode ? 'bg-gray-800 text-white' : 'bg-white text-gray-900'
               } p-8 rounded-lg shadow-xl max-w-md w-full mx-4`}
             >
-              <h2 className="text-2xl font-bold mb-4">Registration Successful!</h2>
-              <p className="mb-6">
-                {successData?.role === 'STUDENT'
-                  ? "You've been successfully registered as a student. Click below to go to your class hub!"
-                  : "You've been successfully registered as a teacher. Click below to access your dashboard!"}
-              </p>
-              {successData?.role === 'STUDENT' ? (
+              <h2 className="text-2xl font-bold mb-4">
+                {successData?.requiresSignIn ? "Registration submitted" : "Registration successful"}
+              </h2>
+              {successData?.requiresSignIn ? (
+                <>
+                  <p className="mb-6">
+                    If your registration was accepted, sign in with the credentials you submitted.
+                  </p>
+                  <Link
+                    to="/sign-in"
+                    className={`block w-full p-4 text-center text-white rounded-lg ${
+                      darkMode ? 'bg-teal-600 hover:bg-teal-500' : 'bg-blue-600 hover:bg-blue-700'
+                    } transition-colors duration-300`}
+                  >
+                    Sign In
+                  </Link>
+                </>
+              ) : successData?.role === 'STUDENT' ? (
+                <>
+                  <p className="mb-6">
+                    You have been registered as a student. Continue to your class hub.
+                  </p>
                 <Link 
                   to="/student-hub"
                   className={`block w-full p-4 text-center text-white rounded-lg ${
@@ -672,7 +713,12 @@ const SignUp = () => {
                 >
                   Go to Student Hub
                 </Link>
+                </>
               ) : (
+                <>
+                  <p className="mb-6">
+                    You have been registered as a teacher. Continue to your dashboard.
+                  </p>
                 <Link 
                   to="/teacher-dashboard"
                   className={`block w-full p-4 text-center text-white rounded-lg ${
@@ -681,6 +727,7 @@ const SignUp = () => {
                 >
                   Go to Teacher Dashboard
                 </Link>
+                </>
               )}
             </motion.div>
           </motion.div>

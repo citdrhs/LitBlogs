@@ -54,6 +54,10 @@ def test_process_environment_wins_over_environment_specific_file(tmp_path):
     shutil.copy2(BACKEND_DIR / "base.py", isolated_backend / "base.py")
     shutil.copy2(BACKEND_DIR / "config.py", isolated_backend / "config.py")
     shutil.copy2(BACKEND_DIR / "database.py", isolated_backend / "database.py")
+    shutil.copy2(
+        BACKEND_DIR / "runtime_database_identity.py",
+        isolated_backend / "runtime_database_identity.py",
+    )
 
     safe_database_path = tmp_path / "safe-test.db"
     safe_database_url = f"sqlite:///{safe_database_path.as_posix()}"

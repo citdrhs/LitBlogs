@@ -10,6 +10,7 @@ from pathlib import Path
 import jwt
 import pytest
 from pydantic import ValidationError
+from settings_test_support import production_upload_settings
 
 import auth_security
 from auth_security import (
@@ -172,8 +173,12 @@ def test_settings_validation_errors_do_not_echo_secret_values():
         "microsoft_tenant_id",
         "session_cookie_name",
         "csrf_cookie_name",
-        "teacher_access_code",
+        "teacher_invite_hmac_key",
         "admin_access_code",
+        "email_host",
+        "email_username",
+        "email_password",
+        "email_from",
     ],
 )
 def test_production_requires_provider_and_session_settings(field):
@@ -192,7 +197,7 @@ def test_production_requires_provider_and_session_settings(field):
         ("microsoft_tenant_id", "test-tenant-id"),
         ("session_cookie_name", "test-session-cookie"),
         ("csrf_cookie_name", "placeholder-csrf-cookie"),
-        ("teacher_access_code", ""),
+        ("teacher_invite_hmac_key", ""),
         ("admin_access_code", "test-only-admin-access-code"),
     ],
 )
@@ -210,7 +215,10 @@ def test_production_rejects_placeholder_or_blank_security_settings(field, value)
         ("secret_key", "replace-with-at-least-32-random-characters"),
         ("google_client_id", "replace-with-google-client-id"),
         ("microsoft_client_id", "replace-with-microsoft-client-id"),
-        ("teacher_access_code", "replace-with-teacher-access-code"),
+        (
+            "teacher_invite_hmac_key",
+            "replace-with-a-distinct-random-key-of-at-least-32-bytes",
+        ),
         ("admin_access_code", "replace-with-admin-access-code"),
         ("admin_code", "replace-with-admin-code"),
     ],
@@ -229,7 +237,7 @@ def test_production_rejects_every_shipped_security_sentinel(field, sentinel):
         "google_client_id",
         "microsoft_client_id",
         "microsoft_tenant_id",
-        "teacher_access_code",
+        "teacher_invite_hmac_key",
         "admin_access_code",
         "admin_code",
     ],
@@ -245,6 +253,8 @@ def test_production_rejects_trivially_short_provider_and_provisioning_values(fie
 def test_production_rejects_insecure_session_and_origin_configuration():
     for field, value in (
         ("session_cookie_secure", False),
+        ("session_cookie_name", "litblog-session-cookie"),
+        ("csrf_cookie_name", "litblog-csrf-cookie"),
         ("frontend_url", "http://litblogs.example"),
         ("cors_allowed_origins", ("*",)),
         ("access_token_expire_minutes", 121),
@@ -253,6 +263,55 @@ def test_production_rejects_insecure_session_and_origin_configuration():
         data[field] = value
         with pytest.raises(ValidationError, match=f"(?i){field}"):
             Settings(**data)
+
+
+def test_production_requires_distinct_session_and_csrf_cookie_names():
+    data = _production_settings_data()
+    data["csrf_cookie_name"] = data["session_cookie_name"]
+
+    with pytest.raises(ValidationError, match="(?i)cookie.*differ"):
+        Settings(**data)
+
+
+def test_production_requires_password_reset_delivery_worker():
+    data = _production_settings_data()
+    data["password_reset_worker_enabled"] = False
+
+    with pytest.raises(ValidationError, match="PASSWORD_RESET_WORKER_ENABLED"):
+        Settings(**data)
+
+
+def test_local_password_registration_requires_explicit_nonproduction_opt_in():
+    assert Settings(**_test_settings_data()).local_password_registration_enabled is False
+    for app_env in ("test", "development"):
+        settings = Settings(
+            **_test_settings_data(
+                app_env=app_env,
+                local_password_registration_enabled=True,
+            )
+        )
+        assert settings.local_password_registration_enabled is True
+
+    production_data = _production_settings_data()
+    production_data["local_password_registration_enabled"] = True
+    with pytest.raises(
+        ValidationError,
+        match="LOCAL_PASSWORD_REGISTRATION_ENABLED",
+    ):
+        Settings(**production_data)
+
+
+@pytest.mark.parametrize("value", ["1", "yes", "on", "TRUE "])
+def test_local_password_registration_rejects_ambiguous_boolean_values(value):
+    with pytest.raises(
+        ValidationError,
+        match="LOCAL_PASSWORD_REGISTRATION_ENABLED",
+    ):
+        Settings(
+            **_test_settings_data(
+                local_password_registration_enabled=value,
+            )
+        )
 
 
 def test_test_and_development_accept_explicit_nonproduction_placeholders():
@@ -595,8 +654,9 @@ def _test_settings_data(**overrides):
         "session_cookie_name": "test-litblog-session",
         "csrf_cookie_name": "test-litblog-csrf",
         "session_cookie_secure": False,
-        "teacher_access_code": "test-only-teacher-access-code",
+        "teacher_invite_hmac_key": "test-only-invitation-hmac-key-0123456789",
         "admin_access_code": "test-only-admin-access-code",
+        "local_password_registration_enabled": False,
     }
     data.update(overrides)
     return data
@@ -605,24 +665,35 @@ def _test_settings_data(**overrides):
 def _production_settings_data():
     return {
         "app_env": "production",
-        "database_url": "postgresql://litblog_app@database.internal/litblog",
+        "database_url": (
+            f"postgresql://litblog_app:{secrets.token_urlsafe(24)}@database.internal/litblog"
+            "?sslmode=verify-full&sslrootcert=/etc/litblogs/postgres-root-ca.pem"
+        ),
         "secret_key": secrets.token_urlsafe(48),
-        "jwt_issuer": "https://api.litblogs.school.example",
-        "jwt_audience": "litblogs.school.example",
+        "jwt_issuer": "https://api.litblogs.school.edu",
+        "jwt_audience": "litblogs.school.edu",
         "access_token_expire_minutes": 30,
-        "frontend_url": "https://litblogs.school.example",
-        "cors_allowed_origins": ("https://litblogs.school.example",),
+        "frontend_url": "https://litblogs.school.edu",
+        "cors_allowed_origins": ("https://litblogs.school.edu",),
+        "allowed_hosts": ("litblogs.school.edu",),
         "google_client_id": "987654321.apps.googleusercontent.com",
         "microsoft_client_id": "2f1c67a1-91e2-46a3-941f-b88e31763e51",
         "microsoft_tenant_id": "871bd3e0-2dc0-4a40-9b07-9d03068c2364",
         "microsoft_allowed_tenant_ids": ("871bd3e0-2dc0-4a40-9b07-9d03068c2364",),
-        "allowed_email_domains": ("school.example",),
+        "allowed_email_domains": ("school.edu",),
         "session_cookie_name": "__Host-litblog-session",
         "csrf_cookie_name": "__Host-litblog-csrf",
         "session_cookie_secure": True,
-        "teacher_access_code": secrets.token_urlsafe(24),
+        "teacher_invite_hmac_key": secrets.token_urlsafe(48),
         "admin_access_code": secrets.token_urlsafe(24),
         "admin_code": secrets.token_urlsafe(24),
+        "email_host": "smtp.school.edu",
+        "email_username": "litblog-reset",
+        "email_password": secrets.token_urlsafe(24),
+        "email_from": "no-reply@school.edu",
+        "password_reset_worker_enabled": True,
+        "local_password_registration_enabled": False,
+        **production_upload_settings(),
     }
 
 

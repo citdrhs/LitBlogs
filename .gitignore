@@ -32,3 +32,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+# Private runtime data and local development databases
+litblogs/uploads/
+*.db
+*.sqlite*

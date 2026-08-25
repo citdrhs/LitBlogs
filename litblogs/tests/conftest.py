@@ -27,13 +27,14 @@ TEST_ENVIRONMENT = {
     "TEST_POSTGRES_DATABASE": EXPLICIT_TEST_POSTGRES_DATABASE,
     "ALLOW_TEST_DATABASE_DDL": EXPLICIT_ALLOW_TEST_DATABASE_DDL,
     "SECRET_KEY": "test-only-secret-key-" + ("x" * 64),
+    "TEACHER_INVITE_HMAC_KEY": "test-only-teacher-invite-hmac-key-" + ("y" * 64),
     "JWT_ISSUER": "litblog-test",
     "JWT_AUDIENCE": "litblog-test-clients",
     "ACCESS_TOKEN_EXPIRE_MINUTES": "30",
     "RESET_DATABASE_ON_STARTUP": "false",
     "ADMIN_ACCESS_CODE": "test-only-admin-access-code",
-    "TEACHER_ACCESS_CODE": "test-only-teacher-access-code",
     "ADMIN_CODE": "test-only-admin-code",
+    "LOCAL_PASSWORD_REGISTRATION_ENABLED": "true",
     "FRONTEND_URL": "http://testserver",
     "BASE_URL": "http://testserver",
     "CORS_ALLOWED_ORIGINS": "http://testserver",
@@ -50,12 +51,12 @@ TEST_ENVIRONMENT = {
     "VAPID_PUBLIC_KEY": "",
     "VAPID_PRIVATE_KEY": "",
     "VAPID_SUBJECT": "mailto:tests@example.com",
-    "PUSH_REMINDER_INTERVAL_SECONDS": "3600",
     "EMAIL_HOST": "localhost",
     "EMAIL_PORT": "1025",
     "EMAIL_USERNAME": "test-email-user",
     "EMAIL_PASSWORD": "test-email-password",
     "EMAIL_FROM": "tests@example.com",
+    "PASSWORD_RESET_WORKER_ENABLED": "false",
 }
 
 
@@ -117,6 +118,7 @@ database = import_module("database")
 _assert_test_database_engine(database.engine)
 main = import_module("main")
 base = import_module("base")
+settings_config = import_module("config")
 
 
 DATABASE_EXISTED_AFTER_IMPORT = TEST_DATABASE_PATH.exists()
@@ -129,10 +131,24 @@ def cleanup_test_environment():
     TEST_TEMP_DIR.cleanup()
 
 
+@pytest.fixture(autouse=True)
+def synthetic_production_upload_root(monkeypatch):
+    from settings_test_support import TEST_PRODUCTION_UPLOAD_ROOT
+
+    monkeypatch.setattr(
+        settings_config,
+        "PRODUCTION_UPLOAD_ROOT",
+        TEST_PRODUCTION_UPLOAD_ROOT,
+    )
+
+
 @pytest.fixture
 def client():
+    main.upload_admission.reset()
     _assert_test_database_engine(database.engine)
     base.Base.metadata.drop_all(bind=database.engine)
+    _assert_test_database_engine(database.engine)
+    base.Base.metadata.create_all(bind=database.engine)
 
     _assert_test_database_engine(database.engine)
     with TestClient(main.app) as test_client:
@@ -140,6 +156,7 @@ def client():
 
     _assert_test_database_engine(database.engine)
     base.Base.metadata.drop_all(bind=database.engine)
+    main.upload_admission.reset()
 
 
 @pytest.fixture(scope="session")

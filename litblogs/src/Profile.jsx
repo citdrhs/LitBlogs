@@ -7,8 +7,9 @@ import axios from "axios"
 import Navbar from "./components/Navbar"
 import Loader from "./components/Loader"
 import Footer from "./components/Footer"
-import { mediaPath } from "./utils/urlUtils"
+import { assetPath, mediaPath, profileCoverPath } from "./utils/urlUtils"
 import { logoutBrowserSession } from "./utils/auth"
+import { buildProfileUpdatePayload } from "./utils/profileUpdate"
 
 // Animated avatar options
 const AVATAR_OPTIONS = [
@@ -58,10 +59,10 @@ const AVATAR_OPTIONS = [
 
 // Background options
 const BACKGROUND_OPTIONS = [
-  "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?ixlib=rb-4.0.3&auto=format&fit=crop&w=1200&q=80",
-  "https://images.unsplash.com/photo-1441974231531-c6227db76b6e?ixlib=rb-4.0.3&auto=format&fit=crop&w=1200&q=80",
-  "https://images.unsplash.com/photo-1506744038136-46273834b3fb?ixlib=rb-4.0.3&auto=format&fit=crop&w=1200&q=80",
-  "https://images.unsplash.com/photo-1470770841072-f978cf4d019e?ixlib=rb-4.0.3&auto=format&fit=crop&w=1200&q=80",
+  { id: "classroom-1", url: assetPath("Classroom1.jpeg") },
+  { id: "classroom-2", url: assetPath("Classroom2.jpeg") },
+  { id: "classroom-3", url: assetPath("Classroom3.jpeg") },
+  { id: "classroom-4", url: assetPath("Classroom4.jpeg") },
 ]
 
 // Custom animation styles
@@ -101,6 +102,7 @@ const StudentProfile = () => {
   const [bio, setBio] = useState("")
   const [image, setImage] = useState(null)
   const [coverImage, setCoverImage] = useState(null)
+  const [selectedCoverPreset, setSelectedCoverPreset] = useState(null)
   const [isEditing, setIsEditing] = useState(false)
   const [userPosts, setUserPosts] = useState([])
   const [savedPosts, setSavedPosts] = useState([])
@@ -279,6 +281,7 @@ const StudentProfile = () => {
     setBio(profileData?.bio || "")
     setImage(profileData?.profile_image || null)
     setCoverImage(profileData?.cover_image || null)
+    setSelectedCoverPreset(null)
 
     if (profileData?.avatar_id) {
       const avatar = AVATAR_OPTIONS.find((a) => a.id === profileData.avatar_id) || AVATAR_OPTIONS[0]
@@ -428,15 +431,14 @@ const StudentProfile = () => {
       // Update profile information
       const response = await axios.post(
         "/user/update-profile",
-        {
-          first_name: firstName,
-          last_name: lastName,
-          bio: bio,
-          avatar_id: selectedAvatar.id,
-          avatar_color: avatarColor,
-          profile_image: image,
-          cover_image: coverImage,
-        },
+        buildProfileUpdatePayload({
+          firstName,
+          lastName,
+          bio,
+          avatarId: selectedAvatar.id,
+          avatarColor,
+          coverPreset: selectedCoverPreset,
+        }),
       )
 
       if (response?.data?.profile) {
@@ -535,6 +537,7 @@ const StudentProfile = () => {
       })
 
       setCoverImage(response.data.image_url)
+      setSelectedCoverPreset(null)
       setUploadProgress(0)
 
       // Update userInfo state
@@ -561,14 +564,15 @@ const StudentProfile = () => {
     }
   }
 
-  const selectCoverImage = (imageUrl) => {
-    setCoverImage(imageUrl)
+  const selectCoverImage = (background) => {
+    setCoverImage(background.url)
+    setSelectedCoverPreset(background.id)
     setShowCoverOptions(false)
 
     setUserInfo((prev) => {
       const nextProfile = {
         ...prev,
-        cover_image: imageUrl,
+        cover_image: background.url,
       }
       syncStoredUserInfo(nextProfile)
       return nextProfile
@@ -704,8 +708,8 @@ const StudentProfile = () => {
           <div className="h-64 w-full relative overflow-hidden">
             <img
               src={
-                mediaPath(coverImage) ||
-                BACKGROUND_OPTIONS[0] ||
+                profileCoverPath(coverImage) ||
+                BACKGROUND_OPTIONS[0].url ||
                 "/placeholder.svg"
               }
               alt="Cover"
@@ -776,14 +780,14 @@ const StudentProfile = () => {
                   </button>
                 </div>
                 <div className="grid grid-cols-3 gap-2">
-                  {BACKGROUND_OPTIONS.map((bgUrl, index) => (
+                  {BACKGROUND_OPTIONS.map((background, index) => (
                     <div
-                      key={index}
+                      key={background.id}
                       className="w-20 h-12 rounded-md overflow-hidden cursor-pointer border-2 hover:border-blue-500 transition-all"
-                      onClick={() => selectCoverImage(bgUrl)}
+                      onClick={() => selectCoverImage(background)}
                     >
                       <img
-                        src={bgUrl || "/placeholder.svg"}
+                        src={background.url || "/placeholder.svg"}
                         alt={`Background ${index + 1}`}
                         className="w-full h-full object-cover"
               />
