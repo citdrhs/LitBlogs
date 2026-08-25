@@ -2,7 +2,18 @@
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy import Enum as SQLAlchemyEnum
 from sqlalchemy.orm import relationship
 
@@ -42,6 +53,11 @@ class User(Base):
     assignment_submission_replies = relationship("AssignmentSubmissionReply", back_populates="user", cascade="all, delete-orphan")
     saved_posts = relationship("SavedPost", back_populates="user", cascade="all, delete-orphan")
     push_subscriptions = relationship("PushSubscription", back_populates="user", cascade="all, delete-orphan")
+    federated_identities = relationship(
+        "FederatedIdentity",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     assignment_reminder_notifications = relationship(
         "AssignmentReminderNotification",
         back_populates="user",
@@ -93,6 +109,42 @@ class AssignmentReminderNotification(Base):
 
     __table_args__ = (
         UniqueConstraint("user_id", "assignment_id", name="uq_assignment_reminder_notification"),
+    )
+
+
+class FederatedIdentity(Base):
+    __tablename__ = "federated_identities"
+
+    id = Column(Integer, primary_key=True)
+    provider = Column(String(16), nullable=False)
+    issuer = Column(String(255), nullable=False)
+    subject = Column(String(255), nullable=False)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="federated_identities")
+
+    __table_args__ = (
+        CheckConstraint(
+            "provider IN ('google', 'microsoft')",
+            name="ck_federated_identity_provider",
+        ),
+        UniqueConstraint(
+            "provider",
+            "issuer",
+            "subject",
+            name="uq_federated_identity_subject",
+        ),
+        UniqueConstraint(
+            "provider",
+            "user_id",
+            name="uq_federated_identity_provider_user",
+        ),
     )
 
 class Teacher(Base):

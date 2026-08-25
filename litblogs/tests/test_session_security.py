@@ -1,5 +1,6 @@
 import logging
 import secrets
+import time
 
 import pytest
 from pydantic import BaseModel
@@ -97,10 +98,11 @@ def _production_settings() -> Settings:
         access_token_expire_minutes=30,
         frontend_url="https://litblogs.school.example",
         cors_allowed_origins=("https://litblogs.school.example",),
+        allowed_email_domains=("school.example",),
         google_client_id="987654321.apps.googleusercontent.com",
         microsoft_client_id="2f1c67a1-91e2-46a3-941f-b88e31763e51",
-        microsoft_client_secret=secrets.token_urlsafe(32),
         microsoft_tenant_id="871bd3e0-2dc0-4a40-9b07-9d03068c2364",
+        microsoft_allowed_tenant_ids=("871bd3e0-2dc0-4a40-9b07-9d03068c2364",),
         session_cookie_name="__Host-litblog-session",
         csrf_cookie_name="__Host-litblog-csrf",
         session_cookie_secure=True,
@@ -210,7 +212,6 @@ def test_every_browser_auth_success_route_uses_the_nonsecret_session_schema():
         "/api/auth/google-signup",
         "/api/auth/google-login",
         "/api/auth/microsoft-login",
-        "/api/auth/microsoft-token",
         "/api/auth/microsoft-signup",
     }
     routes = {route.path: route for route in main.app.routes if route.path in browser_auth_paths}
@@ -359,7 +360,7 @@ def test_provider_failures_are_generic_and_do_not_log_credentials(
     with caplog.at_level(logging.DEBUG):
         response = client.post(
             "/api/auth/google-login",
-            json={"token": raw_provider_token},
+            json={"idToken": raw_provider_token},
         )
     captured = capsys.readouterr()
 
@@ -371,17 +372,26 @@ def test_provider_failures_are_generic_and_do_not_log_credentials(
     assert raw_provider_token not in captured.err
 
 
-def test_expected_provider_auth_errors_preserve_their_safe_status(client):
+def test_expected_provider_auth_errors_preserve_their_safe_status(client, monkeypatch):
+    now = int(time.time())
+
+    def verified_missing_user(*_args, **_kwargs):
+        return {
+            "iss": "https://accounts.google.com",
+            "aud": main.settings.google_client_id,
+            "sub": "synthetic-missing-user-subject",
+            "email": "missing-provider-user@example.test",
+            "email_verified": True,
+            "hd": "example.test",
+            "iat": now - 5,
+            "nbf": now - 5,
+            "exp": now + 300,
+        }
+
+    monkeypatch.setattr(main.id_token, "verify_oauth2_token", verified_missing_user)
     response = client.post(
-        "/api/auth/microsoft-login",
-        json={
-            "msUserData": {
-                "email": "missing-provider-user@example.test",
-                "firstName": "Missing",
-                "lastName": "User",
-                "microsoftId": "synthetic-provider-id",
-            }
-        },
+        "/api/auth/google-login",
+        json={"idToken": "synthetic-provider-id-token"},
     )
 
     assert response.status_code == 404

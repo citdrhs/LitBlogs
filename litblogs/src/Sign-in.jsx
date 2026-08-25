@@ -7,7 +7,7 @@ import Loader from './components/Loader';
 import Footer from './components/Footer';
 import { GoogleLogin } from '@react-oauth/google';
 import { useMsal } from "@azure/msal-react";
-import { loginRequest } from "./config/msalConfig";
+import { loginRequest, oauthProviderConfig } from "./config/msalConfig";
 import { FaMicrosoft } from 'react-icons/fa';
 import { resolveAppAsset } from './utils/urlUtils';
 import { applyGlobalUserSettings, saveLocalUserSettings } from './utils/userSettings';
@@ -138,7 +138,7 @@ const SignIn = () => {
       setErrorMessage("");
       
       await axios.post('/auth/google-login', {
-        token: response.credential
+        idToken: response.credential
       });
       
       await persistSessionAndNavigate();
@@ -150,7 +150,7 @@ const SignIn = () => {
         setErrorMessage("Account not found. Please go to Sign Up and choose your role first.");
         setShowSignUpPrompt(true);
       } else {
-        setErrorMessage(error.response?.data?.detail || "Google login failed");
+        setErrorMessage("Google sign-in failed. Please try again.");
       }
     } finally {
       setIsLoading(false);
@@ -168,14 +168,8 @@ const SignIn = () => {
       setIsLoading(true);
       const response = await instance.loginPopup(loginRequest);
       
-      // Send token to backend
       await axios.post('/auth/microsoft-login', {
-        msUserData: {
-          email: response.account.username,
-          firstName: response.account.name?.split(' ')[0] || '',
-          lastName: response.account.name?.split(' ')[1] || '',
-          microsoftId: response.account.localAccountId
-        }
+        idToken: response.idToken,
       });
       
       await persistSessionAndNavigate();
@@ -185,7 +179,7 @@ const SignIn = () => {
       if (error.response?.status === 404) {
         setErrorMessage("Account not found. Please sign up first.");
       } else {
-        setErrorMessage(error.response?.data?.detail || error.message || 'Microsoft login failed');
+        setErrorMessage('Microsoft sign-in failed. Please try again.');
       }
     } finally {
       setIsLoading(false);
@@ -345,19 +339,20 @@ return (
         </form>
 
         {/* Divider */}
-        <div className="mt-6 mb-6 flex items-center">
+        {(oauthProviderConfig.google.enabled || oauthProviderConfig.microsoft.enabled) && <div className="mt-6 mb-6 flex items-center">
           <div className="flex-1 border-t border-gray-300 dark:border-gray-600"></div>
           <span className="mx-4 text-sm text-gray-500 dark:text-gray-400">or continue with</span>
           <div className="flex-1 border-t border-gray-300 dark:border-gray-600"></div>
-        </div>
+        </div>}
 
         {/* Social login buttons */}
         <div className="text-center">
-          <GoogleLogin
+          {oauthProviderConfig.google.enabled && <GoogleLogin
             onSuccess={handleGoogleSuccess}
             onError={handleGoogleFailure}
-          />
-          <button
+          />}
+          {oauthProviderConfig.microsoft.enabled && <button
+            type="button"
             onClick={handleMicrosoftLogin}
             className="mt-4 flex items-center gap-2 w-full p-2 text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 rounded-sm transition-all duration-300"
             style={{ height: '40px' }}
@@ -368,7 +363,7 @@ return (
             <div className="flex-[2] text-center pr-20 text-sm">
               <span>Sign in with Microsoft</span>
             </div>
-          </button>
+          </button>}
         </div>
 
         <div className="mt-6 text-center">
