@@ -1658,7 +1658,7 @@ def test_verified_provider_non_ascii_email_failure_is_generic(
         assert db.query(models.User).count() == 0
 
 
-def test_mixed_case_legacy_teacher_record_is_reused_by_user_id(client):
+def test_legacy_teacher_record_is_reused_by_user_id(client):
     user_id = _create_user(
         suffix="legacy-teacher-canonical",
         role=models.UserRole.TEACHER,
@@ -1666,7 +1666,7 @@ def test_mixed_case_legacy_teacher_record_is_reused_by_user_id(client):
     with SessionLocal() as db:
         teacher = models.Teacher(
             name="Legacy Teacher",
-            email="Identity-Teacher-Legacy-Teacher-Canonical@EXAMPLE.COM",
+            email="legacy-teacher-alias@example.com",
             hashed_password="unused-legacy-hash",
             user_id=user_id,
         )
@@ -1758,6 +1758,7 @@ def test_postgres_identity_migration_reconciles_legacy_teacher_identity(client):
             CREATE TABLE users (
                 id INTEGER PRIMARY KEY,
                 email VARCHAR(100) NOT NULL UNIQUE,
+                password VARCHAR(255) NOT NULL,
                 role VARCHAR(20) NOT NULL
             )
             """
@@ -1786,8 +1787,13 @@ def test_postgres_identity_migration_reconciles_legacy_teacher_identity(client):
         )
         cursor.execute(
             """
-            INSERT INTO users (id, email, role)
-            VALUES (1, ' Legacy.Teacher@EXAMPLE.COM ', 'TEACHER')
+            INSERT INTO users (id, email, password, role)
+            VALUES (
+                1,
+                ' Legacy.Teacher@EXAMPLE.COM ',
+                'unused-legacy-password-hash',
+                'TEACHER'
+            )
             """
         )
         cursor.execute(
@@ -2877,7 +2883,7 @@ def test_password_reset_revokes_every_existing_session(client):
 
 def test_legacy_raw_password_reset_token_is_never_accepted(client):
     user_id = _create_student(suffix="legacy-raw-reset")
-    raw_token = "legacy-raw-password-reset-bearer-token"
+    raw_token = "a" * 64
     with SessionLocal() as db:
         original_password_hash = db.get(models.User, user_id).password
         db.add(
@@ -3279,7 +3285,8 @@ def test_stale_password_reset_claim_cannot_complete_after_reclaim(
     client,
     stale_delivery_result,
 ):
-    user_id = _create_student(suffix=f"stale-reset-claim-{stale_delivery_result}")
+    result_suffix = str(stale_delivery_result).lower()
+    user_id = _create_student(suffix=f"stale-reset-claim-{result_suffix}")
     reset_id = _create_password_reset(
         user_id=user_id,
         raw_token="unused-reset-token",

@@ -997,6 +997,20 @@ def test_web_push_delivery_uses_a_bounded_network_timeout(monkeypatch):
     assert 0 < captured["timeout"] <= 10
 
 
+def test_utc_sort_timestamp_normalizes_mixed_values_and_preserves_order():
+    missing = None
+    naive_earlier = datetime(2026, 8, 25, 10, 0)
+    aware_later = datetime(2026, 8, 25, 11, 0, tzinfo=UTC)
+
+    ordered = sorted(
+        [missing, naive_earlier, aware_later],
+        key=main._utc_sort_timestamp,
+        reverse=True,
+    )
+
+    assert ordered == [aware_later, naive_earlier, missing]
+
+
 def test_push_subscription_endpoint_cannot_be_taken_over_by_another_user(
     client,
     authorization_scenario,
@@ -1294,7 +1308,11 @@ def test_password_reset_delivery_worker_removes_token_on_failure(
         db.close()
 
 
-def test_student_and_teacher_class_social_journey(client, authorization_scenario):
+def test_student_and_teacher_class_social_journey(
+    client,
+    authorization_scenario,
+    monkeypatch,
+):
     scenario = authorization_scenario
     create_class_response = client.post(
         "/api/classes",
@@ -1360,10 +1378,24 @@ def test_student_and_teacher_class_social_journey(client, authorization_scenario
         f"/api/classes/{class_id}/students",
         headers=scenario["teacher_a_headers"],
     )
-    teacher_student_details = client.get(
-        f"/api/classes/{class_id}/students/{scenario['student_a']}",
-        headers=scenario["teacher_a_headers"],
-    )
+    original_ensure_enrolled_student = main._ensure_enrolled_student
+
+    def ensure_enrolled_student_with_postgres_timestamp(*args, **kwargs):
+        student, enrollment = original_ensure_enrolled_student(*args, **kwargs)
+        if enrollment.enrolled_at.tzinfo is None:
+            enrollment.enrolled_at = enrollment.enrolled_at.replace(tzinfo=UTC)
+        return student, enrollment
+
+    with monkeypatch.context() as postgres_timestamp_shape:
+        postgres_timestamp_shape.setattr(
+            main,
+            "_ensure_enrolled_student",
+            ensure_enrolled_student_with_postgres_timestamp,
+        )
+        teacher_student_details = client.get(
+            f"/api/classes/{class_id}/students/{scenario['student_a']}",
+            headers=scenario["teacher_a_headers"],
+        )
     teacher_student_posts = client.get(
         f"/api/classes/{class_id}/students/{scenario['student_a']}/posts",
         headers=scenario["teacher_a_headers"],
