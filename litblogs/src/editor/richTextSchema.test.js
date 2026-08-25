@@ -64,6 +64,28 @@ describe("createRichTextExtensions", () => {
     ]));
   });
 
+  it("starts an empty editor with an editable paragraph instead of a PDF attachment", () => {
+    const editor = createEditor("");
+
+    expect(editor.state.doc.firstChild?.type.name).toBe("paragraph");
+    expect(editor.getHTML()).toBe("<p></p>");
+  });
+
+  it("removes the only PDF attachment without recreating a blank attachment", () => {
+    const editor = createEditor(`
+      <div class="file-attachment" data-file-url="${PDF_URL}" data-file-name="Reading.pdf"
+        data-file-size="42 KB" data-file-type="application/pdf"></div>
+    `);
+
+    expect(editor.state.doc.firstChild?.type.name).toBe("attachment");
+    expect(editor.commands.deleteRange({
+      from: 0,
+      to: editor.state.doc.content.size,
+    })).toBe(true);
+    expect(editor.state.doc.firstChild?.type.name).toBe("paragraph");
+    expect(editor.getHTML()).toBe("<p></p>");
+  });
+
   it.each(FONT_SIZES)(
     "normalizes legacy $legacyValue font sizes to canonical $cssValue",
     ({ legacyValue, cssValue }) => {

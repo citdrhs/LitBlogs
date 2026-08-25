@@ -237,7 +237,6 @@ const normalizeAttachmentOptions = (attributes) => {
 
 export const Attachment = Node.create({
   name: "attachment",
-  priority: 1100,
   group: "block",
   atom: true,
   draggable: true,
