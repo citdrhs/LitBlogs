@@ -616,6 +616,7 @@ def queue_blog_assets(db: Session, blog_ids: Iterable[int], *, now: datetime) ->
         .all()
     )
     queue_assets(assets, now=now)
+    db.flush()
 
 
 def queue_owner_assets(db: Session, owner_user_id: int, *, now: datetime) -> None:

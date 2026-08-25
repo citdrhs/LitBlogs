@@ -12,8 +12,10 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException, UploadFile
 from pydantic import ValidationError
-from sqlalchemy import String, func
+from sqlalchemy import String, create_engine, event, func
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.schema import CreateTable
 from test_auth_security import _production_settings_data
 from test_content_security import PDF_BYTES, PNG_BYTES
@@ -853,6 +855,58 @@ def test_post_delete_with_comments_queues_assets_and_deletes_dependencies(
             assert asset.blog_id is None
     finally:
         _clear_user_override()
+
+
+def test_blog_delete_flushes_queued_asset_state_before_foreign_key_action():
+    test_engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(test_engine, "connect")
+    def enable_foreign_keys(dbapi_connection, _connection_record):
+        dbapi_connection.execute("PRAGMA foreign_keys = ON")
+
+    models.Base.metadata.create_all(bind=test_engine)
+    TestSession = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
+    try:
+        with TestSession() as db:
+            teacher_user = _user(db, 169, models.UserRole.TEACHER)
+            author = _user(db, 170)
+            classroom = _class(
+                db,
+                class_id=40,
+                teacher_user=teacher_user,
+                code="AA0040",
+            )
+            blog = models.Blog(
+                title="Foreign-key ordering",
+                content="<p>Body</p>",
+                owner_id=author.id,
+                class_id=classroom.id,
+            )
+            db.add(blog)
+            db.flush()
+            _asset(
+                db,
+                owner_id=author.id,
+                storage_key=f"objects/d9/{'d9' + ('9' * 30)}.png",
+                state="ACTIVE",
+                blog_id=blog.id,
+            )
+            blog_id = blog.id
+            db.commit()
+
+            main._delete_blogs_with_dependencies(db, [blog_id])
+            db.commit()
+
+            asset = db.query(models.UploadAsset).one()
+            assert asset.state == "DELETE_PENDING"
+            assert asset.blog_id is None
+    finally:
+        models.Base.metadata.drop_all(bind=test_engine)
+        test_engine.dispose()
 
 
 def test_class_and_account_deletion_queue_owned_assets(client, monkeypatch, tmp_path):
