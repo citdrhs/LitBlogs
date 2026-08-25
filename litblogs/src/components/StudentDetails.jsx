@@ -15,7 +15,7 @@ const StudentDetails = ({ darkMode }) => {
   const [error, setError] = useState(null);
   const [student, setStudent] = useState(null);
   const [posts, setPosts] = useState([]);
-  const [classInfo, setClassInfo] = useState(null);
+  const [, setClassInfo] = useState(null);
   const [activeTab, setActiveTab] = useState('overview');
   const [teacherNotes, setTeacherNotes] = useState('');
   const [savingNotes, setSavingNotes] = useState(false);

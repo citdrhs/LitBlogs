@@ -1,28 +1,43 @@
-# Basic `dependabot.yml` file with
-# minimum configuration for three package managers
-
 version: 2
 updates:
-  # Enable version updates for npm
-  - package-ecosystem: "npm"
-    # Look for `package.json` and `lock` files in the `root` directory
-    directory: "/litblogs"
-    # Check the npm registry for updates every day (weekdays)
+  - package-ecosystem: npm
+    directory: /litblogs
     schedule:
-      interval: "daily"
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - frontend
+    groups:
+      npm-non-major:
+        update-types:
+          - minor
+          - patch
 
-  # Enable version updates for Docker
-  - package-ecosystem: "docker"
-    # Look for a `Dockerfile` in the `root` directory
-    directory: "/litblogs"
-    # Check for updates once a week
+  - package-ecosystem: pip
+    directory: /litblogs
     schedule:
-      interval: "weekly"
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - backend
+    groups:
+      python-non-major:
+        update-types:
+          - minor
+          - patch
 
-  # Enable version updates for GitHub Actions
-  - package-ecosystem: "github-actions"
-    # Workflow files stored in the default location of `.github/workflows`
-    # You don't need to specify `/.github/workflows` for `directory`. You can use `directory: "/"`.
-    directory: "/litblogs"
+  - package-ecosystem: github-actions
+    directory: /
     schedule:
-      interval: "weekly"
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci
+    groups:
+      actions-non-major:
+        update-types:
+          - minor
+          - patch

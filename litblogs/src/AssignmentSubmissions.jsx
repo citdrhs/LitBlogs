@@ -11,7 +11,7 @@ const AssignmentSubmissions = () => {
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [darkMode, setDarkMode] = useState(() => JSON.parse(localStorage.getItem('darkMode')) ?? false);
+  const [darkMode] = useState(() => JSON.parse(localStorage.getItem('darkMode')) ?? false);
   const [userInfo, setUserInfo] = useState(null);
   const [assignment, setAssignment] = useState(null);
   const [submissions, setSubmissions] = useState([]);

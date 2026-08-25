@@ -1,19 +1,22 @@
 # database.py
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 import os
 from pathlib import Path
-from dotenv import load_dotenv
+
+from dotenv import dotenv_values, load_dotenv
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
 from base import Base
 
 BASE_DIR = Path(__file__).resolve().parent
+BASE_ENV_PATH = BASE_DIR / ".env"
 
-load_dotenv(BASE_DIR / ".env")
-
-app_env = os.getenv("APP_ENV", "development").strip().lower()
+base_environment = dotenv_values(BASE_ENV_PATH)
+app_env = (os.getenv("APP_ENV") or base_environment.get("APP_ENV") or "development").strip().lower()
 env_override_path = BASE_DIR / f".env.{app_env}"
 if env_override_path.exists():
-    load_dotenv(env_override_path, override=True)
+    load_dotenv(env_override_path, override=False)
+load_dotenv(BASE_ENV_PATH, override=False)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 

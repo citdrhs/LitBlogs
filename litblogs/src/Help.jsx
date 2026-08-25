@@ -1,13 +1,12 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
 import './LitBlogs.css'; // Import your styles
 import FAQ from './components/FAQ';
 const Help = () => {
   const [darkMode, setDarkMode] = useState(false);
-  const [email, setEmail] = useState("");
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(1);
   const [progress, setProgress] = useState(0);
@@ -21,15 +20,6 @@ const Help = () => {
   
   const videoRef = useRef(null);
   const playerRef = useRef(null);
-  const speedOptionsRef = useRef(null);
-
-  const toggleDarkMode = () => {
-    setDarkMode((prevDarkMode) => {
-      const newDarkMode = !prevDarkMode;
-      localStorage.setItem('darkMode', JSON.stringify(newDarkMode));
-      return newDarkMode;
-    });
-  };
 
   useEffect(() => {
     const storedDarkMode = JSON.parse(localStorage.getItem('darkMode'));

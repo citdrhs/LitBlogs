@@ -32,14 +32,6 @@ const ForgotPassword = () => {
     setIsDropdownOpen((prev) => !prev);
   };
 
-  const toggleDarkMode = () => {
-    setDarkMode((prevDarkMode) => {
-      const newDarkMode = !prevDarkMode;
-      localStorage.setItem('darkMode', JSON.stringify(newDarkMode));
-      return newDarkMode;
-    });
-  };
-
   useEffect(() => {
     const storedDarkMode = JSON.parse(localStorage.getItem('darkMode'));
     if (storedDarkMode !== null) {

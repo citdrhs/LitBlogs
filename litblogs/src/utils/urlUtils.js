@@ -1,20 +1,9 @@
+import { normalizeRuntimeBasePath } from "./basePath.js";
+
 const ABSOLUTE_URL_PATTERN = /^(https?:)?\/\//i;
+const trimString = (value) => typeof value === "string" ? value.trim() : value;
 
-const normalizeBasePath = (value = "/") => {
-  if (!value || value === "/") {
-    return "";
-  }
-
-  const withoutTrailingSlash = value.endsWith("/")
-    ? value.slice(0, -1)
-    : value;
-
-  return withoutTrailingSlash.startsWith("/")
-    ? withoutTrailingSlash
-    : `/${withoutTrailingSlash}`;
-};
-
-export const APP_BASE_PATH = normalizeBasePath(import.meta.env.BASE_URL || "/");
+export const APP_BASE_PATH = normalizeRuntimeBasePath(import.meta.env.BASE_URL || "/");
 export const ROUTER_BASENAME = APP_BASE_PATH || undefined;
 export const FRONTEND_URL = typeof window === "undefined"
   ? (APP_BASE_PATH || "/")
@@ -23,15 +12,16 @@ export const FRONTEND_URL = typeof window === "undefined"
 export const API_BASE_PATH = `${APP_BASE_PATH}/api`;
 
 export const apiPath = (path = "") => {
-  if (!path) {
+  const normalizedInput = trimString(path);
+  if (!normalizedInput) {
     return API_BASE_PATH;
   }
 
-  if (ABSOLUTE_URL_PATTERN.test(path)) {
-    return path;
+  if (ABSOLUTE_URL_PATTERN.test(normalizedInput)) {
+    return normalizedInput;
   }
 
-  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const normalizedPath = normalizedInput.startsWith("/") ? normalizedInput : `/${normalizedInput}`;
   return `${API_BASE_PATH}${normalizedPath}`;
 };
 
@@ -61,8 +51,9 @@ export const resolveAppAsset = (path = "") => {
 };
 
 export const mediaPath = (path = "") => {
-  if (!path || ABSOLUTE_URL_PATTERN.test(path)) {
-    return path;
+  const normalizedInput = trimString(path);
+  if (!normalizedInput || ABSOLUTE_URL_PATTERN.test(normalizedInput)) {
+    return normalizedInput;
   }
 
   const inferLegacyUploadPath = (value) => {
@@ -95,8 +86,8 @@ export const mediaPath = (path = "") => {
     return `/uploads/files/${normalizedValue}`;
   };
 
-  const inferredLegacyUploadPath = inferLegacyUploadPath(path);
-  const normalizedInputPath = inferredLegacyUploadPath || path;
+  const inferredLegacyUploadPath = inferLegacyUploadPath(normalizedInput);
+  const normalizedInputPath = inferredLegacyUploadPath || normalizedInput;
 
   const normalizedPath = normalizedInputPath.startsWith("/") ? normalizedInputPath : `/${normalizedInputPath}`;
 

@@ -1,9 +1,13 @@
 # models.py
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, func, Enum as SQLAlchemyEnum, Boolean, UniqueConstraint
-from sqlalchemy.orm import relationship
-from base import Base
-from enum import Enum
 from datetime import datetime
+from enum import Enum
+
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Enum as SQLAlchemyEnum
+from sqlalchemy.orm import relationship
+
+from base import Base
+
 
 class UserRole(str, Enum):
     STUDENT = "STUDENT"

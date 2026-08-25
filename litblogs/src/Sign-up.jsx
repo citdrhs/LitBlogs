@@ -1,18 +1,17 @@
 import { useState, useEffect, useRef } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import './LitBlogs.css'; // Import any custom styles here
 import axios from 'axios';
 import Loader from './components/Loader';
 import Footer from './components/Footer';
-import { GoogleOAuthProvider, GoogleLogin, useGoogleLogin } from '@react-oauth/google';
+import { GoogleLogin } from '@react-oauth/google';
 import { useMsal } from "@azure/msal-react";
 import { loginRequest } from "./config/msalConfig";
 import { FaMicrosoft } from 'react-icons/fa';
 import { apiPath, resolveAppAsset } from './utils/urlUtils';
 
 const SignUp = () => {
-  const navigate = useNavigate();
   const { instance } = useMsal();
   // State variables for form inputs
   const [firstName, setFirstName] = useState("");
@@ -61,15 +60,6 @@ const SignUp = () => {
   const toggleDropdown = () => {
     setIsDropdownOpen((prev) => !prev);
   };  
-  // Dark mode logic (same as previous)
-  const toggleDarkMode = () => {
-    setDarkMode((prevDarkMode) => {
-      const newDarkMode = !prevDarkMode;
-      localStorage.setItem('darkMode', JSON.stringify(newDarkMode));
-      return newDarkMode;
-    });
-  };
-
   useEffect(() => {
     const storedDarkMode = JSON.parse(localStorage.getItem('darkMode'));
     if (storedDarkMode !== null) {
@@ -112,7 +102,7 @@ const SignUp = () => {
     }
     
     // Check for special character
-    if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)) {
+    if (!/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(password)) {
       return "Password must contain at least one special character";
     }
     
@@ -128,12 +118,12 @@ const SignUp = () => {
     if (/[A-Z]/.test(password)) score++;
     if (/[a-z]/.test(password)) score++;
     if (/[0-9]/.test(password)) score++;
-    if (/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)) score++;
+    if (/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(password)) score++;
     
     // Extra points for stronger passwords
     if (password.length >= 12) score++; // Bonus for longer passwords
     if (/(?=.*[0-9].*[0-9])/.test(password)) score++; // Bonus for multiple numbers
-    if (/(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?].*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?])/.test(password)) score++; // Bonus for multiple special chars
+    if (/(?=.*[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?].*[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?])/.test(password)) score++; // Bonus for multiple special chars
     
     // Determine strength label and color
     let label, color;
@@ -318,99 +308,6 @@ const SignUp = () => {
     console.error('Google sign up error:', error);
     setErrorMessage('Google sign up failed. Please try again.');
   };
-
-  const googleSignUp = useGoogleLogin({
-    onSuccess: async (tokenResponse) => {
-      try {
-        // Check if role is selected
-        if (!role) {
-          setErrorMessage("Please select a role before signing up with Google");
-          return;
-        }
-
-        // Check if access code is provided for Teacher/Admin roles
-        if ((role === 'TEACHER' || role === 'ADMIN') && !accessCode) {
-          setErrorMessage(`Please enter an access code for ${role.toLowerCase()} role`);
-          return;
-        }
-        
-        setIsLoading(true);
-        setErrorMessage("");
-        
-        // Get user information from Google using the access token
-        const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-          headers: {
-            Authorization: `Bearer ${tokenResponse.access_token}`,
-          },
-        });
-        
-        const googleUserInfo = await userInfoResponse.json();
-        
-        // Send the user info to your backend
-        const response = await fetch(apiPath('/auth/google-signup'), {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ 
-            googleData: {
-              email: googleUserInfo.email,
-              firstName: googleUserInfo.given_name,
-              lastName: googleUserInfo.family_name,
-              googleId: googleUserInfo.sub,
-              picture: googleUserInfo.picture
-            },
-            role: role,
-            accessCode: accessCode || undefined
-          }),
-          credentials: 'include'
-        });
-        
-        const data = await response.json();
-        
-        if (!response.ok) {
-          throw new Error(data.detail || 'Failed to sign up with Google');
-        }
-        
-        // Store user info in localStorage
-        localStorage.setItem('token', data.token);
-        
-        // Store user info
-        const userInfo = {
-          role: data.role,
-          userId: data.id,
-          username: data.username,
-          firstName: data.first_name,
-        };
-        localStorage.setItem('user_info', JSON.stringify(userInfo));
-        
-        // For students, store class info
-        if (data.role === 'STUDENT' && data.class_info) {
-          const classInfo = {
-            id: data.class_info.id,
-            name: data.class_info.name,
-            code: data.class_info.access_code
-          };
-          localStorage.setItem('class_info', JSON.stringify(classInfo));
-        }
-        
-        // Show success modal with user role information
-        setSuccessData({
-          role: data.role,
-          classInfo: data.class_info
-        });
-        setShowSuccessModal(true);
-        
-      } catch (error) {
-        console.error('Google sign up failed:', error);
-        setErrorMessage(error.message || 'Google sign up failed. Please try again.');
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    onError: handleGoogleSignUpFailure,
-    scopes: 'email profile'
-  });
 
   const handleMicrosoftSignUp = async () => {
     try {

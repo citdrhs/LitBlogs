@@ -1,0 +1,246 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend-tests:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: litblog_ci
+          POSTGRES_PASSWORD: ci-only-postgres-password
+          POSTGRES_DB: litblog_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U litblog_ci -d litblog_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check out proposed tree
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            litblogs/requirements.txt
+            litblogs/requirements-dev.txt
+      - name: Install backend dependencies
+        working-directory: litblogs
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Verify synthetic PostgreSQL service
+        env:
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGDATABASE: litblog_ci
+          PGUSER: litblog_ci
+          PGPASSWORD: ci-only-postgres-password
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg2
+
+          with psycopg2.connect(
+              host=os.environ["PGHOST"],
+              port=os.environ["PGPORT"],
+              dbname=os.environ["PGDATABASE"],
+              user=os.environ["PGUSER"],
+              password=os.environ["PGPASSWORD"],
+          ) as connection:
+              with connection.cursor() as cursor:
+                  cursor.execute("SELECT 1")
+                  assert cursor.fetchone() == (1,)
+          PY
+      - name: Run guarded PostgreSQL backend tests
+        working-directory: litblogs
+        env:
+          APP_ENV: test
+          TEST_DATABASE_URL: postgresql://litblog_ci:ci-only-postgres-password@localhost:5432/litblog_ci
+          DATABASE_URL: postgresql://litblog_ci:ci-only-postgres-password@localhost:5432/litblog_ci
+          TEST_POSTGRES_DATABASE: litblog_ci
+          ALLOW_TEST_DATABASE_DDL: "true"
+          RESET_DATABASE_ON_STARTUP: "false"
+        run: python -m pytest -q
+
+  frontend-tests:
+    name: Frontend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out proposed tree
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: litblogs/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: litblogs
+        run: npm ci
+      - name: Run frontend tests
+        working-directory: litblogs
+        run: npm run test:run
+
+  frontend-lint:
+    name: Frontend lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out proposed tree
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: litblogs/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: litblogs
+        run: npm ci
+      - name: Lint frontend
+        working-directory: litblogs
+        run: npm run lint
+
+  frontend-build:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out proposed tree
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: litblogs/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: litblogs
+        run: npm ci
+      - name: Build frontend
+        working-directory: litblogs
+        run: npm run build
+
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out proposed tree
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            litblogs/requirements.txt
+            litblogs/requirements-dev.txt
+      - name: Install backend audit tooling
+        working-directory: litblogs
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Audit Python runtime dependencies
+        working-directory: litblogs
+        run: python -m pip_audit -r requirements.txt
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: litblogs/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: litblogs
+        run: npm ci
+      - name: Audit frontend runtime dependencies
+        working-directory: litblogs
+        run: npm audit --omit=dev --audit-level=high
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out proposed tree only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install policy validator dependency
+        run: python -m pip install PyYAML==6.0.3
+      - name: Check tracked credential policy
+        shell: pwsh
+        run: ./scripts/check-no-tracked-secrets.ps1
+      - name: Run tracked credential regressions
+        shell: pwsh
+        run: ./scripts/check-no-tracked-secrets.tests.ps1
+      - name: Run generic credential regressions
+        run: python scripts/check-generic-secrets.tests.py
+      - name: Check generic credential formats in proposed tree
+        run: python scripts/check-generic-secrets.py
+      - name: Validate repository policy
+        run: python scripts/validate-repository-policy.py
+
+  sast:
+    name: SAST
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out proposed tree
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            litblogs/requirements.txt
+            litblogs/requirements-dev.txt
+      - name: Install SAST tooling
+        working-directory: litblogs
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run Ruff
+        working-directory: litblogs
+        run: python -m ruff check .
+      - name: Run Bandit medium/high scan
+        run: python scripts/run-backend-bandit.py

@@ -190,15 +190,6 @@ const StudentProfile = () => {
     }
   }
 
-  // Toggle dark mode
-  const toggleDarkMode = () => {
-    setDarkMode((prevDarkMode) => {
-      const newDarkMode = !prevDarkMode
-      localStorage.setItem("darkMode", JSON.stringify(newDarkMode))
-      return newDarkMode
-    })
-  }
-
   // Load dark mode preference from localStorage
   useEffect(() => {
     const storedDarkMode = JSON.parse(localStorage.getItem("darkMode"))
@@ -372,7 +363,7 @@ const StudentProfile = () => {
       const classIds = getClassIds(classesResponse.data)
       setViewerClassIds(classIds)
       return { viewer: viewerProfile, classIds }
-    } catch (error) {
+    } catch {
       try {
         const classesResponse = await axios.get("/classes", {
           headers: { Authorization: `Bearer ${token}` },
@@ -380,7 +371,7 @@ const StudentProfile = () => {
         const classIds = getClassIds(classesResponse.data)
         setViewerClassIds(classIds)
         return { viewer: viewerProfile, classIds }
-      } catch (innerError) {
+      } catch {
         setViewerClassIds([])
         return { viewer: viewerProfile, classIds: [] }
       }
@@ -626,20 +617,6 @@ const StudentProfile = () => {
       setUploadProgress(0)
       setError("Failed to upload cover image")
     }
-  }
-
-  const selectProfileImage = (imageUrl) => {
-    setImage(imageUrl)
-    setShowProfileOptions(false)
-
-    setUserInfo((prev) => {
-      const nextProfile = {
-        ...prev,
-        profile_image: imageUrl,
-      }
-      syncStoredUserInfo(nextProfile)
-      return nextProfile
-    })
   }
 
   const selectCoverImage = (imageUrl) => {

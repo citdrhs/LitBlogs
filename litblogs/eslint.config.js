@@ -26,6 +26,25 @@ export default [
       ...js.configs.recommended.rules,
       ...reactHooks.configs.recommended.rules,
       'no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^React$' }],
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'ExpressionStatement > CallExpression[callee.name="useState"]',
+          message: 'Do not discard the value returned by useState.',
+        },
+        {
+          selector: 'ExpressionStatement > CallExpression[callee.name="useRef"]',
+          message: 'Do not discard the value returned by useRef.',
+        },
+        {
+          selector: 'ExpressionStatement > CallExpression[callee.name="useNavigate"]',
+          message: 'Do not discard the value returned by useNavigate.',
+        },
+        {
+          selector: 'ExpressionStatement > CallExpression[callee.name="useGoogleLogin"]',
+          message: 'Do not discard the login callback returned by useGoogleLogin.',
+        },
+      ],
       'react/jsx-no-target-blank': 'off',
       'react/jsx-uses-vars': 'error',
       'react-refresh/only-export-components': [

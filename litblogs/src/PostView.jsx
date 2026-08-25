@@ -11,7 +11,6 @@ import 'prismjs/components/prism-markup'; // For HTML
 import 'prismjs/components/prism-css';
 import 'prismjs/components/prism-sql';
 import 'prismjs/components/prism-csharp';
-import ReactHtmlParser from 'react-html-parser';
 import Loader from './components/Loader';
 import './LitBlogs.css';
 import { IoMdHeart, IoMdHeartEmpty } from 'react-icons/io';
@@ -78,28 +77,6 @@ const getFileTypeFromUrl = (url) => {
 // Function to check if a file type is previewable
 const isPreviewable = (fileType) => {
   return ['image', 'video', 'pdf', 'text'].includes(fileType);
-};
-
-// Function to get file icon based on type
-const getFileIcon = (fileType) => {
-  switch (fileType) {
-    case 'image':
-      return '🖼️';
-    case 'video':
-      return '🎬';
-    case 'pdf':
-      return '📄';
-    case 'word':
-      return '📝';
-    case 'excel':
-      return '📊';
-    case 'powerpoint':
-      return '📑';
-    case 'text':
-      return '📃';
-    default:
-      return '📁';
-  }
 };
 
 // Add this helper function to decode HTML entities
@@ -875,13 +852,13 @@ const PostView = () => {
     fetchComments(comments.length);
   };
 
-  const handleCommentReply = (newReply) => {
+  const handleCommentReply = (_newReply) => {
     // No need to update state as the child component handles displaying the reply
     // Just update the total count
     setTotalComments(totalComments + 1);
   };
 
-  const handleCommentLike = (commentId, newLikeCount, isLiked) => {
+  const handleCommentLike = (_commentId, _newLikeCount, _isLiked) => {
     // Update like count in state if needed for total calculations
   };
 

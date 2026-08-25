@@ -55,14 +55,6 @@ const ResetPassword = () => {
     setIsDropdownOpen((prev) => !prev);
   };
 
-  const toggleDarkMode = () => {
-    setDarkMode((prevDarkMode) => {
-      const newDarkMode = !prevDarkMode;
-      localStorage.setItem('darkMode', JSON.stringify(newDarkMode));
-      return newDarkMode;
-    });
-  };
-
   useEffect(() => {
     const storedDarkMode = JSON.parse(localStorage.getItem('darkMode'));
     if (storedDarkMode !== null) {
@@ -145,7 +137,7 @@ const ResetPassword = () => {
     setMessage("");
     
     try {
-      const response = await axios.post('/auth/reset-password', {
+      await axios.post('/auth/reset-password', {
         token,
         new_password: password
       });

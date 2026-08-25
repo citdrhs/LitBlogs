@@ -1,9 +1,8 @@
-# schemas.py
-from pydantic import BaseModel, EmailStr
-from typing import List, Optional
 from datetime import datetime
 from enum import Enum
-from pydantic import validator
+
+from pydantic import BaseModel, ConfigDict, EmailStr, field_validator
+
 
 # Blog schemas
 class BlogBase(BaseModel):
@@ -13,12 +12,14 @@ class BlogBase(BaseModel):
 class BlogCreate(BaseModel):
     title: str
     content: str  # This will now contain HTML
-    code_snippets: List[dict] | None = None
-    media: List[dict] | None = None
-    polls: List[dict] | None = None
-    files: List[dict] | None = None
+    code_snippets: list[dict] | None = None
+    media: list[dict] | None = None
+    polls: list[dict] | None = None
+    files: list[dict] | None = None
 
 class BlogResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     title: str
     content: str
@@ -34,9 +35,6 @@ class BlogResponse(BaseModel):
     ai_percentage: int | None = None
     ai_highlighted_html: str | None = None
     ai_sentence_analysis: str | None = None
-
-    class Config:
-        from_attributes = True
 
 # User schemas
 class UserRole(str, Enum):
@@ -59,11 +57,12 @@ class UserCreate(BaseModel):
     role: str
     access_code: str | None = None
 
-    @validator('role')
-    def validate_role(cls, v):
-        if v not in ["STUDENT", "TEACHER", "ADMIN"]:
-            raise ValueError('Invalid role')
-        return v
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, value: str) -> str:
+        if value not in {"STUDENT", "TEACHER", "ADMIN"}:
+            raise ValueError("Invalid role")
+        return value
 
 class ClassInfo(BaseModel):
     id: int
@@ -71,6 +70,8 @@ class ClassInfo(BaseModel):
     access_code: str
 
 class UserResponse(UserBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     role: str
     is_admin: bool = False
@@ -78,25 +79,21 @@ class UserResponse(UserBase):
     token: str | None = None
     class_info: ClassInfo | None = None
 
-    class Config:
-        from_attributes = True
-
 class ClassBase(BaseModel):
     name: str
-    description: Optional[str] = None
+    description: str | None = None
 
 class ClassCreate(ClassBase):
     pass
 
 class ClassResponse(ClassBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     access_code: str
     teacher_id: int
     created_at: datetime
     posts_visibility: str | None = None
-
-    class Config:
-        orm_mode = True
 
 class AssignmentCreate(BaseModel):
     title: str
@@ -113,6 +110,8 @@ class AssignmentUpdate(BaseModel):
     visibility: str | None = "class"
 
 class AssignmentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     class_id: int
     title: str
@@ -123,9 +122,6 @@ class AssignmentResponse(BaseModel):
     allow_late: bool
     visibility: str
 
-    class Config:
-        from_attributes = True
-
 class AssignmentSubmissionCreate(BaseModel):
     content: str | None = None
 
@@ -133,6 +129,8 @@ class AssignmentDraftUpdate(BaseModel):
     content: str | None = None
 
 class AssignmentSubmissionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     assignment_id: int
     student_id: int
@@ -145,14 +143,11 @@ class AssignmentSubmissionResponse(BaseModel):
     ai_highlighted_html: str | None = None
     ai_sentence_analysis: str | None = None
 
-    class Config:
-        from_attributes = True
-
 class TeacherBase(BaseModel):
     id: int
     name: str
     email: str
-    classes: List[ClassBase]
+    classes: list[ClassBase]
 
 class TeacherCreate(BaseModel):
     name: str
@@ -160,8 +155,7 @@ class TeacherCreate(BaseModel):
     password: str
 
 class Teacher(TeacherBase):
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class CodeSnippet(BaseModel):
     language: str
@@ -173,7 +167,7 @@ class Media(BaseModel):
     alt: str | None = None
 
 class Poll(BaseModel):
-    options: List[str]
+    options: list[str]
 
 class File(BaseModel):
     name: str

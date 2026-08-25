@@ -1,52 +1,48 @@
 # main.py
 # To run locally run:
 # uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
-from contextlib import asynccontextmanager
-from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
-from sqlalchemy import text
-from database import engine, get_db, initialize_database, SessionLocal, reset_database
-from base import Base
-import models
-from models import User, Teacher, PasswordReset
-import schemas
-from pydantic import BaseModel, EmailStr
-from typing import List
-from passlib.context import CryptContext
-import uvicorn
-from fastapi.middleware.cors import CORSMiddleware
+import json
 import os
-from datetime import datetime, timedelta
-from jose import JWTError, jwt
-from fastapi.security import OAuth2PasswordBearer
-import shutil
-from pathlib import Path
 import random
+import re
+import secrets
+import shutil
+import smtplib
 import string
-from models import User, Teacher  # Add this line
+import threading
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from pathlib import Path
+from typing import List
+from urllib.parse import urlsplit
+
 import bleach
+import jwt
+import uvicorn
 from bleach.css_sanitizer import CSSSanitizer
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.security import OAuth2PasswordBearer
+from fastapi.staticfiles import StaticFiles
 from google.auth.transport import requests
 from google.oauth2 import id_token
-import secrets
-import random
-from msal import ConfidentialClientApplication  # Add this import
-from urllib.parse import urlsplit
-from sqlalchemy.orm import relationship
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-import json
-import re
-import threading
-import time
-from sqlalchemy import and_
+from jwt.exceptions import InvalidTokenError
+from msal import ConfidentialClientApplication
+from passlib.context import CryptContext
+from pydantic import BaseModel, EmailStr
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+import models
+import schemas
+from database import SessionLocal, get_db, initialize_database, reset_database
+from security_utils import secure_code_matches
 
 try:
-    from pywebpush import webpush, WebPushException
+    from pywebpush import WebPushException, webpush
 except Exception:
     webpush = None
     WebPushException = Exception
@@ -194,9 +190,6 @@ def _sync_admin_flag(db: Session, user: models.User) -> models.User:
         db.refresh(user)
     return user
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
-
 class LoginRequest(BaseModel):
     email: str
     password: str
@@ -240,13 +233,10 @@ DEFAULT_USER_SETTINGS = {
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-# Create tables if they don't exist (if you already have tables, this will be a no-op)
-Base.metadata.create_all(bind=engine)
-
-def get_password_hash(password: str):
+def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
-def verify_password(plain_password: str, hashed_password: str):
+def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
 def _normalize_editor_font_size(value: str | None) -> str:
@@ -498,11 +488,11 @@ async def register(user_data: schemas.UserCreate, db: Session = Depends(get_db))
     # Validate role
     try:
         role = models.UserRole[user_data.role]
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid role"
-        )
+        ) from exc
     
     # Validate access code for teacher/admin roles
     if role in [models.UserRole.TEACHER, models.UserRole.ADMIN]:
@@ -574,8 +564,8 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         user_id: int = payload.get("sub")
         if user_id is None:
             raise credentials_exception
-    except JWTError:
-        raise credentials_exception
+    except InvalidTokenError as exc:
+        raise credentials_exception from exc
     
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if user is None:
@@ -687,7 +677,6 @@ async def google_signup(token_data: dict, db: Session = Depends(get_db)):
             if "Token used too early" in str(e):
                 
                 # Parse the token manually (not for production use)
-                import jwt
                 try:
                     # Just decode without verification to extract user info
                     # WARNING: This is not secure for production!
@@ -700,7 +689,7 @@ async def google_signup(token_data: dict, db: Session = Depends(get_db)):
                     idinfo = decoded
                 except Exception as jwt_error:
                     print(f"JWT decode error: {str(jwt_error)}")
-                    raise e  # Re-raise the original error if this fails
+                    raise e from jwt_error  # Re-raise the original error if this fails
             else:
                 raise  # Re-raise the original error for other issues
 
@@ -766,13 +755,13 @@ async def google_signup(token_data: dict, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to verify Google token: {str(e)}"
-        )
+        ) from e
     except Exception as e:
         print(f"Unexpected error during Google signup: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An unexpected error occurred: {str(e)}"
-        )
+        ) from e
 
 @app.post("/api/auth/google-login")
 async def google_login(token_data: dict, db: Session = Depends(get_db)):
@@ -800,7 +789,6 @@ async def google_login(token_data: dict, db: Session = Depends(get_db)):
                 # If the error is about token timing, try to bypass the verification
                 
                 # Parse the token manually (not for production use)
-                import jwt
                 try:
                     # Just decode without verification to extract user info
                     # WARNING: This is not secure for production!
@@ -813,7 +801,7 @@ async def google_login(token_data: dict, db: Session = Depends(get_db)):
                     idinfo = decoded
                 except Exception as jwt_error:
                     print(f"JWT decode error: {str(jwt_error)}")
-                    raise e  # Re-raise the original error if this fails
+                    raise e from jwt_error  # Re-raise the original error if this fails
             else:
                 raise  # Re-raise the original error for other issues
         
@@ -868,7 +856,7 @@ async def google_login(token_data: dict, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to process Google login: {str(e)}"
-        )
+        ) from e
 
 @app.post("/api/auth/microsoft-login")
 async def microsoft_login(microsoft_data: dict, db: Session = Depends(get_db)):
@@ -928,11 +916,11 @@ async def microsoft_login(microsoft_data: dict, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to process Microsoft login: {str(e)}"
-        )
+        ) from e
 
 # Add these constants at the top with your other constants
-MS_CLIENT_ID = "68975491-3428-4424-bb26-63bd8f7a75ad"
-MS_CLIENT_SECRET = "00475c0d-a0ba-46e9-96e0-fbb8c5926b93"  # Add your secret here
+MS_CLIENT_ID = os.getenv("MICROSOFT_CLIENT_ID")
+MS_CLIENT_SECRET = os.getenv("MICROSOFT_CLIENT_SECRET")
 MS_AUTHORITY = "https://login.microsoftonline.com/common"
 
 @app.post("/api/auth/microsoft-token")
@@ -1036,7 +1024,7 @@ async def get_microsoft_token(request_data: dict, db: Session = Depends(get_db))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to process Microsoft signup: {str(e)}"
-        )
+        ) from e
 
 @app.post("/api/auth/microsoft-signup", response_model=schemas.UserResponse)
 async def microsoft_signup(microsoft_data: dict, db: Session = Depends(get_db)):
@@ -1153,7 +1141,7 @@ async def microsoft_signup(microsoft_data: dict, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to process Microsoft sign-up: {str(e)}"
-        )
+        ) from e
 
 @app.get("/api/user/id/{user_id}")
 async def get_user_info(
@@ -1212,10 +1200,10 @@ def home():
 def test_db(db: Session = Depends(get_db)):
     try:
         # Execute a simple query
-        result = db.execute(text("SELECT 1"))
+        db.execute(text("SELECT 1"))
         return {"message": "Successfully connected to the database!"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database connection failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database connection failed: {str(e)}") from e
 
 @app.post("/api/verify-class-code")
 def verify_class_code(code_data: dict, db: Session = Depends(get_db)):
@@ -1227,8 +1215,8 @@ def verify_class_code(code_data: dict, db: Session = Depends(get_db)):
 
 @app.post("/api/verify-admin-code")
 def verify_admin_code(code_data: dict):
-    admin_code = os.getenv("ADMIN_CODE", "your_default_admin_code")
-    if code_data.get("code") != admin_code:
+    admin_code = os.getenv("ADMIN_CODE")
+    if not secure_code_matches(code_data.get("code"), admin_code):
         raise HTTPException(status_code=400, detail="Invalid admin code")
     return {"valid": True}
 
@@ -1418,7 +1406,7 @@ async def get_class_posts(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    db_class = _ensure_class_access(db, current_user, class_id)
+    _ensure_class_access(db, current_user, class_id)
     
     # Get posts with author information
     posts = db.query(models.Blog).filter(
@@ -1539,7 +1527,7 @@ async def upload_image(file: UploadFile = File(...), current_user: models.User =
             shutil.copyfileobj(file.file, buffer)
         return {"url": _upload_url("images", filename)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.post("/api/upload/video")
 async def upload_video(file: UploadFile = File(...), current_user: models.User = Depends(get_current_user)):
@@ -1553,7 +1541,7 @@ async def upload_video(file: UploadFile = File(...), current_user: models.User =
             shutil.copyfileobj(file.file, buffer)
         return {"url": _upload_url("videos", filename)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.post("/api/upload/file")
 async def upload_file(file: UploadFile = File(...), current_user: models.User = Depends(get_current_user)):
@@ -1567,10 +1555,10 @@ async def upload_file(file: UploadFile = File(...), current_user: models.User = 
             shutil.copyfileobj(file.file, buffer)
         return {"url": _upload_url("files", filename)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.post("/api/upload")
-async def upload_file(
+async def upload_generic_file(
     file: UploadFile = File(...),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -1606,7 +1594,7 @@ async def upload_file(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to upload file: {str(e)}"
-        )
+        ) from e
 
 @app.get("/api/teacher/dashboard")
 async def get_teacher_dashboard(
@@ -1678,7 +1666,7 @@ async def get_teacher_dashboard(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to load dashboard: {str(e)}"
-        )
+        ) from e
 
 @app.post("/api/classes")
 async def create_class(
@@ -1740,7 +1728,7 @@ async def create_class(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create class: {str(e)}"
-        )
+        ) from e
 
 @app.post("/api/classes/{class_id}/assignments")
 async def create_assignment(
@@ -1842,7 +1830,7 @@ async def list_assignments(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    db_class = _ensure_class_access(db, current_user, class_id)
+    _ensure_class_access(db, current_user, class_id)
     assignments = db.query(models.Assignment).filter(
         models.Assignment.class_id == class_id
     ).order_by(models.Assignment.due_date.asc()).all()
@@ -2717,7 +2705,7 @@ async def update_profile(
         }
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to update profile: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update profile: {str(e)}") from e
 
 @app.post("/api/user/upload-profile-image")
 async def upload_profile_image(
@@ -2745,7 +2733,7 @@ async def upload_profile_image(
         return {"image_url": user.profile_image}
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to upload image: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload image: {str(e)}") from e
 
 @app.post("/api/user/upload-cover-image")
 async def upload_cover_image(
@@ -2773,7 +2761,7 @@ async def upload_cover_image(
         return {"image_url": user.cover_image}
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to upload image: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload image: {str(e)}") from e
 
 def _get_user_class_ids(db: Session, user: models.User) -> List[int]:
     if user.role == models.UserRole.STUDENT:
@@ -3052,7 +3040,7 @@ async def get_user_profile(
             "created_at": current_user.created_at
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch profile: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch profile: {str(e)}") from e
 
 @app.get("/api/user/settings")
 async def get_user_settings(
@@ -3181,7 +3169,7 @@ async def delete_user_account(
         raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to delete account: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete account: {str(e)}") from e
 
 @app.get("/api/user/profile/{user_id}")
 async def get_public_user_profile(
@@ -3464,7 +3452,7 @@ async def get_comments(
     # Get root comments first (comments without a parent)
     root_comments = db.query(models.Comment).filter(
         models.Comment.blog_id == post_id,
-        models.Comment.parent_id == None
+        models.Comment.parent_id.is_(None)
     ).order_by(models.Comment.created_at.desc()).offset(skip).limit(limit).all()
     
     # Function to recursively get comment data with user info and likes
@@ -3518,7 +3506,7 @@ async def get_comments(
     # Get total count for pagination
     total_root_comments = db.query(models.Comment).filter(
         models.Comment.blog_id == post_id,
-        models.Comment.parent_id == None
+        models.Comment.parent_id.is_(None)
     ).count()
     
     return {
@@ -3844,7 +3832,7 @@ async def delete_file(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete file: {str(e)}"
-        )
+        ) from e
 
 @app.get("/api/download")
 async def download_file(
@@ -3895,7 +3883,7 @@ async def download_file(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to download file: {str(e)}"
-        )
+        ) from e
 
 # Add new endpoints for archiving and deleting classes
 
@@ -4151,7 +4139,7 @@ async def get_student_details(
     }
 
 @app.get("/api/classes/{class_id}/students/{student_id}/posts")
-async def get_student_posts(
+async def get_student_class_posts(
     class_id: int,
     student_id: int,
     db: Session = Depends(get_db),
@@ -4337,7 +4325,7 @@ async def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(
     """Request a password reset token"""
     
     # Find user by email
-    user = db.query(User).filter(User.email == request.email).first()
+    user = db.query(models.User).filter(models.User.email == request.email).first()
     
     if not user:
         raise HTTPException(status_code=404, detail="No account found with this email address")
@@ -4347,7 +4335,7 @@ async def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(
     expires_at = datetime.utcnow() + timedelta(hours=1)
     
     # Store token in database
-    password_reset = PasswordReset(
+    password_reset = models.PasswordReset(
         user_id=user.id,
         token=token,
         expires_at=expires_at
@@ -4373,17 +4361,17 @@ async def reset_password(request: ResetPasswordRequest, db: Session = Depends(ge
         raise HTTPException(status_code=400, detail="Token is required")
     
     # Find token in database
-    password_reset = db.query(PasswordReset).filter(
-        PasswordReset.token == request.token,
-        PasswordReset.expires_at > datetime.utcnow(),
-        PasswordReset.used == False
+    password_reset = db.query(models.PasswordReset).filter(
+        models.PasswordReset.token == request.token,
+        models.PasswordReset.expires_at > datetime.utcnow(),
+        models.PasswordReset.used.is_(False)
     ).first()
     
     if not password_reset:
         raise HTTPException(status_code=400, detail="Invalid or expired token")
     
     # Get the user
-    user = db.query(User).filter(User.id == password_reset.user_id).first()
+    user = db.query(models.User).filter(models.User.id == password_reset.user_id).first()
     
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -4402,4 +4390,5 @@ async def reset_password(request: ResetPasswordRequest, db: Session = Depends(ge
     return {"message": "Password reset successfully"}
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+    # The production entrypoint intentionally accepts traffic from its reverse proxy.
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)  # nosec B104
