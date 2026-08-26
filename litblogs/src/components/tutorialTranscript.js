@@ -1,44 +1,58 @@
+// Generated from media/tutorial-video/src/manifest.js. Do not edit by hand.
+
 export const studentTutorialTranscript = [
   {
-    id: "sign-up",
-    time: "0:00",
-    heading: "Create your student account",
-    text: "Open the student sign-up page, choose Student, and register with the Google, Microsoft, or email option your school supports.",
+    "id": "title",
+    "time": "0:00",
+    "heading": "Welcome to LitBlog",
+    "text": "Welcome to LitBlog. In under two minutes, you'll create an account, join a class, and publish your first post."
   },
   {
-    id: "sign-in",
-    time: "0:28",
-    heading: "Sign in",
-    text: "Sign in with the same method you used to create the account, then continue to Student Hub.",
+    "id": "signup",
+    "time": "0:05",
+    "heading": "Sign up",
+    "text": "Choose Sign Up. Enter your name, school email, a strong password, and choose Student. Confirm your password, then select Sign Up."
   },
   {
-    id: "join-class",
-    time: "0:48",
-    heading: "Join your class",
-    text: "In Student Hub, select Join Class, enter the class code exactly as your teacher provided it, and open the new class card.",
+    "id": "signin",
+    "time": "0:28",
+    "heading": "Register and sign in",
+    "text": "After registration, choose Sign In. Enter the same email and password to open your Student Hub."
   },
   {
-    id: "create-post",
-    time: "1:18",
-    heading: "Create a post",
-    text: "From the class feed, select Create New Post, add a clear title, and write your response in the editor.",
+    "id": "join-class",
+    "time": "0:42",
+    "heading": "Join a class",
+    "text": "Select Join Class. Type the six-character code from your teacher, then choose Join Class again."
   },
   {
-    id: "format-post",
-    time: "1:52",
-    heading: "Format important words",
-    text: "Select the words you want to emphasize, then use Bold and Highlight in the rich-text toolbar.",
+    "id": "enter-class",
+    "time": "0:58",
+    "heading": "Enter the class",
+    "text": "Open the class card to see announcements, assignments, and posts."
   },
   {
-    id: "publish-post",
-    time: "2:20",
-    heading: "Publish your post",
-    text: "Review the title and writing, then select Publish when the post is ready for your class.",
+    "id": "open-post",
+    "time": "1:08",
+    "heading": "Open a new post",
+    "text": "Select Create New Post."
   },
   {
-    id: "verify-post",
-    time: "2:42",
-    heading: "Verify the result",
-    text: "Return to the class feed and open the published post to verify that the title, bold text, and highlight appear correctly.",
+    "id": "compose",
+    "time": "1:17",
+    "heading": "Write and format",
+    "text": "Add a clear title and write your response. Select text and choose Bold. Then choose a highlight color. The editor previews exactly what classmates and teachers will see."
   },
+  {
+    "id": "publish",
+    "time": "1:42",
+    "heading": "Publish",
+    "text": "Review your work, then select Publish."
+  },
+  {
+    "id": "verify",
+    "time": "1:51",
+    "heading": "Verify and finish",
+    "text": "Your post appears in the class feed with bold and highlighting preserved. You're ready to write on LitBlog."
+  }
 ];

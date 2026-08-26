@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
+import tutorialCaptions from "./assets/tutorial/litblogs-tutorial.en.vtt?url&no-inline";
+import tutorialPoster from "./assets/tutorial/litblogs-tutorial-poster.jpg?url&no-inline";
+import tutorialTranscriptDownload from "./assets/tutorial/litblogs-tutorial-transcript.txt?url&no-inline";
+import tutorialVideo from "./assets/tutorial/litblogs-tutorial.mp4?url&no-inline";
 import Navbar from "./components/Navbar";
 import Footer from "./components/Footer";
 import FAQ from "./components/FAQ";
 import TutorialVideoPlayer from "./components/TutorialVideoPlayer";
 import { studentTutorialTranscript } from "./components/tutorialTranscript";
 import { logoutBrowserSession } from "./utils/auth";
-import { assetPath } from "./utils/urlUtils";
 import "./LitBlogs.css";
 
 const Help = () => {
@@ -85,10 +88,10 @@ const Help = () => {
           </motion.h3>
           <div className="mx-auto w-full max-w-3xl">
             <TutorialVideoPlayer
-              videoSrc={assetPath("tutorial/litblogs-tutorial.mp4")}
-              posterSrc={assetPath("tutorial/litblogs-tutorial.jpg")}
-              captionsSrc={assetPath("tutorial/litblogs-tutorial.en.vtt")}
-              transcriptSrc={assetPath("tutorial/litblogs-tutorial.txt")}
+              videoSrc={tutorialVideo}
+              posterSrc={tutorialPoster}
+              captionsSrc={tutorialCaptions}
+              transcriptSrc={tutorialTranscriptDownload}
               transcript={studentTutorialTranscript}
             />
           </div>

@@ -230,7 +230,7 @@ describe("FAQ student guide", () => {
     expect(panel).toHaveTextContent(/Google or Microsoft/);
   });
 
-  it("uses accurate app routes and exposes four honest future screenshot slots", () => {
+  it("uses accurate app routes and renders four distinct guided screenshots by default", () => {
     renderFAQ();
 
     const routes = Array.from(document.querySelectorAll("a"), (link) => link.getAttribute("href"));
@@ -250,10 +250,18 @@ describe("FAQ student guide", () => {
       "joinClass",
       "postEditor",
     ]);
-    slots.forEach((slot) => {
-      expect(slot).toHaveTextContent("Current screenshot will appear here.");
+    const sources = slots.map((slot) => {
+      const image = slot.querySelector("img.faq-guide__image");
+      expect(image).toBeInTheDocument();
+      expect(image).toHaveAttribute("loading", "lazy");
+      expect(image).toHaveAttribute("width", "1440");
+      expect(image).toHaveAttribute("height", "900");
+      expect(image.getAttribute("alt")).not.toHaveLength(0);
+      expect(image.getAttribute("src")).not.toHaveLength(0);
+      return image.getAttribute("src");
     });
-    expect(document.querySelector("img.faq-guide__image")).not.toBeInTheDocument();
+    expect(new Set(sources).size).toBe(4);
+    expect(document.querySelector(".faq-guide__media-placeholder")).not.toBeInTheDocument();
   });
 
   it("renders a configured screenshot with lazy, descriptive, responsive media", () => {
@@ -268,7 +276,7 @@ describe("FAQ student guide", () => {
     }));
 
     const image = screen.getByRole("img", {
-      name: "LitBlog student sign-up form with the Student role selected.",
+      name: "Annotated LitBlog student sign-up form with Jordan Reader's school email, masked passwords, Student role, and Sign Up button.",
     });
 
     expect(image).toHaveAttribute("src", "/faq-sign-up.webp");

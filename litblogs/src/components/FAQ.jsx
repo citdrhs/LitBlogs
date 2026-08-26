@@ -1,37 +1,41 @@
 import { useId, useState } from "react";
 import { Link } from "react-router-dom";
 
+import joinClassGuide from "../assets/faq/litblogs-faq-join-class.webp";
+import postEditorGuide from "../assets/faq/litblogs-faq-post-editor.webp";
+import signInGuide from "../assets/faq/litblogs-faq-sign-in.webp";
+import signUpGuide from "../assets/faq/litblogs-faq-sign-up.webp";
 import "../styles/faq.css";
 
 const FAQ_SCREENSHOTS = Object.freeze({
   signUp: Object.freeze({
     slot: "signUp",
-    src: null,
-    alt: "LitBlog student sign-up form with the Student role selected.",
+    src: signUpGuide,
+    alt: "Annotated LitBlog student sign-up form with Jordan Reader's school email, masked passwords, Student role, and Sign Up button.",
     width: 1440,
     height: 900,
     caption: "Create your student account.",
   }),
   signIn: Object.freeze({
     slot: "signIn",
-    src: null,
-    alt: "LitBlog sign-in page with school account and email sign-in options.",
+    src: signInGuide,
+    alt: "Annotated LitBlog sign-in page with the synthetic school email, masked password, and Sign In button.",
     width: 1440,
     height: 900,
     caption: "Use the same sign-in method you registered with.",
   }),
   joinClass: Object.freeze({
     slot: "joinClass",
-    src: null,
-    alt: "Student Hub with the Join a Class dialog open for a teacher-provided class code.",
+    src: joinClassGuide,
+    alt: "Annotated Student Hub with the Join a Class dialog, six-character class code, and Join Class button.",
     width: 1440,
     height: 900,
     caption: "Join a class from Student Hub.",
   }),
   postEditor: Object.freeze({
     slot: "postEditor",
-    src: null,
-    alt: "Class feed post composer showing the title, rich-text toolbar, and Publish button.",
+    src: postEditorGuide,
+    alt: "Annotated LitBlog post composer with My Reading Reflection, Bold active, and amber highlighting in the response.",
     width: 1440,
     height: 900,
     caption: "Write and publish from the class feed.",
@@ -287,21 +291,14 @@ const FAQ = ({ darkMode = false, screenshots = {} }) => {
                       className="faq-guide__figure"
                       data-faq-screenshot-slot={screenshot.slot}
                     >
-                      {screenshot.src ? (
-                        <img
-                          className="faq-guide__image"
-                          src={screenshot.src}
-                          alt={screenshot.alt}
-                          width={screenshot.width}
-                          height={screenshot.height}
-                          loading="lazy"
-                        />
-                      ) : (
-                        <div className="faq-guide__media-placeholder">
-                          <span aria-hidden="true">▧</span>
-                          <strong>Current screenshot will appear here.</strong>
-                        </div>
-                      )}
+                      <img
+                        className="faq-guide__image"
+                        src={screenshot.src}
+                        alt={screenshot.alt}
+                        width={screenshot.width}
+                        height={screenshot.height}
+                        loading="lazy"
+                      />
                       <figcaption>{screenshot.caption}</figcaption>
                     </figure>
                   )}

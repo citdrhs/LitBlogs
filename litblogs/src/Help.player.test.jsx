@@ -36,10 +36,19 @@ describe("Help tutorial", () => {
     expect(video).toHaveAttribute("preload", "metadata");
     expect(video).not.toHaveAttribute("autoplay");
     expect(video).toHaveAttribute("playsinline");
-    expect(video).toHaveAttribute("poster", "/tutorial/litblogs-tutorial.jpg");
-    expect(source).toHaveAttribute("src", "/tutorial/litblogs-tutorial.mp4");
+    expect(video.getAttribute("poster")).toContain(
+      "/src/assets/tutorial/litblogs-tutorial-poster.jpg",
+    );
+    expect(source.getAttribute("src")).toContain(
+      "/src/assets/tutorial/litblogs-tutorial.mp4",
+    );
+    expect(video.getAttribute("poster")).not.toBe("/tutorial/litblogs-tutorial.jpg");
+    expect(source.getAttribute("src")).not.toBe("/tutorial/litblogs-tutorial.mp4");
     expect(source).toHaveAttribute("type", "video/mp4");
-    expect(captions).toHaveAttribute("src", "/tutorial/litblogs-tutorial.en.vtt");
+    expect(captions.getAttribute("src")).toContain(
+      "/src/assets/tutorial/litblogs-tutorial.en.vtt",
+    );
+    expect(captions.getAttribute("src")).not.toBe("/tutorial/litblogs-tutorial.en.vtt");
     expect(captions).toHaveAttribute("kind", "captions");
     expect(captions).toHaveAttribute("srclang", "en");
     expect(captions).toHaveAttribute("label", "English");
@@ -51,14 +60,18 @@ describe("Help tutorial", () => {
 
     fireEvent.click(screen.getByText("Read tutorial transcript"));
 
-    expect(screen.getByText(/Create your student account/)).toBeInTheDocument();
-    expect(screen.getByText(/Sign in with the same method/)).toBeInTheDocument();
-    expect(screen.getByText(/Join Class/)).toBeInTheDocument();
-    expect(screen.getByText(/Create New Post/)).toBeInTheDocument();
-    expect(screen.getByText(/Bold and Highlight/)).toBeInTheDocument();
-    expect(screen.getByText(/select Publish/)).toBeInTheDocument();
-    expect(screen.getByText(/open the published post/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Download transcript" }))
-      .toHaveAttribute("href", "/tutorial/litblogs-tutorial.txt");
+    expect(screen.getByText("Welcome to LitBlog")).toBeInTheDocument();
+    expect(screen.getByText("Sign up")).toBeInTheDocument();
+    expect(screen.getByText("Register and sign in")).toBeInTheDocument();
+    expect(screen.getByText(/six-character code from your teacher/)).toBeInTheDocument();
+    expect(screen.getByText(/Select Create New Post/)).toBeInTheDocument();
+    expect(screen.getByText(/choose Bold.*highlight color/i)).toBeInTheDocument();
+    expect(screen.getByText(/Review your work, then select Publish/)).toBeInTheDocument();
+    expect(screen.getByText(/class feed with bold and highlighting preserved/)).toBeInTheDocument();
+    const transcriptLink = screen.getByRole("link", { name: "Download transcript" });
+    expect(transcriptLink.getAttribute("href")).toContain(
+      "/src/assets/tutorial/litblogs-tutorial-transcript.txt",
+    );
+    expect(transcriptLink.getAttribute("href")).not.toBe("/tutorial/litblogs-tutorial.txt");
   });
 });
