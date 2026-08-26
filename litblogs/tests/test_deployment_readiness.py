@@ -690,6 +690,41 @@ def test_nginx_csp_preserves_the_self_hosted_privacy_contract():
     assert set(csp_values) == {expected_csp}
 
 
+def test_nginx_immutably_caches_hashed_tutorial_media_as_static_assets():
+    nginx = (ROOT_DIR / "deploy" / "nginx" / "litblogs.conf").read_text(
+        encoding="utf-8"
+    )
+    location_match = re.search(
+        r'location ~\* "(?P<pattern>\^/assets/[^\"]+)" \{(?P<body>.*?)\n    \}',
+        nginx,
+        re.DOTALL,
+    )
+
+    assert location_match is not None
+    asset_pattern = re.compile(location_match.group("pattern"), re.IGNORECASE)
+    for extension in ("mp4", "vtt", "txt"):
+        assert asset_pattern.fullmatch(
+            f"/assets/litblogs-tutorial-AbCdEf12.{extension}"
+        )
+
+    assert not asset_pattern.fullmatch("/assets/tutorial.mp4")
+    hashed_assets = location_match.group("body")
+    assert 'Cache-Control "public, max-age=31536000, immutable" always' in hashed_assets
+    assert "try_files $uri =404;" in hashed_assets
+    assert "proxy_pass" not in hashed_assets
+    assert "max_ranges 0;" not in nginx
+
+
+def test_nginx_content_server_uses_the_complete_distribution_mime_table():
+    nginx = (ROOT_DIR / "deploy" / "nginx" / "litblogs.conf").read_text(
+        encoding="utf-8"
+    )
+    content_server = nginx.split("server {\n    listen 443 ssl http2;", 1)[1]
+
+    assert content_server.count("include /etc/nginx/mime.types;") == 1
+    assert re.search(r"(?m)^\s*types\s*\{", nginx) is None
+
+
 def _write_deployment_release(tmp_path):
     import deployment_check
 
