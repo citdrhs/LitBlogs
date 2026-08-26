@@ -7,6 +7,7 @@ const isInteractiveTarget = (target) => target instanceof Element && Boolean(
 
 const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
 const safeDuration = (value) => Number.isFinite(value) && value > 0 ? value : 0;
+const PLAYBACK_START_ERROR = "Playback could not start. Please try again. The transcript remains available below.";
 
 const formatTime = (value) => {
   const totalSeconds = Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
@@ -33,14 +34,21 @@ const TutorialVideoPlayer = ({
   const [isPlaying, setIsPlaying] = useState(false);
   const [captionsEnabled, setCaptionsEnabled] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [fullscreenSupported, setFullscreenSupported] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(1);
   const [mediaError, setMediaError] = useState(false);
+  const [playbackError, setPlaybackError] = useState("");
 
   useEffect(() => {
+    setFullscreenSupported(
+      typeof playerRef.current?.requestFullscreen === "function"
+        && typeof document.exitFullscreen === "function",
+    );
+
     const syncFullscreenState = () => {
       setIsFullscreen(document.fullscreenElement === playerRef.current);
     };
@@ -58,8 +66,13 @@ const TutorialVideoPlayer = ({
       return;
     }
 
-    const playRequest = video.play();
-    playRequest?.catch(() => {});
+    setPlaybackError("");
+    try {
+      const playRequest = video.play();
+      playRequest?.catch(() => setPlaybackError(PLAYBACK_START_ERROR));
+    } catch {
+      setPlaybackError(PLAYBACK_START_ERROR);
+    }
   };
 
   const syncTime = () => {
@@ -138,6 +151,8 @@ const TutorialVideoPlayer = ({
   };
 
   const toggleFullscreen = () => {
+    if (!fullscreenSupported) return;
+
     try {
       const fullscreenRequest = document.fullscreenElement
         ? document.exitFullscreen?.()
@@ -170,7 +185,11 @@ const TutorialVideoPlayer = ({
         toggleMute();
         break;
       case "f":
-        toggleFullscreen();
+        if (fullscreenSupported) {
+          toggleFullscreen();
+        } else {
+          handled = false;
+        }
         break;
       case "arrowleft":
         seekTo((videoRef.current?.currentTime || 0) - 5);
@@ -195,7 +214,7 @@ const TutorialVideoPlayer = ({
     <section
       ref={playerRef}
       className="tutorial-video-player"
-      aria-label={`${title} player. Keyboard shortcuts: Space or K play and pause, M mute, F fullscreen, arrow keys seek and change volume.`}
+      aria-label={`${title} player. Keyboard shortcuts: Space or K play and pause, M mute, ${fullscreenSupported ? "F fullscreen, " : ""}arrow keys seek and change volume.`}
       tabIndex={0}
       onKeyDown={handleKeyDown}
     >
@@ -214,13 +233,20 @@ const TutorialVideoPlayer = ({
             onTimeUpdate={syncTime}
             onVolumeChange={syncVolume}
             onRateChange={syncPlaybackRate}
-            onPlay={() => setIsPlaying(true)}
+            onPlay={() => {
+              setIsPlaying(true);
+              setPlaybackError("");
+            }}
             onPause={() => setIsPlaying(false)}
             onEnded={() => setIsPlaying(false)}
-            onCanPlay={() => setMediaError(false)}
+            onCanPlay={() => {
+              setMediaError(false);
+              setPlaybackError("");
+            }}
             onError={() => {
               setIsPlaying(false);
               setMediaError(true);
+              setPlaybackError("");
             }}
           >
             <source src={videoSrc} type="video/mp4" />
@@ -338,8 +364,13 @@ const TutorialVideoPlayer = ({
             <button
               type="button"
               className="tutorial-video-player__button tutorial-video-player__fullscreen"
-              aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-              title={isFullscreen ? "Exit fullscreen (F)" : "Enter fullscreen (F)"}
+              aria-label={fullscreenSupported
+                ? (isFullscreen ? "Exit fullscreen" : "Enter fullscreen")
+                : "Fullscreen unavailable"}
+              title={fullscreenSupported
+                ? (isFullscreen ? "Exit fullscreen (F)" : "Enter fullscreen (F)")
+                : "Fullscreen is not supported by this browser"}
+              disabled={!fullscreenSupported}
               onClick={toggleFullscreen}
             >
               <span aria-hidden="true">{isFullscreen ? "↙" : "↗"}</span>
@@ -347,6 +378,12 @@ const TutorialVideoPlayer = ({
           </div>
         </div>}
       </div>
+
+      {playbackError && (
+        <p className="tutorial-video-player__playback-status" role="status">
+          {playbackError}
+        </p>
+      )}
 
       <details open={mediaError || undefined} className="tutorial-video-player__transcript">
         <summary className="tutorial-video-player__transcript-summary">Read tutorial transcript</summary>

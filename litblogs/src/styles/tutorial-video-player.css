@@ -160,6 +160,16 @@
   color: #bfdbfe;
 }
 
+.tutorial-video-player__playback-status {
+  margin: 0.8rem 0 0;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid #facc15;
+  border-radius: 0.7rem;
+  background: #fefce8;
+  color: #713f12;
+  line-height: 1.5;
+}
+
 .tutorial-video-player__transcript {
   margin-top: 1.25rem;
   padding: 1rem 1.15rem;
@@ -218,6 +228,12 @@
 .dark .tutorial-video-player__timestamp,
 .dark .tutorial-video-player__download {
   color: #93c5fd;
+}
+
+.dark .tutorial-video-player__playback-status {
+  border-color: #a16207;
+  background: rgb(66 32 6 / 72%);
+  color: #fef3c7;
 }
 
 .tutorial-video-player :where(button, input, select, summary, a):focus-visible,

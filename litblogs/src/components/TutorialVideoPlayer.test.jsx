@@ -90,7 +90,14 @@ describe("TutorialVideoPlayer controls", () => {
     fireEvent.click(screen.getByRole("button", { name: "Play" }));
 
     await waitFor(() => expect(playMock).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Playback could not start. Please try again. The transcript remains available below.",
+    );
     expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Play" }));
+    expect(playMock).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
 
     fireEvent.play(video);
     expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
@@ -166,10 +173,31 @@ describe("TutorialVideoPlayer controls", () => {
     expect(focusRule.style.getPropertyValue("outline-offset")).toBe("3px");
   });
 
+  it("disables fullscreen with accurate guidance and ignores F when the API is unavailable", () => {
+    renderPlayer();
+    const player = screen.getByRole("region", { name: /Keyboard shortcuts/ });
+    const fullscreenButton = screen.getByRole("button", { name: "Fullscreen unavailable" });
+
+    expect(fullscreenButton).toBeDisabled();
+    expect(fullscreenButton).toHaveAttribute(
+      "title",
+      "Fullscreen is not supported by this browser",
+    );
+
+    player.focus();
+    expect(fireEvent.keyDown(player, { key: "f" })).toBe(true);
+    expect(screen.getByRole("button", { name: "Fullscreen unavailable" })).toBeDisabled();
+  });
+
   it("requests and exits fullscreen but changes control state only on fullscreenchange", () => {
     let fullscreenElement = null;
     const originalFullscreenDescriptor = Object.getOwnPropertyDescriptor(document, "fullscreenElement");
     const originalExitDescriptor = Object.getOwnPropertyDescriptor(document, "exitFullscreen");
+    const originalRequestDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "requestFullscreen",
+    );
+    const requestFullscreen = vi.fn().mockResolvedValue();
     const exitFullscreen = vi.fn().mockResolvedValue();
     Object.defineProperty(document, "fullscreenElement", {
       configurable: true,
@@ -179,15 +207,14 @@ describe("TutorialVideoPlayer controls", () => {
       configurable: true,
       value: exitFullscreen,
     });
+    Object.defineProperty(HTMLElement.prototype, "requestFullscreen", {
+      configurable: true,
+      value: requestFullscreen,
+    });
 
     try {
       renderPlayer();
       const player = screen.getByRole("region", { name: /Keyboard shortcuts/ });
-      const requestFullscreen = vi.fn().mockResolvedValue();
-      Object.defineProperty(player, "requestFullscreen", {
-        configurable: true,
-        value: requestFullscreen,
-      });
 
       fireEvent.click(screen.getByRole("button", { name: "Enter fullscreen" }));
       expect(requestFullscreen).toHaveBeenCalledTimes(1);
@@ -215,6 +242,15 @@ describe("TutorialVideoPlayer controls", () => {
       } else {
         delete document.exitFullscreen;
       }
+      if (originalRequestDescriptor) {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          "requestFullscreen",
+          originalRequestDescriptor,
+        );
+      } else {
+        delete HTMLElement.prototype.requestFullscreen;
+      }
     }
   });
 
@@ -222,28 +258,32 @@ describe("TutorialVideoPlayer controls", () => {
     let fullscreenElement = null;
     const originalFullscreenDescriptor = Object.getOwnPropertyDescriptor(document, "fullscreenElement");
     const originalExitDescriptor = Object.getOwnPropertyDescriptor(document, "exitFullscreen");
+    const originalRequestDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "requestFullscreen",
+    );
+    const requestFullscreen = vi.fn()
+      .mockRejectedValueOnce(new Error("Fullscreen denied"))
+      .mockImplementationOnce(() => { throw new Error("Fullscreen unavailable"); });
+    const exitFullscreen = vi.fn()
+      .mockRejectedValueOnce(new Error("Exit denied"))
+      .mockImplementationOnce(() => { throw new Error("Exit unavailable"); });
     Object.defineProperty(document, "fullscreenElement", {
       configurable: true,
       get: () => fullscreenElement,
+    });
+    Object.defineProperty(document, "exitFullscreen", {
+      configurable: true,
+      value: exitFullscreen,
+    });
+    Object.defineProperty(HTMLElement.prototype, "requestFullscreen", {
+      configurable: true,
+      value: requestFullscreen,
     });
 
     try {
       renderPlayer();
       const player = screen.getByRole("region", { name: /Keyboard shortcuts/ });
-      const requestFullscreen = vi.fn()
-        .mockRejectedValueOnce(new Error("Fullscreen denied"))
-        .mockImplementationOnce(() => { throw new Error("Fullscreen unavailable"); });
-      const exitFullscreen = vi.fn()
-        .mockRejectedValueOnce(new Error("Exit denied"))
-        .mockImplementationOnce(() => { throw new Error("Exit unavailable"); });
-      Object.defineProperty(player, "requestFullscreen", {
-        configurable: true,
-        value: requestFullscreen,
-      });
-      Object.defineProperty(document, "exitFullscreen", {
-        configurable: true,
-        value: exitFullscreen,
-      });
 
       fireEvent.click(screen.getByRole("button", { name: "Enter fullscreen" }));
       await waitFor(() => expect(requestFullscreen).toHaveBeenCalledTimes(1));
@@ -278,6 +318,15 @@ describe("TutorialVideoPlayer controls", () => {
         Object.defineProperty(document, "exitFullscreen", originalExitDescriptor);
       } else {
         delete document.exitFullscreen;
+      }
+      if (originalRequestDescriptor) {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          "requestFullscreen",
+          originalRequestDescriptor,
+        );
+      } else {
+        delete HTMLElement.prototype.requestFullscreen;
       }
     }
   });
@@ -328,38 +377,65 @@ describe("TutorialVideoPlayer controls", () => {
   });
 
   it("clamps keyboard seeking and volume while supporting mute and fullscreen", () => {
-    renderPlayer();
-    const player = screen.getByRole("region", { name: /Keyboard shortcuts/ });
-    const video = screen.getByLabelText("LitBlog student tutorial");
-    Object.defineProperties(video, {
-      duration: { configurable: true, value: 60 },
-      currentTime: { configurable: true, writable: true, value: 2 },
-      volume: { configurable: true, writable: true, value: 0.95 },
-      muted: { configurable: true, writable: true, value: false },
-    });
+    const originalExitDescriptor = Object.getOwnPropertyDescriptor(document, "exitFullscreen");
+    const originalRequestDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "requestFullscreen",
+    );
     const requestFullscreen = vi.fn().mockResolvedValue();
-    Object.defineProperty(player, "requestFullscreen", {
+    Object.defineProperty(document, "exitFullscreen", {
+      configurable: true,
+      value: vi.fn().mockResolvedValue(),
+    });
+    Object.defineProperty(HTMLElement.prototype, "requestFullscreen", {
       configurable: true,
       value: requestFullscreen,
     });
 
-    player.focus();
-    fireEvent.keyDown(player, { key: "ArrowLeft" });
-    expect(video.currentTime).toBe(0);
+    try {
+      renderPlayer();
+      const player = screen.getByRole("region", { name: /Keyboard shortcuts/ });
+      const video = screen.getByLabelText("LitBlog student tutorial");
+      Object.defineProperties(video, {
+        duration: { configurable: true, value: 60 },
+        currentTime: { configurable: true, writable: true, value: 2 },
+        volume: { configurable: true, writable: true, value: 0.95 },
+        muted: { configurable: true, writable: true, value: false },
+      });
 
-    video.currentTime = 58;
-    fireEvent.keyDown(player, { key: "ArrowRight" });
-    expect(video.currentTime).toBe(60);
+      player.focus();
+      fireEvent.keyDown(player, { key: "ArrowLeft" });
+      expect(video.currentTime).toBe(0);
 
-    fireEvent.keyDown(player, { key: "ArrowUp" });
-    expect(video.volume).toBe(1);
-    fireEvent.keyDown(player, { key: "ArrowDown" });
-    expect(video.volume).toBeCloseTo(0.9);
+      video.currentTime = 58;
+      fireEvent.keyDown(player, { key: "ArrowRight" });
+      expect(video.currentTime).toBe(60);
 
-    fireEvent.keyDown(player, { key: "m" });
-    expect(video.muted).toBe(true);
-    fireEvent.keyDown(player, { key: "f" });
-    expect(requestFullscreen).toHaveBeenCalledTimes(1);
+      fireEvent.keyDown(player, { key: "ArrowUp" });
+      expect(video.volume).toBe(1);
+      fireEvent.keyDown(player, { key: "ArrowDown" });
+      expect(video.volume).toBeCloseTo(0.9);
+
+      fireEvent.keyDown(player, { key: "m" });
+      expect(video.muted).toBe(true);
+      fireEvent.keyDown(player, { key: "f" });
+      expect(requestFullscreen).toHaveBeenCalledTimes(1);
+    } finally {
+      if (originalExitDescriptor) {
+        Object.defineProperty(document, "exitFullscreen", originalExitDescriptor);
+      } else {
+        delete document.exitFullscreen;
+      }
+      if (originalRequestDescriptor) {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          "requestFullscreen",
+          originalRequestDescriptor,
+        );
+      } else {
+        delete HTMLElement.prototype.requestFullscreen;
+      }
+    }
   });
 
   it("replaces unusable controls with a calm transcript fallback on media error", () => {
