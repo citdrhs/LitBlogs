@@ -37,7 +37,7 @@
   width: 4.75rem;
   height: 4.75rem;
   place-items: center;
-  padding: 0 0 0 0.2rem;
+  padding: 0;
   transform: translate(-50%, -50%);
   border: 1px solid rgb(255 255 255 / 55%);
   border-radius: 999px;
@@ -46,6 +46,12 @@
   font-size: 1.75rem;
   box-shadow: 0 12px 30px rgb(0 0 0 / 35%);
   transition: background-color 160ms ease, transform 160ms ease;
+}
+
+.tutorial-video-player__overlay-play svg {
+  width: 1.65rem;
+  height: 1.65rem;
+  transform: translateX(0.08rem);
 }
 
 .tutorial-video-player__overlay-play:hover {
@@ -96,6 +102,22 @@
   font-weight: 700;
   cursor: pointer;
   transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.tutorial-video-player__button {
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+}
+
+.tutorial-video-player__button svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.tutorial-video-player__cc svg {
+  width: 1.15rem;
+  height: 1.15rem;
 }
 
 .tutorial-video-player__button:hover,

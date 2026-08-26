@@ -109,6 +109,37 @@ describe("TutorialVideoPlayer controls", () => {
     expect(pauseMock).not.toHaveBeenCalled();
   });
 
+  it("uses accessible vector icons instead of emoji-style control glyphs", () => {
+    const { container } = renderPlayer();
+
+    const iconButtons = [
+      screen.getByRole("button", { name: "Play tutorial" }),
+      screen.getByRole("button", { name: "Play" }),
+      screen.getByRole("button", { name: "Mute" }),
+      screen.getByRole("button", { name: "Turn captions off" }),
+      screen.getByRole("button", { name: "Fullscreen unavailable" }),
+    ];
+
+    for (const button of iconButtons) {
+      const icon = button.querySelector("svg");
+      expect(icon).toBeInTheDocument();
+      expect(icon).toHaveAttribute("aria-hidden", "true");
+      expect(icon).toHaveAttribute("focusable", "false");
+    }
+
+    expect(container).not.toHaveTextContent(/[▶❚🔇🔊↙↗]/u);
+
+    const video = screen.getByLabelText("LitBlog student tutorial");
+    fireEvent.play(video);
+    expect(screen.getByRole("button", { name: "Pause" }).querySelector("svg"))
+      .toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Mute" }));
+    expect(screen.getByRole("button", { name: "Unmute" }).querySelector("svg"))
+      .toBeInTheDocument();
+    expect(container).not.toHaveTextContent(/[▶❚🔇🔊↙↗]/u);
+  });
+
   it("enables the English caption track by default and keeps the CC toggle synchronized", () => {
     renderPlayer();
 

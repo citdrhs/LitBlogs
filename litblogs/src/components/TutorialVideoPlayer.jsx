@@ -1,4 +1,13 @@
 import { useEffect, useRef, useState } from "react";
+import {
+  FaClosedCaptioning,
+  FaCompress,
+  FaExpand,
+  FaPause,
+  FaPlay,
+  FaVolumeHigh,
+  FaVolumeXmark,
+} from "react-icons/fa6";
 import "../styles/tutorial-video-player.css";
 
 const isInteractiveTarget = (target) => target instanceof Element && Boolean(
@@ -279,7 +288,7 @@ const TutorialVideoPlayer = ({
               title="Play tutorial (Space or K)"
               onClick={togglePlay}
             >
-              <span aria-hidden="true">▶</span>
+              <FaPlay aria-hidden="true" focusable="false" />
             </button>
           )}
         </div>
@@ -306,7 +315,9 @@ const TutorialVideoPlayer = ({
               title={isPlaying ? "Pause (Space or K)" : "Play (Space or K)"}
               onClick={togglePlay}
             >
-              <span aria-hidden="true">{isPlaying ? "❚❚" : "▶"}</span>
+              {isPlaying
+                ? <FaPause aria-hidden="true" focusable="false" />
+                : <FaPlay aria-hidden="true" focusable="false" />}
             </button>
             <button
               type="button"
@@ -315,7 +326,9 @@ const TutorialVideoPlayer = ({
               title={isMuted ? "Unmute (M)" : "Mute (M)"}
               onClick={toggleMute}
             >
-              <span aria-hidden="true">{isMuted ? "🔇" : "🔊"}</span>
+              {isMuted
+                ? <FaVolumeXmark aria-hidden="true" focusable="false" />
+                : <FaVolumeHigh aria-hidden="true" focusable="false" />}
             </button>
             <input
               className="tutorial-video-player__volume"
@@ -340,7 +353,7 @@ const TutorialVideoPlayer = ({
               title={captionsEnabled ? "Turn captions off" : "Turn captions on"}
               onClick={toggleCaptions}
             >
-              <span aria-hidden="true">CC</span>
+              <FaClosedCaptioning aria-hidden="true" focusable="false" />
             </button>
             <label className="tutorial-video-player__speed-label">
               <span className="sr-only">Playback speed</span>
@@ -373,7 +386,9 @@ const TutorialVideoPlayer = ({
               disabled={!fullscreenSupported}
               onClick={toggleFullscreen}
             >
-              <span aria-hidden="true">{isFullscreen ? "↙" : "↗"}</span>
+              {isFullscreen
+                ? <FaCompress aria-hidden="true" focusable="false" />
+                : <FaExpand aria-hidden="true" focusable="false" />}
             </button>
           </div>
         </div>}
