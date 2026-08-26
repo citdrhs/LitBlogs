@@ -686,33 +686,76 @@ def test_nginx_csp_preserves_the_self_hosted_privacy_contract():
     csp_values = re.findall(
         r'add_header Content-Security-Policy "([^"]+)" always;', nginx
     )
-    assert len(csp_values) == 4
+    assert len(csp_values) == 5
     assert set(csp_values) == {expected_csp}
 
 
-def test_nginx_immutably_caches_hashed_tutorial_media_as_static_assets():
+def _nginx_hashed_asset_locations(nginx):
+    return [
+        (re.compile(match.group("pattern"), re.IGNORECASE), match.group("body"))
+        for match in re.finditer(
+            r'location ~\* "(?P<pattern>\^/assets/[^\"]+)" \{(?P<body>.*?)\n    \}',
+            nginx,
+            re.DOTALL,
+        )
+    ]
+
+
+def test_nginx_immutably_caches_standard_hashed_tutorial_assets():
     nginx = (ROOT_DIR / "deploy" / "nginx" / "litblogs.conf").read_text(
         encoding="utf-8"
     )
-    location_match = re.search(
-        r'location ~\* "(?P<pattern>\^/assets/[^\"]+)" \{(?P<body>.*?)\n    \}',
-        nginx,
-        re.DOTALL,
+    standard_locations = [
+        (pattern, body)
+        for pattern, body in _nginx_hashed_asset_locations(nginx)
+        if all(
+            pattern.fullmatch(f"/assets/litblogs-tutorial-AbCdEf12.{extension}")
+            for extension in ("jpg", "mp4", "txt")
+        )
+    ]
+
+    assert len(standard_locations) == 1
+    asset_pattern, hashed_assets = standard_locations[0]
+    assert not asset_pattern.fullmatch(
+        "/assets/litblogs-tutorial-AbCdEf12.vtt"
     )
 
-    assert location_match is not None
-    asset_pattern = re.compile(location_match.group("pattern"), re.IGNORECASE)
-    for extension in ("mp4", "vtt", "txt"):
-        assert asset_pattern.fullmatch(
-            f"/assets/litblogs-tutorial-AbCdEf12.{extension}"
-        )
-
     assert not asset_pattern.fullmatch("/assets/tutorial.mp4")
-    hashed_assets = location_match.group("body")
     assert 'Cache-Control "public, max-age=31536000, immutable" always' in hashed_assets
     assert "try_files $uri =404;" in hashed_assets
     assert "proxy_pass" not in hashed_assets
     assert "max_ranges 0;" not in nginx
+
+
+def test_nginx_hashed_webvtt_assets_have_an_explicit_caption_mime_type():
+    nginx = (ROOT_DIR / "deploy" / "nginx" / "litblogs.conf").read_text(
+        encoding="utf-8"
+    )
+    vtt_path = "/assets/litblogs-tutorial-AbCdEf12.vtt"
+    vtt_locations = [
+        (pattern, body)
+        for pattern, body in _nginx_hashed_asset_locations(nginx)
+        if pattern.fullmatch(vtt_path)
+    ]
+
+    assert len(vtt_locations) == 1
+    vtt_pattern, vtt_assets = vtt_locations[0]
+    assert not vtt_pattern.fullmatch("/assets/litblogs-tutorial-AbCdEf12.mp4")
+    assert "default_type text/vtt;" in vtt_assets
+    assert 'Cache-Control "public, max-age=31536000, immutable" always' in vtt_assets
+    assert "try_files $uri =404;" in vtt_assets
+    assert "proxy_pass" not in vtt_assets
+    for header in (
+        "Strict-Transport-Security",
+        "Content-Security-Policy",
+        "X-Frame-Options",
+        "X-Content-Type-Options",
+        "Referrer-Policy",
+        "Permissions-Policy",
+        "Cross-Origin-Opener-Policy",
+        "Cross-Origin-Resource-Policy",
+    ):
+        assert f"add_header {header} " in vtt_assets
 
 
 def test_nginx_content_server_uses_the_complete_distribution_mime_table():
@@ -1390,7 +1433,7 @@ def test_private_server_examples_enforce_tls_body_limits_and_no_direct_upload_al
     fallback = nginx.split("location / {", 1)[1].split("\n    }", 1)[0]
     assert 'Cache-Control "no-cache, no-store, must-revalidate" always' in fallback
     assert "try_files $uri $uri/ /index.html;" in fallback
-    assert nginx.count("immutable") == 1
+    assert nginx.count("immutable") == 2
     inherited_security_headers = (
         "Strict-Transport-Security",
         "Content-Security-Policy",
