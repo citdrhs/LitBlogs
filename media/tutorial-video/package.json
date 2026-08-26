@@ -1,0 +1,34 @@
+{
+  "name": "@litblogs/tutorial-video",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "capture": "node scripts/capture.mjs",
+    "voice": "node scripts/generate-voice.mjs",
+    "music": "node scripts/generate-music.mjs",
+    "accessibility/export": "node scripts/export-accessibility.mjs",
+    "accessibility": "npm run accessibility/export",
+    "studio": "remotion studio src/index.jsx",
+    "render": "node scripts/render-tutorial.mjs",
+    "poster/stills": "node scripts/render-stills.mjs",
+    "poster": "npm run poster/stills",
+    "stills": "npm run poster/stills",
+    "validate": "node scripts/validate-media.mjs",
+    "build:media": "npm run capture && npm run voice && npm run music && npm run accessibility/export && npm run poster/stills && npm run render && npm run validate"
+  },
+  "dependencies": {
+    "@playwright/test": "1.62.1",
+    "@remotion/bundler": "4.0.517",
+    "@remotion/cli": "4.0.517",
+    "@remotion/media": "4.0.517",
+    "@remotion/renderer": "4.0.517",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "remotion": "4.0.517"
+  }
+}
