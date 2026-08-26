@@ -191,9 +191,6 @@ const TutorialScene = ({ scene, index }) => {
       <SceneCallouts scene={scene} frame={frame} />
       <AnimatedCursor scene={scene} frame={frame} />
       <BrandedOverlay scene={scene} frame={frame} />
-      <div className="tutorial-progress">
-        <div style={{ width: `${((scene.startFrame + frame) / VIDEO.durationInFrames) * 100}%` }} />
-      </div>
     </AbsoluteFill>
   );
 };

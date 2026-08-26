@@ -407,6 +407,46 @@ describe("TutorialVideoPlayer controls", () => {
     expect(screen.getByRole("combobox", { name: "Playback speed" })).toHaveValue("1.5");
   });
 
+  it("exposes visible seek and volume progress for the custom range tracks", () => {
+    renderPlayer();
+    const video = screen.getByLabelText("LitBlog student tutorial");
+    const seekControl = screen.getByRole("slider", { name: "Seek video" });
+    const volumeControl = screen.getByRole("slider", { name: "Volume" });
+    let mediaDuration = 100;
+
+    Object.defineProperties(video, {
+      duration: { configurable: true, get: () => mediaDuration },
+      currentTime: { configurable: true, writable: true, value: 0 },
+      volume: { configurable: true, writable: true, value: 1 },
+      muted: { configurable: true, writable: true, value: false },
+      playbackRate: { configurable: true, writable: true, value: 1 },
+    });
+
+    fireEvent.loadedMetadata(video);
+    expect(seekControl.style.getPropertyValue("--range-progress")).toBe("0%");
+    expect(volumeControl.style.getPropertyValue("--range-progress")).toBe("100%");
+
+    video.currentTime = 35;
+    fireEvent.timeUpdate(video);
+    expect(seekControl.style.getPropertyValue("--range-progress")).toBe("35%");
+
+    fireEvent.change(volumeControl, { target: { value: "0.4" } });
+    expect(volumeControl.style.getPropertyValue("--range-progress")).toBe("40%");
+
+    expect(tutorialPlayerStyles).toContain("::-webkit-slider-thumb");
+    expect(tutorialPlayerStyles).toContain("::-moz-range-thumb");
+    expect(tutorialPlayerStyles).toContain("var(--range-progress)");
+  });
+
+  it("overrides the legacy global range rule that hides slider thumbs", () => {
+    expect(tutorialPlayerStyles).toMatch(
+      /\.tutorial-video-player input\[type="range"\]\s*\{[^}]*height:\s*1\.25rem/s,
+    );
+    expect(tutorialPlayerStyles).toMatch(
+      /\.tutorial-video-player input\[type="range"\]::-webkit-slider-thumb\s*\{[^}]*opacity:\s*1/s,
+    );
+  });
+
   it("clamps keyboard seeking and volume while supporting mute and fullscreen", () => {
     const originalExitDescriptor = Object.getOwnPropertyDescriptor(document, "exitFullscreen");
     const originalRequestDescriptor = Object.getOwnPropertyDescriptor(

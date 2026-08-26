@@ -106,8 +106,6 @@
 .tutorial-cursor svg { filter: drop-shadow(0 2px 3px rgba(0,0,0,.35)); height: 40px; position: absolute; width: 32px; }
 .tutorial-cursor path { fill: white; stroke: #102a43; stroke-width: 2.5px; }
 .tutorial-cursor__pulse { border: 3px solid #2563eb; border-radius: 50%; height: 38px; left: -13px; position: absolute; top: -13px; width: 38px; }
-.tutorial-progress { background: rgba(15, 23, 42, .1); bottom: 0; height: 6px; left: 0; position: absolute; right: 0; }
-.tutorial-progress div { background: linear-gradient(90deg, #2563eb, #06b6d4); height: 100%; }
 .tutorial-intro {
   background: rgba(255,255,255,.96); border: 1px solid rgba(255,255,255,.8); border-radius: 24px;
   box-shadow: 0 28px 80px rgba(15,23,42,.28); left: 285px; padding: 38px 48px; position: absolute;

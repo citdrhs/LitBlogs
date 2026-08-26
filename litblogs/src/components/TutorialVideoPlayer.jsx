@@ -16,6 +16,10 @@ const isInteractiveTarget = (target) => target instanceof Element && Boolean(
 
 const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
 const safeDuration = (value) => Number.isFinite(value) && value > 0 ? value : 0;
+const rangeProgress = (value, maximum) => {
+  if (!Number.isFinite(value) || !Number.isFinite(maximum) || maximum <= 0) return "0%";
+  return `${Number((clamp(value / maximum, 0, 1) * 100).toFixed(2))}%`;
+};
 const PLAYBACK_START_ERROR = "Playback could not start. Please try again. The transcript remains available below.";
 
 const formatTime = (value) => {
@@ -301,6 +305,7 @@ const TutorialVideoPlayer = ({
             max={duration}
             step="0.1"
             value={currentTime}
+            style={{ "--range-progress": rangeProgress(currentTime, duration) }}
             aria-label="Seek video"
             aria-valuetext={`${formatTime(currentTime)} of ${formatTime(duration)}`}
             title="Seek video (Left or Right arrow)"
@@ -337,6 +342,7 @@ const TutorialVideoPlayer = ({
               max="1"
               step="0.01"
               value={volume}
+              style={{ "--range-progress": rangeProgress(volume, 1) }}
               aria-label="Volume"
               aria-valuetext={`${Math.round(volume * 100)}%`}
               title="Volume (Up or Down arrow)"
