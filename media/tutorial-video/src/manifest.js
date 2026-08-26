@@ -242,7 +242,8 @@ const rawScenes = [
     captureTimeline: [
       { frame: 0, asset: "captures/post-written.jpg" },
       { frame: 450, asset: "captures/post-bold.jpg" },
-      { frame: 610, asset: "captures/post-formatted.jpg" },
+      { frame: 610, asset: "captures/post-highlight-palette.jpg" },
+      { frame: 680, asset: "captures/post-formatted.jpg" },
     ],
     audioAsset: "audio/compose.mp3",
     camera: [
@@ -274,9 +275,21 @@ const rawScenes = [
         visible: true,
         click: true,
         target: {
-          label: "Amber Highlight",
+          label: "Open Highlight palette",
           space: "composition",
           bounds: { left: 615, top: 258, right: 651, bottom: 293 },
+        },
+      },
+      {
+        frame: 650,
+        x: 673,
+        y: 348,
+        visible: true,
+        click: true,
+        target: {
+          label: "Amber #fef3c7",
+          space: "composition",
+          bounds: { left: 660, top: 335, right: 690, bottom: 363 },
         },
       },
     ],

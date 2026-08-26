@@ -134,7 +134,6 @@
 .tutorial-poster__card p { color: #bfdbfe; font-size: 19px; font-weight: 750; letter-spacing: 1.6px; margin: 30px 0 8px; text-transform: uppercase; }
 .tutorial-poster__card h1 { font-size: 62px; letter-spacing: -2.6px; line-height: 1.02; margin: 0 0 18px; }
 .tutorial-poster__card > span { color: #dbeafe; font-size: 24px; }
-.tutorial-poster__play { align-items: center; background: white; border-radius: 50%; color: #1d4ed8; display: flex; font-size: 25px; height: 74px; justify-content: center; margin-top: 34px; padding-left: 5px; width: 74px; }
 
 .faq-still {
   background-color: #fbfcfe;

@@ -40,6 +40,7 @@ const expectedCaptures = [
   "post-composer.jpg",
   "post-written.jpg",
   "post-bold.jpg",
+  "post-highlight-palette.jpg",
   "post-formatted.jpg",
   "publish-action.jpg",
   "published-post.jpg",
@@ -357,7 +358,10 @@ try {
   await toolbar.getByRole("button", { name: /Highlight color:/ }).click();
   const highlightPalette = composer.getByRole("dialog", { name: "Highlight color palette" });
   await expect(highlightPalette).toBeVisible();
-  await highlightPalette.getByRole("button", { name: "Amber #fef3c7" }).click();
+  const amberHighlight = highlightPalette.getByRole("button", { name: "Amber #fef3c7" });
+  await expect(amberHighlight).toBeVisible();
+  await screenshot(page, "post-highlight-palette.jpg");
+  await amberHighlight.click();
   await expect(editor.locator("strong")).toContainText(SYNTHETIC.formattedText);
   await expect(editor.locator("mark")).toContainText(SYNTHETIC.formattedText);
   const markColor = await editor.locator("mark").evaluate(

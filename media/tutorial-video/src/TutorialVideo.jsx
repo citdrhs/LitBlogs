@@ -234,7 +234,6 @@ export const TutorialPoster = () => (
       <p>LitBlog student tutorial</p>
       <h1>Create. Join. Publish.</h1>
       <span>Learn the complete workflow in 1:57</span>
-      <div className="tutorial-poster__play">▶</div>
     </div>
   </AbsoluteFill>
 );

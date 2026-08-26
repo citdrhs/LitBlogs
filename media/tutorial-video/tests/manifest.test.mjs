@@ -37,7 +37,8 @@ const EXPECTED_CLICK_TARGETS = [
   ["enter-class", 66, "English 10 Reading Circle class card"],
   ["open-post", 95, "Create New Post"],
   ["compose", 430, "Bold"],
-  ["compose", 590, "Amber Highlight"],
+  ["compose", 590, "Open Highlight palette"],
+  ["compose", 650, "Amber #fef3c7"],
   ["publish", 165, "Publish"],
 ];
 
@@ -126,20 +127,28 @@ test("keeps target controls visible through capture changes and camera framing",
   assert.equal(publish.captureObjectPosition, "center bottom");
 });
 
-test("reveals written, bold, and highlighted compose states only after their actions", () => {
+test("reveals the highlight palette and amber formatting only after their separate clicks", () => {
   const compose = manifestModule.SCENE_BY_ID?.compose;
   assert.deepEqual(
     compose.captureTimeline?.map(({ frame, asset }) => [frame, asset]),
     [
       [0, "captures/post-written.jpg"],
       [450, "captures/post-bold.jpg"],
-      [610, "captures/post-formatted.jpg"],
+      [610, "captures/post-highlight-palette.jpg"],
+      [680, "captures/post-formatted.jpg"],
     ],
   );
   const boldClick = compose.cursor.find(({ target }) => target?.label === "Bold");
-  const highlightClick = compose.cursor.find(({ target }) => target?.label === "Amber Highlight");
+  const paletteClick = compose.cursor.find(
+    ({ target }) => target?.label === "Open Highlight palette",
+  );
+  const amberClick = compose.cursor.find(
+    ({ target }) => target?.label === "Amber #fef3c7",
+  );
   assert.ok(compose.captureTimeline[1].frame > boldClick.frame);
-  assert.ok(compose.captureTimeline[2].frame > highlightClick.frame);
+  assert.ok(compose.captureTimeline[2].frame > paletteClick.frame);
+  assert.ok(amberClick.frame > compose.captureTimeline[2].frame);
+  assert.ok(compose.captureTimeline[3].frame > amberClick.frame);
 });
 
 test("approaches the visible Publish button before the click pulse", () => {
