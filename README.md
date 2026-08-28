@@ -9,6 +9,7 @@ Supported development versions are Python 3.13 and Node.js 24 LTS. The frontend 
 ```bash
 cd litblogs
 python -m venv .venv
+source .venv/bin/activate
 python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.txt
 npm ci
 ```
