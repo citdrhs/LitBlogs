@@ -48,7 +48,9 @@ def oauth_settings(monkeypatch):
     data = main.settings.model_dump()
     data.update(
         {
+            "google_oauth_enabled": True,
             "google_client_id": SYNTHETIC_GOOGLE_AUDIENCE,
+            "microsoft_oauth_enabled": True,
             "microsoft_client_id": SYNTHETIC_MICROSOFT_AUDIENCE,
             "microsoft_tenant_id": MICROSOFT_TENANT_ID,
             "microsoft_allowed_tenant_ids": (MICROSOFT_TENANT_ID,),
@@ -225,7 +227,9 @@ def _production_settings_data(**overrides) -> dict:
         "cors_allowed_origins": ("https://litblogs.school.edu",),
         "allowed_hosts": ("litblogs.school.edu",),
         "allowed_email_domains": ("school.edu",),
+        "google_oauth_enabled": True,
         "google_client_id": SYNTHETIC_GOOGLE_AUDIENCE,
+        "microsoft_oauth_enabled": True,
         "microsoft_client_id": SYNTHETIC_MICROSOFT_AUDIENCE,
         "microsoft_tenant_id": MICROSOFT_TENANT_ID,
         "microsoft_allowed_tenant_ids": (MICROSOFT_TENANT_ID,),
@@ -264,11 +268,13 @@ def test_production_requires_an_oauth_email_domain_allowlist():
         Settings(**_production_settings_data(allowed_email_domains=()))
 
 
-def test_shipped_oauth_placeholders_are_explicit_and_fail_production_closed():
+def test_shipped_oauth_providers_are_explicitly_disabled_without_credentials():
     values = dotenv_values(Path(__file__).resolve().parents[1] / ".env.example")
     shipped = {
         "allowed_email_domains": values.get("ALLOWED_EMAIL_DOMAINS"),
+        "google_oauth_enabled": values.get("GOOGLE_OAUTH_ENABLED"),
         "google_client_id": values.get("GOOGLE_CLIENT_ID"),
+        "microsoft_oauth_enabled": values.get("MICROSOFT_OAUTH_ENABLED"),
         "microsoft_client_id": values.get("MICROSOFT_CLIENT_ID"),
         "microsoft_tenant_id": values.get("MICROSOFT_TENANT_ID"),
         "microsoft_allowed_tenant_ids": values.get("MICROSOFT_ALLOWED_TENANT_IDS"),
@@ -276,17 +282,124 @@ def test_shipped_oauth_placeholders_are_explicit_and_fail_production_closed():
 
     assert shipped == {
         "allowed_email_domains": "replace-with-approved-domain",
-        "google_client_id": "replace-with-google-client-id",
-        "microsoft_client_id": "replace-with-microsoft-client-id",
-        "microsoft_tenant_id": "replace-with-microsoft-tenant-id",
-        "microsoft_allowed_tenant_ids": "replace-with-approved-microsoft-tenant-id",
+        "google_oauth_enabled": "false",
+        "google_client_id": "",
+        "microsoft_oauth_enabled": "false",
+        "microsoft_client_id": "",
+        "microsoft_tenant_id": "",
+        "microsoft_allowed_tenant_ids": "",
     }
-    with pytest.raises(ValidationError):
-        Settings(**_production_settings_data(**shipped))
+
+
+@pytest.mark.parametrize(
+    ("provider_overrides", "missing_name"),
+    (
+        (
+            {
+                "google_oauth_enabled": "true",
+                "google_client_id": "",
+                "microsoft_oauth_enabled": "false",
+            },
+            "GOOGLE_CLIENT_ID",
+        ),
+        (
+            {
+                "google_oauth_enabled": "false",
+                "microsoft_oauth_enabled": "true",
+                "microsoft_client_id": "",
+                "microsoft_tenant_id": "",
+                "microsoft_allowed_tenant_ids": "",
+            },
+            "MICROSOFT_CLIENT_ID",
+        ),
+    ),
+)
+def test_enabling_shipped_oauth_provider_without_credentials_fails_closed(
+    provider_overrides,
+    missing_name,
+):
+    with pytest.raises(ValidationError, match=missing_name):
+        Settings(**_production_settings_data(**provider_overrides))
 
 
 def test_removed_microsoft_confidential_exchange_route_is_absent():
     assert "/api/auth/microsoft-token" not in {route.path for route in main.app.routes}
+
+
+@pytest.mark.parametrize(
+    ("verifier", "enabled_field"),
+    (
+        (oauth_security.verify_google_id_token, "google_oauth_enabled"),
+        (oauth_security.verify_microsoft_id_token, "microsoft_oauth_enabled"),
+    ),
+)
+def test_disabled_provider_verifier_rejects_before_parsing_token(
+    oauth_settings,
+    monkeypatch,
+    verifier,
+    enabled_field,
+):
+    selected_settings = oauth_settings.model_copy(update={enabled_field: False})
+    parser_calls = []
+
+    def token_parser_must_not_run(_raw_token):
+        parser_calls.append("token")
+        raise AssertionError("disabled provider parsed an identity token")
+
+    monkeypatch.setattr(
+        oauth_security,
+        "_validated_raw_token",
+        token_parser_must_not_run,
+    )
+
+    with pytest.raises(oauth_security.OAuthVerificationError, match="disabled"):
+        verifier("sensitive-disabled-provider-token", settings=selected_settings)
+    assert parser_calls == []
+
+
+@pytest.mark.parametrize(
+    ("path", "enabled_field", "verifier_name"),
+    (
+        ("/api/auth/google-login", "google_oauth_enabled", "verify_google_id_token"),
+        ("/api/auth/google-signup", "google_oauth_enabled", "verify_google_id_token"),
+        (
+            "/api/auth/microsoft-login",
+            "microsoft_oauth_enabled",
+            "verify_microsoft_id_token",
+        ),
+        (
+            "/api/auth/microsoft-signup",
+            "microsoft_oauth_enabled",
+            "verify_microsoft_id_token",
+        ),
+    ),
+)
+def test_disabled_oauth_endpoint_rejects_before_invoking_verifier(
+    client,
+    oauth_settings,
+    monkeypatch,
+    path,
+    enabled_field,
+    verifier_name,
+):
+    selected_settings = oauth_settings.model_copy(update={enabled_field: False})
+    monkeypatch.setattr(main, "settings", selected_settings)
+    verifier_calls = []
+
+    def verifier_must_not_run(*_args, **_kwargs):
+        verifier_calls.append("verify")
+        raise AssertionError("disabled provider invoked its verifier")
+
+    monkeypatch.setattr(main, verifier_name, verifier_must_not_run)
+
+    response = client.post(
+        path,
+        json={"idToken": "sensitive-disabled-provider-token"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "External authentication failed"}
+    assert verifier_calls == []
 
 
 def test_public_admin_code_verification_route_is_absent():

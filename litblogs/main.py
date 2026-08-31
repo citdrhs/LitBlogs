@@ -1140,7 +1140,9 @@ class UserStatusResponse(BaseModel):
 
 class PublicRuntimeConfigResponse(BaseModel):
     csrf_cookie_name: str
+    google_oauth_enabled: bool
     google_client_id: str
+    microsoft_oauth_enabled: bool
     microsoft_client_id: str
     microsoft_tenant_id: str
     local_password_registration_enabled: bool
@@ -1621,6 +1623,14 @@ def _require_active_federated_user(user: models.User) -> models.User:
     return user
 
 
+def _require_oauth_provider_enabled(enabled: object) -> None:
+    if enabled is not True:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="External authentication failed",
+        )
+
+
 REGISTRATION_ACCEPTED_RESPONSE = {
     "message": "If registration can be completed, sign in with the submitted credentials."
 }
@@ -1961,6 +1971,7 @@ def google_signup(
 ):
     """Handle Google Sign Up"""
     try:
+        _require_oauth_provider_enabled(settings.google_oauth_enabled)
         credential = token_data.idToken
         idinfo = verify_google_id_token(
             credential,
@@ -2035,6 +2046,7 @@ def google_login(
 ):
     """Process Google login - now with existence check"""
     try:
+        _require_oauth_provider_enabled(settings.google_oauth_enabled)
         idinfo = verify_google_id_token(
             token_data.idToken,
             settings=settings,
@@ -2083,6 +2095,7 @@ def microsoft_login(
 ):
     """Process Microsoft login"""
     try:
+        _require_oauth_provider_enabled(settings.microsoft_oauth_enabled)
         user_data = verify_microsoft_id_token(
             microsoft_data.idToken,
             settings=settings,
@@ -2124,6 +2137,7 @@ def microsoft_signup(
 ):
     """Process Microsoft signup"""
     try:
+        _require_oauth_provider_enabled(settings.microsoft_oauth_enabled)
         user_data = verify_microsoft_id_token(
             microsoft_data.idToken,
             settings=settings,
@@ -2222,12 +2236,23 @@ def public_runtime_config(response: Response):
     response.headers["Cache-Control"] = "no-store"
     return PublicRuntimeConfigResponse(
         csrf_cookie_name=settings.csrf_cookie_name or "",
-        google_client_id=settings.google_client_id or "",
-        microsoft_client_id=settings.microsoft_client_id or "",
-        microsoft_tenant_id=settings.microsoft_tenant_id or "",
+        google_oauth_enabled=settings.google_oauth_enabled,
+        google_client_id=(
+            settings.google_client_id or "" if settings.google_oauth_enabled else ""
+        ),
+        microsoft_oauth_enabled=settings.microsoft_oauth_enabled,
+        microsoft_client_id=(
+            settings.microsoft_client_id or ""
+            if settings.microsoft_oauth_enabled
+            else ""
+        ),
+        microsoft_tenant_id=(
+            settings.microsoft_tenant_id or ""
+            if settings.microsoft_oauth_enabled
+            else ""
+        ),
         local_password_registration_enabled=(
             settings.local_password_registration_enabled
-            and settings.app_env != "production"
         ),
     )
 

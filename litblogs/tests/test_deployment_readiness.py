@@ -95,11 +95,11 @@ def test_production_upload_custody_rejects_a_service_owned_ancestor(tmp_path):
     )
 
 
-def _production_settings(**overrides):
+def _production_settings_values(**overrides):
     values = {
         "app_env": "production",
         "database_url": (
-            f"postgresql://litblog_app:{secrets.token_urlsafe(24)}@database.internal/litblog"
+            "postgresql://litblog_app:D8x9vK2sQ7mN4pR6tY1wC3bF5hJ7@database.internal/litblog"
             "?sslmode=verify-full&sslrootcert=/etc/litblogs/postgres-root-ca.pem"
         ),
         "secret_key": "A9!production-only-random-secret-0123456789-uvwxyz-XYZ",
@@ -109,7 +109,9 @@ def _production_settings(**overrides):
         "cors_allowed_origins": ("https://litblogs.school.edu",),
         "allowed_hosts": ("litblogs.school.edu",),
         "allowed_email_domains": ("school.edu",),
+        "google_oauth_enabled": True,
         "google_client_id": "987654321.apps.googleusercontent.com",
+        "microsoft_oauth_enabled": True,
         "microsoft_client_id": "2f1c67a1-91e2-46a3-941f-b88e31763e51",
         "microsoft_tenant_id": "871bd3e0-2dc0-4a40-9b07-9d03068c2364",
         "microsoft_allowed_tenant_ids": ("871bd3e0-2dc0-4a40-9b07-9d03068c2364",),
@@ -128,7 +130,133 @@ def _production_settings(**overrides):
         **production_upload_settings(),
     }
     values.update(overrides)
-    return Settings(**values)
+    return values
+
+
+def _production_settings(**overrides):
+    return Settings(**_production_settings_values(**overrides))
+
+
+def _set_production_environment(monkeypatch, **overrides):
+    values = _production_settings_values(**overrides)
+    for field_name in Settings.model_fields:
+        monkeypatch.delenv(field_name.upper(), raising=False)
+    for field_name, value in values.items():
+        environment_name = field_name.upper()
+        if value is None:
+            monkeypatch.delenv(environment_name, raising=False)
+        elif isinstance(value, bool):
+            monkeypatch.setenv(environment_name, "true" if value else "false")
+        elif isinstance(value, tuple):
+            monkeypatch.setenv(environment_name, ",".join(str(item) for item in value))
+        else:
+            monkeypatch.setenv(environment_name, str(value))
+
+
+def test_authentication_provider_flags_default_false(monkeypatch):
+    for field_name in (
+        "LOCAL_PASSWORD_REGISTRATION_ENABLED",
+        "GOOGLE_OAUTH_ENABLED",
+        "MICROSOFT_OAUTH_ENABLED",
+    ):
+        monkeypatch.delenv(field_name, raising=False)
+    settings = Settings(app_env="test")
+
+    assert settings.local_password_registration_enabled is False
+    assert getattr(settings, "google_oauth_enabled", None) is False
+    assert getattr(settings, "microsoft_oauth_enabled", None) is False
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    (
+        "local_password_registration_enabled",
+        "google_oauth_enabled",
+        "microsoft_oauth_enabled",
+    ),
+)
+@pytest.mark.parametrize("value", ("TRUE", "False", "1", " false", 1, 0))
+def test_authentication_provider_flags_reject_ambiguous_values(field_name, value):
+    with pytest.raises(ValidationError, match="literal true or false"):
+        Settings(app_env="test", **{field_name: value})
+
+
+def test_password_only_production_does_not_require_oauth():
+    settings = _production_settings(
+        local_password_registration_enabled="true",
+        google_oauth_enabled="false",
+        microsoft_oauth_enabled="false",
+        google_client_id=None,
+        microsoft_client_id=None,
+        microsoft_tenant_id=None,
+        microsoft_allowed_tenant_ids=(),
+    )
+
+    assert settings.local_password_registration_enabled is True
+    assert settings.google_oauth_enabled is False
+    assert settings.microsoft_oauth_enabled is False
+
+
+def test_disabled_oauth_provider_identifiers_are_not_validated():
+    settings = _production_settings(
+        google_oauth_enabled=False,
+        microsoft_oauth_enabled=False,
+        google_client_id="not-a-google-client",
+        microsoft_client_id="not-a-uuid",
+        microsoft_tenant_id="common",
+        microsoft_allowed_tenant_ids=("organizations",),
+    )
+
+    assert settings.google_oauth_enabled is False
+    assert settings.microsoft_oauth_enabled is False
+
+
+@pytest.mark.parametrize(
+    ("overrides", "missing_name"),
+    (
+        (
+            {
+                "google_oauth_enabled": True,
+                "google_client_id": None,
+                "microsoft_oauth_enabled": False,
+                "microsoft_client_id": None,
+                "microsoft_tenant_id": None,
+                "microsoft_allowed_tenant_ids": (),
+            },
+            "GOOGLE_CLIENT_ID",
+        ),
+        (
+            {
+                "google_oauth_enabled": False,
+                "google_client_id": None,
+                "microsoft_oauth_enabled": True,
+                "microsoft_client_id": None,
+            },
+            "MICROSOFT_CLIENT_ID",
+        ),
+        (
+            {
+                "google_oauth_enabled": False,
+                "google_client_id": None,
+                "microsoft_oauth_enabled": True,
+                "microsoft_tenant_id": None,
+            },
+            "MICROSOFT_TENANT_ID",
+        ),
+        (
+            {
+                "google_oauth_enabled": False,
+                "google_client_id": None,
+                "microsoft_oauth_enabled": True,
+                "microsoft_allowed_tenant_ids": (),
+            },
+            "MICROSOFT_ALLOWED_TENANT_IDS",
+        ),
+    ),
+)
+def test_enabled_oauth_provider_requires_its_credentials(overrides, missing_name):
+    with pytest.raises(ValidationError, match=missing_name):
+        _production_settings(**overrides)
 
 
 def test_production_upload_root_is_the_exact_deployment_path(monkeypatch):
@@ -597,7 +725,9 @@ def test_public_runtime_config_is_backend_derived_and_contains_no_secrets(client
     assert response.headers["cache-control"] == "no-store"
     assert response.json() == {
         "csrf_cookie_name": "test-litblog-csrf",
+        "google_oauth_enabled": True,
         "google_client_id": "test-google-client-id",
+        "microsoft_oauth_enabled": True,
         "microsoft_client_id": "test-microsoft-client-id",
         "microsoft_tenant_id": "871bd3e0-2dc0-4a40-9b07-9d03068c2364",
         "local_password_registration_enabled": True,
@@ -611,6 +741,39 @@ def test_public_runtime_config_is_backend_derived_and_contains_no_secrets(client
         "teacher_invite_hmac",
     ):
         assert forbidden not in serialized
+
+
+def test_public_runtime_config_blanks_disabled_providers_and_reports_production_password_registration(
+    client,
+    monkeypatch,
+):
+    import main
+
+    selected_settings = main.settings.model_copy(
+        update={
+            "app_env": "production",
+            "local_password_registration_enabled": True,
+            "google_oauth_enabled": False,
+            "google_client_id": "stale-google-client-id",
+            "microsoft_oauth_enabled": False,
+            "microsoft_client_id": "stale-microsoft-client-id",
+            "microsoft_tenant_id": "stale-microsoft-tenant-id",
+        }
+    )
+    monkeypatch.setattr(main, "settings", selected_settings)
+
+    response = client.get("/api/runtime-config")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "csrf_cookie_name": "test-litblog-csrf",
+        "google_oauth_enabled": False,
+        "google_client_id": "",
+        "microsoft_oauth_enabled": False,
+        "microsoft_client_id": "",
+        "microsoft_tenant_id": "",
+        "local_password_registration_enabled": True,
+    }
 
 
 def test_admin_provisioning_secrets_are_server_only_runtime_configuration():
@@ -768,6 +931,18 @@ def test_nginx_content_server_uses_the_complete_distribution_mime_table():
     assert re.search(r"(?m)^\s*types\s*\{", nginx) is None
 
 
+def _ready_deployment_settings(**overrides):
+    values = {
+        "app_env": "production",
+        "database_url": "postgresql://validated",
+        "upload_registry_schema_ready": True,
+        "upload_legacy_import_complete": True,
+        "upload_backup_restore_verified": True,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
 def _write_deployment_release(tmp_path):
     import deployment_check
 
@@ -818,9 +993,7 @@ def test_pretraffic_deployment_check_requires_manifest_assets_and_database(
     )
 
     result = deployment_check.run(
-        app_settings=SimpleNamespace(
-            app_env="production", database_url="postgresql://validated"
-        ),
+        app_settings=_ready_deployment_settings(),
         release_root=release_root,
         database_check=lambda: calls.append("database"),
         migration_drift_check=lambda: calls.append("drift"),
@@ -847,9 +1020,7 @@ def test_deployment_check_rejects_an_invalid_rich_text_contract(tmp_path, capsys
     )
 
     result = deployment_check.run(
-        app_settings=SimpleNamespace(
-            app_env="production", database_url="postgresql://validated"
-        ),
+        app_settings=_ready_deployment_settings(),
         release_root=release_root,
         database_check=lambda: None,
         migration_drift_check=lambda: None,
@@ -868,9 +1039,7 @@ def test_artifact_preflight_does_not_require_database_at_migration_head(tmp_path
 
     calls = []
     result = deployment_check.run(
-        app_settings=SimpleNamespace(
-            app_env="production", database_url="postgresql://validated"
-        ),
+        app_settings=_ready_deployment_settings(),
         release_root=_write_deployment_release(tmp_path),
         database_check=lambda: calls.append("database"),
         migration_drift_check=lambda: calls.append("drift"),
@@ -882,6 +1051,102 @@ def test_artifact_preflight_does_not_require_database_at_migration_head(tmp_path
     assert result == 0
     assert calls == ["ca"]
     assert capsys.readouterr().out.strip() == "deployment-check: ready"
+
+
+def test_preflight_skips_only_postmigration_upload_attestations(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    import deployment_check
+
+    _set_production_environment(
+        monkeypatch,
+        local_password_registration_enabled=True,
+        google_oauth_enabled=False,
+        microsoft_oauth_enabled=False,
+        google_client_id=None,
+        microsoft_client_id=None,
+        microsoft_tenant_id=None,
+        microsoft_allowed_tenant_ids=(),
+        upload_registry_schema_ready=False,
+        upload_legacy_import_complete=False,
+        upload_backup_restore_verified=False,
+    )
+    calls = []
+    result = deployment_check.run(
+        release_root=_write_deployment_release(tmp_path),
+        database_check=lambda: calls.append("database"),
+        migration_drift_check=lambda: calls.append("drift"),
+        ca_custody_check=lambda _database_url: calls.append("ca"),
+        interpreter_version=(3, 13),
+        mode="preflight",
+    )
+
+    assert result == 0
+    assert calls == ["ca"]
+    assert capsys.readouterr().out.strip() == "deployment-check: ready"
+
+    monkeypatch.setenv("SECRET_KEY", "too-short")
+    assert (
+        deployment_check.run(
+            release_root=_write_deployment_release(tmp_path / "invalid"),
+            ca_custody_check=lambda _database_url: None,
+            interpreter_version=(3, 13),
+            mode="preflight",
+        )
+        == 1
+    )
+    assert capsys.readouterr().err.strip() == (
+        "deployment-check: failed code=config_invalid"
+    )
+
+
+def test_postflight_rejects_upload_attestations_before_database_checks(
+    tmp_path,
+    capsys,
+):
+    import deployment_check
+
+    settings = _production_settings(
+        upload_registry_schema_ready=False,
+        upload_legacy_import_complete=False,
+        upload_backup_restore_verified=False,
+    )
+    calls = []
+    result = deployment_check.run(
+        app_settings=settings,
+        release_root=_write_deployment_release(tmp_path),
+        database_check=lambda: calls.append("database"),
+        migration_drift_check=lambda: calls.append("drift"),
+        ca_custody_check=lambda _database_url: calls.append("ca"),
+        interpreter_version=(3, 13),
+        mode="postflight",
+    )
+
+    assert result == 1
+    assert "database" not in calls
+    assert "drift" not in calls
+    assert capsys.readouterr().err.strip() == (
+        "deployment-check: failed code=config_invalid"
+    )
+
+
+def test_normal_settings_load_requires_postmigration_upload_attestations(
+    monkeypatch,
+):
+    _set_production_environment(
+        monkeypatch,
+        upload_registry_schema_ready=False,
+        upload_legacy_import_complete=False,
+        upload_backup_restore_verified=False,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Missing production readiness attestation: UPLOAD_REGISTRY_SCHEMA_READY",
+    ):
+        config.load_settings()
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX ownership and modes required")
@@ -933,9 +1198,7 @@ def test_deployment_check_reports_only_bounded_safe_preflight_codes(
     import deployment_check
 
     arguments = {
-        "app_settings": SimpleNamespace(
-            app_env="production", database_url="postgresql://validated"
-        ),
+        "app_settings": _ready_deployment_settings(),
         "release_root": _write_deployment_release(tmp_path),
         "database_check": lambda: None,
         "migration_drift_check": lambda: None,
@@ -967,9 +1230,7 @@ def test_deployment_check_redacts_database_failures(tmp_path, capsys, failure, e
     import deployment_check
 
     result = deployment_check.run(
-        app_settings=SimpleNamespace(
-            app_env="production", database_url="postgresql://validated"
-        ),
+        app_settings=_ready_deployment_settings(),
         release_root=_write_deployment_release(tmp_path),
         database_check=lambda: (_ for _ in ()).throw(failure),
         migration_drift_check=lambda: None,
@@ -988,9 +1249,7 @@ def test_deployment_check_fails_closed_on_alembic_schema_drift(tmp_path, capsys)
     import deployment_check
 
     result = deployment_check.run(
-        app_settings=SimpleNamespace(
-            app_env="production", database_url="postgresql://validated"
-        ),
+        app_settings=_ready_deployment_settings(),
         release_root=_write_deployment_release(tmp_path),
         database_check=lambda: None,
         migration_drift_check=lambda: (_ for _ in ()).throw(
@@ -1018,9 +1277,7 @@ def test_deployment_check_distinguishes_manifest_and_frontend_contract_failures(
     )
     assert (
         deployment_check.run(
-            app_settings=SimpleNamespace(
-                app_env="production", database_url="postgresql://validated"
-            ),
+            app_settings=_ready_deployment_settings(),
             release_root=release_root,
             database_check=lambda: None,
             migration_drift_check=lambda: None,
@@ -1039,9 +1296,7 @@ def test_deployment_check_distinguishes_manifest_and_frontend_contract_failures(
     )
     assert (
         deployment_check.run(
-            app_settings=SimpleNamespace(
-                app_env="production", database_url="postgresql://validated"
-            ),
+            app_settings=_ready_deployment_settings(),
             release_root=release_root,
             database_check=lambda: None,
             migration_drift_check=lambda: None,

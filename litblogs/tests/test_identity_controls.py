@@ -53,7 +53,9 @@ def _production_settings_data() -> dict:
         "cors_allowed_origins": ("https://litblogs.school.edu",),
         "allowed_hosts": ("litblogs.school.edu",),
         "allowed_email_domains": ("school.edu",),
+        "google_oauth_enabled": True,
         "google_client_id": "987654321.apps.googleusercontent.com",
+        "microsoft_oauth_enabled": True,
         "microsoft_client_id": "2f1c67a1-91e2-46a3-941f-b88e31763e51",
         "microsoft_tenant_id": "871bd3e0-2dc0-4a40-9b07-9d03068c2364",
         "microsoft_allowed_tenant_ids": (
