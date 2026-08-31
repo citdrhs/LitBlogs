@@ -4,35 +4,25 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-import smtplib
-import ssl
 from collections.abc import Callable
-from dataclasses import dataclass
-from dataclasses import field as dataclass_field
 from datetime import UTC, datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from enum import StrEnum
-from pathlib import Path
 
-from pydantic import EmailStr, Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from sqlalchemy import and_, create_engine, or_, text
-from sqlalchemy.engine import Engine, make_url
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import and_, or_
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
 
+import auth_email_delivery
 import models
-from config import (
-    _PLACEHOLDER_FRAGMENTS,
-    _canonical_https_origin,
-    _is_network_host,
-    _is_verified_postgresql_url,
-)
 from identity_controls import invalidate_password_reset_requests
-from runtime_database_identity import verify_runtime_database_identity
 
-APP_DIRECTORY = Path(__file__).resolve().parent
-EXPECTED_ALEMBIC_HEAD = "a82f8f2b1d7c"
+# Preserve the legacy module patch point used by the web compatibility wrapper.
+smtplib = auth_email_delivery.smtplib
+
+APP_DIRECTORY = auth_email_delivery.APP_DIRECTORY
+EXPECTED_ALEMBIC_HEAD = auth_email_delivery.EXPECTED_ALEMBIC_HEAD
 MAX_PASSWORD_RESET_BATCH_SIZE = 100
 
 PASSWORD_RESET_PENDING = "PENDING"
@@ -42,8 +32,10 @@ PASSWORD_RESET_FAILED = "FAILED"
 PASSWORD_RESET_LIFETIME = timedelta(hours=1)
 
 
-class PasswordResetOperationalError(RuntimeError):
-    """A sanitized reset-delivery infrastructure failure."""
+PasswordResetOperationalError = auth_email_delivery.AuthEmailOperationalError
+PasswordResetDispatchOutcome = auth_email_delivery.AuthEmailDispatchOutcome
+PasswordResetWorkerSettings = auth_email_delivery.AuthEmailWorkerSettings
+PasswordResetEmailSettings = auth_email_delivery.AuthEmailSettings
 
 
 class PasswordResetCompletionOutcome(StrEnum):
@@ -52,133 +44,22 @@ class PasswordResetCompletionOutcome(StrEnum):
     CLAIM_LOST = "CLAIM_LOST"
 
 
-class PasswordResetDispatchOutcome(StrEnum):
-    EMPTY_QUEUE = "EMPTY_QUEUE"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-
-
-class PasswordResetWorkerSettings(BaseSettings):
-    """Only the settings required by the external reset-delivery process."""
-
-    model_config = SettingsConfigDict(
-        case_sensitive=False,
-        enable_decoding=False,
-        extra="ignore",
-        frozen=True,
-        hide_input_in_errors=True,
-    )
-
-    database_url: str = Field(repr=False)
-    db_pool_size: int = Field(default=1, ge=1, le=20)
-    db_max_overflow: int = Field(default=0, ge=0, le=20)
-    db_pool_timeout_seconds: int = Field(default=10, ge=1, le=30)
-    db_pool_recycle_seconds: int = Field(default=900, ge=60, le=3_600)
-    db_connect_timeout_seconds: int = Field(default=5, ge=1, le=10)
-    db_statement_timeout_ms: int = Field(default=15_000, ge=1_000, le=60_000)
-    db_lock_timeout_ms: int = Field(default=5_000, ge=500, le=30_000)
-
-    frontend_url: str
-    email_host: str
-    email_port: int = Field(default=587, ge=1, le=65_535)
-    email_smtp_timeout_seconds: float = Field(default=5.0, ge=0.5, le=10.0)
-    email_username: str
-    email_password: SecretStr = Field(repr=False)
-    email_from: EmailStr
-    password_reset_claim_timeout_seconds: int = Field(default=120, ge=60, le=600)
-
-    @field_validator(
-        "database_url",
-        "frontend_url",
-        "email_host",
-        "email_username",
-        mode="before",
-    )
-    @classmethod
-    def strip_required_text(cls, value):
-        normalized = str(value or "").strip()
-        if not normalized:
-            raise ValueError("worker setting must be nonempty")
-        return normalized
-
-    @field_validator("frontend_url")
-    @classmethod
-    def canonicalize_frontend_origin(cls, value: str) -> str:
-        canonical = _canonical_https_origin(value)
-        if canonical is None:
-            raise ValueError("FRONTEND_URL must be a root HTTPS origin")
-        return canonical
-
-    @model_validator(mode="after")
-    def validate_delivery_boundary(self):
-        if not _is_verified_postgresql_url(self.database_url):
-            raise ValueError("DATABASE_URL must be a verified PostgreSQL URL")
-        database_user = make_url(self.database_url).username
-        if database_user != "litblogs_runtime":
-            raise ValueError("DATABASE_URL must use the litblogs_runtime role")
-        if not _is_network_host(self.email_host):
-            raise ValueError("EMAIL_HOST must be an exact network host")
-        email_from_domain = str(self.email_from).rsplit("@", 1)[-1]
-        if not _is_network_host(email_from_domain):
-            raise ValueError("EMAIL_FROM must use a non-reserved DNS domain")
-        smtp_password = self.email_password.get_secret_value()
-        if len(smtp_password.encode("utf-8")) < 16 or any(
-            fragment in smtp_password.lower() for fragment in _PLACEHOLDER_FRAGMENTS
-        ):
-            raise ValueError("EMAIL_PASSWORD must be a non-placeholder secret")
-        return self
-
-
-@dataclass(frozen=True)
-class PasswordResetEmailSettings:
-    frontend_url: str
-    email_host: str | None
-    email_port: int
-    email_smtp_timeout_seconds: float
-    email_username: str | None
-    email_password: str | None = dataclass_field(repr=False)
-    email_from: str | None
-
-
 def load_password_reset_worker_settings() -> PasswordResetWorkerSettings:
-    """Load the worker environment without loading the web Settings object."""
+    """Compatibility wrapper for the shared authentication-email settings."""
 
-    return PasswordResetWorkerSettings(_env_file=None)
+    return auth_email_delivery.load_auth_email_worker_settings()
 
 
 def worker_engine_options(settings: PasswordResetWorkerSettings) -> dict:
-    return {
-        "pool_pre_ping": True,
-        "pool_size": settings.db_pool_size,
-        "max_overflow": settings.db_max_overflow,
-        "pool_timeout": settings.db_pool_timeout_seconds,
-        "pool_recycle": settings.db_pool_recycle_seconds,
-        "connect_args": {
-            "connect_timeout": settings.db_connect_timeout_seconds,
-            "application_name": "litblogs-password-reset",
-            "options": (
-                f"-c statement_timeout={settings.db_statement_timeout_ms} "
-                f"-c lock_timeout={settings.db_lock_timeout_ms}"
-            ),
-        },
-    }
+    return auth_email_delivery.auth_email_engine_options(settings)
 
 
 def create_password_reset_engine(settings: PasswordResetWorkerSettings) -> Engine:
-    return create_engine(settings.database_url, **worker_engine_options(settings))
+    return auth_email_delivery.create_auth_email_engine(settings)
 
 
 def check_password_reset_database_readiness(engine: Engine) -> None:
-    if engine.dialect.name != "postgresql":
-        raise RuntimeError("Password-reset delivery requires PostgreSQL")
-    with engine.connect() as connection:
-        connection.execute(text("SELECT 1"))
-        current_revision = connection.execute(
-            text("SELECT version_num FROM public.alembic_version")
-        ).scalar_one()
-        if current_revision != EXPECTED_ALEMBIC_HEAD:
-            raise RuntimeError("Database migration revision is not current")
-        verify_runtime_database_identity(connection)
+    auth_email_delivery.check_auth_email_database_readiness(engine)
 
 
 def _utc_now_naive() -> datetime:
@@ -442,19 +323,7 @@ def send_password_reset_email(
         </html>
         """
     message.attach(MIMEText(html, "html"))
-
-    try:
-        with smtplib.SMTP(
-            settings.email_host,
-            settings.email_port,
-            timeout=settings.email_smtp_timeout_seconds,
-        ) as server:
-            server.starttls(context=ssl.create_default_context())
-            server.login(settings.email_username, settings.email_password)
-            server.sendmail(settings.email_from, email, message.as_string())
-        return True
-    except Exception:
-        return False
+    return auth_email_delivery.send_smtp_message(settings, email, message)
 
 
 def dispatch_password_reset_batch(
@@ -472,48 +341,56 @@ def dispatch_password_reset_batch(
         or not 1 <= batch_size <= MAX_PASSWORD_RESET_BATCH_SIZE
     ):
         raise ValueError("password-reset batch size is outside the safe bound")
-    completed_deliveries = 0
-    for _ in range(batch_size):
-        try:
-            claimed = claim()
-        except Exception:
+    def completion_succeeded(
+        completion: PasswordResetCompletionOutcome | bool,
+    ) -> bool:
+        if completion is True:
+            return True
+        if completion is False:
+            return False
+        if not isinstance(completion, PasswordResetCompletionOutcome):
             raise PasswordResetOperationalError(
-                "Password-reset claim operation failed"
-            ) from None
-        if claimed is None:
-            if completed_deliveries:
-                return PasswordResetDispatchOutcome.COMPLETED
-            return PasswordResetDispatchOutcome.EMPTY_QUEUE
-        reset_id, email, claim_nonce = claimed
-        raw_token = secrets.token_urlsafe(32)
-        try:
-            delivered = send(email, raw_token) is True
-        except Exception:
-            delivered = False
-        try:
-            completion = complete(
+                "Password-reset completion operation failed"
+            )
+        return completion is PasswordResetCompletionOutcome.COMPLETED
+
+    return auth_email_delivery.dispatch_auth_email_batch(
+        batch_size=batch_size,
+        claim=claim,
+        send=send,
+        complete=complete,
+        completion_succeeded=completion_succeeded,
+    )
+
+
+def dispatch_password_reset_batch_once(
+    *,
+    session_factory: Callable[[], Session],
+    email_settings: PasswordResetEmailSettings,
+    claim_timeout_seconds: int,
+    batch_size: int = 100,
+) -> PasswordResetDispatchOutcome:
+    return dispatch_password_reset_batch(
+        batch_size=batch_size,
+        claim=lambda: claim_password_reset_delivery(
+            session_factory,
+            claim_timeout_seconds=claim_timeout_seconds,
+        ),
+        send=lambda email, token: send_password_reset_email(
+            email_settings,
+            email,
+            token,
+        ),
+        complete=lambda reset_id, claim_nonce, raw_token, delivered: (
+            complete_password_reset_delivery_outcome(
+                session_factory,
                 reset_id,
                 claim_nonce,
                 raw_token,
                 delivered,
             )
-        except Exception:
-            raise PasswordResetOperationalError(
-                "Password-reset completion operation failed"
-            ) from None
-
-        if completion is True:
-            completion = PasswordResetCompletionOutcome.COMPLETED
-        elif completion is False:
-            completion = PasswordResetCompletionOutcome.CLAIM_LOST
-        if not isinstance(completion, PasswordResetCompletionOutcome):
-            raise PasswordResetOperationalError(
-                "Password-reset completion operation failed"
-            )
-        if not delivered or completion is not PasswordResetCompletionOutcome.COMPLETED:
-            return PasswordResetDispatchOutcome.FAILED
-        completed_deliveries += 1
-    return PasswordResetDispatchOutcome.COMPLETED
+        ),
+    )
 
 
 def dispatch_password_reset_emails_once(
@@ -523,40 +400,13 @@ def dispatch_password_reset_emails_once(
     engine = create_password_reset_engine(settings)
     try:
         check_password_reset_database_readiness(engine)
-        session_factory = sessionmaker(
-            autocommit=False,
-            autoflush=False,
-            bind=engine,
-        )
-        email_settings = PasswordResetEmailSettings(
-            frontend_url=settings.frontend_url,
-            email_host=settings.email_host,
-            email_port=settings.email_port,
-            email_smtp_timeout_seconds=settings.email_smtp_timeout_seconds,
-            email_username=settings.email_username,
-            email_password=settings.email_password.get_secret_value(),
-            email_from=str(settings.email_from),
-        )
-        return dispatch_password_reset_batch(
+        session_factory = auth_email_delivery.create_auth_email_session_factory(engine)
+        email_settings = auth_email_delivery.auth_email_settings_from_worker(settings)
+        return dispatch_password_reset_batch_once(
+            session_factory=session_factory,
+            email_settings=email_settings,
+            claim_timeout_seconds=settings.password_reset_claim_timeout_seconds,
             batch_size=batch_size,
-            claim=lambda: claim_password_reset_delivery(
-                session_factory,
-                claim_timeout_seconds=settings.password_reset_claim_timeout_seconds,
-            ),
-            send=lambda email, token: send_password_reset_email(
-                email_settings,
-                email,
-                token,
-            ),
-            complete=lambda reset_id, claim_nonce, raw_token, delivered: (
-                complete_password_reset_delivery_outcome(
-                    session_factory,
-                    reset_id,
-                    claim_nonce,
-                    raw_token,
-                    delivered,
-                )
-            ),
         )
     finally:
         engine.dispose()

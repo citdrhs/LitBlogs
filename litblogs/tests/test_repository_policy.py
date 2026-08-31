@@ -175,6 +175,39 @@ def _validate_tiptap_policy(
     return policy_validator.failures
 
 
+def test_repository_policy_enforces_combined_auth_email_worker_boundary():
+    validator = VALIDATOR_PATH.read_text(encoding="utf-8")
+    service = (
+        REPOSITORY_ROOT
+        / "deploy"
+        / "systemd"
+        / "litblogs-password-reset.service"
+    ).read_text(encoding="utf-8")
+
+    for runtime_file in (
+        "litblogs/auth_email_delivery.py",
+        "litblogs/auth_email_job.py",
+        "litblogs/email_verification_delivery.py",
+        "litblogs/password_reset_delivery.py",
+    ):
+        assert runtime_file in validator
+    assert '"auth_email_job"' in validator
+    assert '"password_reset_job"' not in validator
+    for forbidden_import in (
+        "from main import",
+        "import main",
+        "import database",
+        "from database import",
+        "fastapi",
+        "oauth_security",
+        "upload_assets",
+        "upload_scanner",
+    ):
+        assert forbidden_import in validator
+    assert "-m auth_email_job" in service
+    assert "-m password_reset_job" not in service
+
+
 def _validate_real_tiptap_lock(policy_validator, tmp_path, package_lock):
     package = json.loads(
         (BACKEND_ROOT / "package.json").read_text(encoding="utf-8")

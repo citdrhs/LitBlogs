@@ -352,8 +352,10 @@ MAINTENANCE_RELEASE_FILES = (
     "deploy/systemd/litblogs-password-reset.timer",
     "deploy/systemd/litblogs-upload-reconciliation.service",
     "deploy/systemd/litblogs-upload-reconciliation.timer",
+    "litblogs/auth_email_delivery.py",
+    "litblogs/auth_email_job.py",
+    "litblogs/email_verification_delivery.py",
     "litblogs/password_reset_delivery.py",
-    "litblogs/password_reset_job.py",
     "litblogs/runtime_database_identity.py",
     "litblogs/upload_reconciliation_job.py",
 )
@@ -2234,7 +2236,7 @@ def validate_maintenance_release_contract() -> None:
 
     service_contracts = {
         "deploy/systemd/litblogs-password-reset.service": (
-            "password_reset_job",
+            "auth_email_job",
             "/run/litblogs-maintenance-egress/password-reset.port-policy-ready",
         ),
         (
@@ -2264,32 +2266,66 @@ def validate_maintenance_release_contract() -> None:
     password_reset_unit = read_text(
         "deploy/systemd/litblogs-password-reset.service"
     )
-    password_reset_job = read_text("litblogs/password_reset_job.py")
+    auth_email_job = read_text("litblogs/auth_email_job.py")
+    auth_email_delivery = read_text("litblogs/auth_email_delivery.py")
+    email_verification_delivery = read_text(
+        "litblogs/email_verification_delivery.py"
+    )
     password_reset_delivery = read_text("litblogs/password_reset_delivery.py")
     runtime_database_identity = read_text("litblogs/runtime_database_identity.py")
+    for domain_module in (
+        "import password_reset_delivery",
+        "import email_verification_delivery",
+    ):
+        expect(
+            domain_module in auth_email_job,
+            f"authentication-email entry point must retain {domain_module}",
+        )
     expect(
-        "import password_reset_delivery" in password_reset_job,
-        "password-reset entry point must import the standalone delivery runtime",
+        "import auth_email_delivery" in auth_email_job,
+        "authentication-email entry point must import neutral plumbing",
     )
+    for domain_delivery in (
+        password_reset_delivery,
+        email_verification_delivery,
+    ):
+        expect(
+            "import auth_email_delivery" in domain_delivery,
+            "domain delivery modules must delegate neutral plumbing",
+        )
+    for forbidden_domain in (
+        "password_reset_delivery",
+        "email_verification_delivery",
+    ):
+        expect(
+            forbidden_domain not in auth_email_delivery,
+            "neutral authentication-email plumbing must not import a domain queue",
+        )
     for forbidden in (
         "from main import",
         "import main",
         "import database",
         "from database import",
         "fastapi",
+        "oauth_security",
         "upload_assets",
         "upload_scanner",
     ):
-        expect(
-            forbidden not in password_reset_job.lower(),
-            f"password-reset entry point must not import {forbidden}",
-        )
-        expect(
-            forbidden not in password_reset_delivery.lower(),
-            f"password-reset delivery runtime must not import {forbidden}",
-        )
+        for path, source in (
+            ("litblogs/auth_email_job.py", auth_email_job),
+            ("litblogs/auth_email_delivery.py", auth_email_delivery),
+            ("litblogs/password_reset_delivery.py", password_reset_delivery),
+            (
+                "litblogs/email_verification_delivery.py",
+                email_verification_delivery,
+            ),
+        ):
+            expect(
+                forbidden not in source.lower(),
+                f"{path} must not import {forbidden}",
+            )
     for fragment in (
-        "class PasswordResetWorkerSettings",
+        "class AuthEmailWorkerSettings",
         "database_url:",
         "frontend_url:",
         "email_host:",
@@ -2297,16 +2333,47 @@ def validate_maintenance_release_contract() -> None:
         "email_smtp_timeout_seconds:",
         "password_reset_claim_timeout_seconds:",
         "verify_runtime_database_identity",
+        'EXPECTED_ALEMBIC_HEAD = "a82f8f2b1d7c"',
+        '"application_name": "litblogs-auth-email"',
+        "def send_smtp_message",
+        "def dispatch_auth_email_batch",
+    ):
+        expect(
+            fragment in auth_email_delivery,
+            f"neutral authentication-email runtime must retain {fragment}",
+        )
+    for fragment in (
+        'f"litblogs-email-verification-v1:{raw_token}"',
+        'f"litblogs-email-verification-claim-v1:{claim_nonce}"',
+        "EMAIL_VERIFICATION_LIFETIME = timedelta(hours=24)",
+        "EMAIL_VERIFICATION_RESEND_COOLDOWN = timedelta(minutes=5)",
+        "EMAIL_VERIFICATION_CLAIM_CANDIDATE_LIMIT = 25",
+        'f"{settings.frontend_url}/verify-email#token={raw_token}"',
+    ):
+        expect(
+            fragment in email_verification_delivery,
+            f"email verification delivery must retain {fragment}",
+        )
+    for fragment in (
+        "def password_reset_token_digest",
+        "def password_reset_claim_digest",
+        'f"{settings.frontend_url}/reset-password#token={token}"',
+        "def complete_password_reset_delivery_outcome",
     ):
         expect(
             fragment in password_reset_delivery,
-            f"password-reset delivery runtime must retain {fragment}",
+            f"password-reset compatibility delivery must retain {fragment}",
         )
     expect(
         "def verify_runtime_database_identity" in runtime_database_identity,
         "runtime database identity helper must retain the shared verifier",
     )
     password_reset_lines = set(password_reset_unit.splitlines())
+    for queue_description in ("password reset", "email verification"):
+        expect(
+            queue_description in password_reset_unit.lower(),
+            "authentication-email service description must name both queues",
+        )
     for fragment in (
         "User=litblogs-reset",
         "Group=litblogs-reset",
@@ -2388,8 +2455,12 @@ def validate_maintenance_release_contract() -> None:
             "configured SMTP IP:port",
             "alternate port on every allowed IP",
             "every scanner Unix socket",
+            "auth_email_job.py",
+            "auth_email_delivery.py",
+            "email_verification_delivery.py",
             "password_reset_delivery.py",
             "minimal worker settings",
+            "both queues",
             "does not import `main`",
             "`litblogs-reset`",
             "`/usr/sbin/nologin`",
@@ -2414,6 +2485,9 @@ def validate_maintenance_release_contract() -> None:
         "release archive must include deploy assets and maintenance entry modules",
     )
     for path in (
+        "litblogs/auth_email_delivery.py",
+        "litblogs/auth_email_job.py",
+        "litblogs/email_verification_delivery.py",
         "litblogs/password_reset_delivery.py",
         "litblogs/rich_text_contract.json",
         "litblogs/rich_text_contract.py",

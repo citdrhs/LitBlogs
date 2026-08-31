@@ -34,6 +34,9 @@ def test_release_admission_requires_external_maintenance_jobs_and_units():
         PASSWORD_RESET_TIMER,
         UPLOAD_RECONCILIATION_SERVICE,
         UPLOAD_RECONCILIATION_TIMER,
+        "litblogs/auth_email_delivery.py",
+        "litblogs/auth_email_job.py",
+        "litblogs/email_verification_delivery.py",
         "litblogs/password_reset_job.py",
         "litblogs/upload_reconciliation_job.py",
     } <= required
@@ -42,7 +45,7 @@ def test_release_admission_requires_external_maintenance_jobs_and_units():
 def test_maintenance_services_are_bounded_and_hardened_oneshots():
     services = {
         PASSWORD_RESET_SERVICE: (
-            "password_reset_job",
+            "auth_email_job",
             "litblogs-reset",
             "litblogs-reset",
         ),
@@ -92,6 +95,12 @@ def test_maintenance_services_are_bounded_and_hardened_oneshots():
         assert "/opt/litblogs/venv/" not in unit
         assert "IPAddressAllow=0.0.0.0/0" not in unit
         assert "IPAddressAllow=::/0" not in unit
+
+    reset_service = _read(PASSWORD_RESET_SERVICE).lower()
+    reset_timer = _read(PASSWORD_RESET_TIMER).lower()
+    for unit in (reset_service, reset_timer):
+        assert "password reset" in unit
+        assert "email verification" in unit
 
 
 def test_maintenance_services_fail_closed_without_exact_egress_drop_ins():
@@ -149,6 +158,53 @@ def test_password_reset_service_has_dedicated_identity_env_and_no_upload_surface
     assert "ReadWritePaths=/var/lib/litblogs/uploads" in reconciliation
 
 
+def test_auth_email_worker_env_allowlist_serves_both_queues_without_web_secrets():
+    import auth_email_delivery
+
+    assert set(auth_email_delivery.AuthEmailWorkerSettings.model_fields) == {
+        "database_url",
+        "db_pool_size",
+        "db_max_overflow",
+        "db_pool_timeout_seconds",
+        "db_pool_recycle_seconds",
+        "db_connect_timeout_seconds",
+        "db_statement_timeout_ms",
+        "db_lock_timeout_ms",
+        "frontend_url",
+        "email_host",
+        "email_port",
+        "email_smtp_timeout_seconds",
+        "email_username",
+        "email_password",
+        "email_from",
+        "password_reset_claim_timeout_seconds",
+    }
+    assert auth_email_delivery.AuthEmailWorkerSettings.model_fields[
+        "password_reset_claim_timeout_seconds"
+    ].default == 120
+
+    for document_path in (
+        "deploy/README.md",
+        "docs/operations/production-runbook.md",
+    ):
+        document = _read(document_path)
+        assert "PASSWORD_RESET_CLAIM_TIMEOUT_SECONDS" in document
+        assert "both queues" in document.lower()
+        for forbidden_key in (
+            "GOOGLE_CLIENT_ID",
+            "MICROSOFT_CLIENT_ID",
+            "UPLOAD_ROOT",
+            "UPLOAD_SCANNER_HOST",
+            "SECRET_KEY",
+        ):
+            allowlist_paragraph = next(
+                paragraph
+                for paragraph in document.split("\n\n")
+                if "only permitted keys" in paragraph
+            )
+            assert forbidden_key not in allowlist_paragraph
+
+
 def test_maintenance_timers_are_persistent_jittered_and_non_push():
     for relative_path, service in (
         (PASSWORD_RESET_TIMER, "litblogs-password-reset.service"),
@@ -202,10 +258,21 @@ def test_repository_policy_enforces_packaged_maintenance_contract():
         PASSWORD_RESET_TIMER,
         UPLOAD_RECONCILIATION_SERVICE,
         UPLOAD_RECONCILIATION_TIMER,
-        "litblogs/password_reset_job.py",
+        "litblogs/auth_email_delivery.py",
+        "litblogs/auth_email_job.py",
+        "litblogs/email_verification_delivery.py",
         "litblogs/upload_reconciliation_job.py",
     ):
         assert required in validator
+
+    assert '"auth_email_job"' in validator
+    assert '"password_reset_job"' not in validator
+    for delivery_module in (
+        "auth_email_delivery",
+        "password_reset_delivery",
+        "email_verification_delivery",
+    ):
+        assert delivery_module in validator
 
     for reset_boundary in (
         "User=litblogs-reset",

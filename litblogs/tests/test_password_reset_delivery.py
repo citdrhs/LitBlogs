@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -34,15 +35,23 @@ def _worker_settings(**overrides):
 
 
 def test_worker_settings_are_minimal_and_normalize_the_frontend_origin():
+    import auth_email_delivery
     import password_reset_delivery
 
     settings = _worker_settings()
 
     assert settings.frontend_url == "https://litblogs.school.org"
     model_fields = password_reset_delivery.PasswordResetWorkerSettings.model_fields
+    assert (
+        password_reset_delivery.PasswordResetWorkerSettings
+        is auth_email_delivery.AuthEmailWorkerSettings
+    )
     assert "upload_root" not in model_fields
     assert "secret_key" not in model_fields
     assert "upload_scanner_host" not in model_fields
+    assert "google_client_id" not in model_fields
+    assert "microsoft_client_id" not in model_fields
+    assert "password_reset_claim_timeout_seconds" in model_fields
 
 
 @pytest.mark.parametrize(
@@ -77,6 +86,7 @@ def test_shared_production_database_validator_rejects_unshipped_drivers(driver):
 
 
 def test_worker_engine_options_preserve_all_bounded_database_controls():
+    import auth_email_delivery
     import password_reset_delivery
 
     settings = _worker_settings(
@@ -91,6 +101,7 @@ def test_worker_engine_options_preserve_all_bounded_database_controls():
 
     options = password_reset_delivery.worker_engine_options(settings)
 
+    assert options == auth_email_delivery.auth_email_engine_options(settings)
     assert options == {
         "pool_pre_ping": True,
         "pool_size": 2,
@@ -99,13 +110,14 @@ def test_worker_engine_options_preserve_all_bounded_database_controls():
         "pool_recycle": 600,
         "connect_args": {
             "connect_timeout": 4,
-            "application_name": "litblogs-password-reset",
+            "application_name": "litblogs-auth-email",
             "options": "-c statement_timeout=12000 -c lock_timeout=3000",
         },
     }
 
 
 def test_email_delivery_settings_repr_never_reflects_the_smtp_password():
+    import auth_email_delivery
     import password_reset_delivery
 
     private_password = "smtp-private-password-material"
@@ -120,6 +132,9 @@ def test_email_delivery_settings_repr_never_reflects_the_smtp_password():
     )
 
     assert private_password not in repr(settings)
+    assert password_reset_delivery.PasswordResetEmailSettings is (
+        auth_email_delivery.AuthEmailSettings
+    )
 
 
 class _Result:
@@ -162,12 +177,13 @@ class _Engine:
 def test_worker_readiness_requires_current_revision_and_exact_runtime_identity(
     monkeypatch,
 ):
+    import auth_email_delivery
     import password_reset_delivery
 
     engine = _Engine(password_reset_delivery.EXPECTED_ALEMBIC_HEAD)
     verified = []
     monkeypatch.setattr(
-        password_reset_delivery,
+        auth_email_delivery,
         "verify_runtime_database_identity",
         verified.append,
     )
@@ -183,12 +199,13 @@ def test_worker_readiness_requires_current_revision_and_exact_runtime_identity(
 
 
 def test_worker_readiness_rejects_a_stale_revision_before_delivery(monkeypatch):
+    import auth_email_delivery
     import password_reset_delivery
 
     engine = _Engine("stale")
     verified = []
     monkeypatch.setattr(
-        password_reset_delivery,
+        auth_email_delivery,
         "verify_runtime_database_identity",
         verified.append,
     )
@@ -200,6 +217,7 @@ def test_worker_readiness_rejects_a_stale_revision_before_delivery(monkeypatch):
 
 
 def test_worker_expected_revision_tracks_the_repository_head():
+    import auth_email_delivery
     import password_reset_delivery
 
     config = Config(str(password_reset_delivery.APP_DIRECTORY / "alembic.ini"))
@@ -207,6 +225,82 @@ def test_worker_expected_revision_tracks_the_repository_head():
 
     assert password_reset_delivery.EXPECTED_ALEMBIC_HEAD == scripts.get_current_head()
     assert password_reset_delivery.EXPECTED_ALEMBIC_HEAD == "a82f8f2b1d7c"
+    assert auth_email_delivery.EXPECTED_ALEMBIC_HEAD == "a82f8f2b1d7c"
+
+
+def test_reset_shared_plumbing_compatibility_wrappers_use_neutral_runtime(
+    monkeypatch,
+):
+    import auth_email_delivery
+    import password_reset_delivery
+
+    settings = _worker_settings()
+    engine = object()
+    calls = []
+    monkeypatch.setattr(
+        auth_email_delivery,
+        "load_auth_email_worker_settings",
+        lambda: calls.append("load") or settings,
+    )
+    monkeypatch.setattr(
+        auth_email_delivery,
+        "create_auth_email_engine",
+        lambda received: calls.append(("engine", received)) or engine,
+    )
+    monkeypatch.setattr(
+        auth_email_delivery,
+        "check_auth_email_database_readiness",
+        lambda received: calls.append(("ready", received)),
+    )
+
+    assert password_reset_delivery.load_password_reset_worker_settings() is settings
+    assert password_reset_delivery.create_password_reset_engine(settings) is engine
+    password_reset_delivery.check_password_reset_database_readiness(engine)
+    assert calls == [
+        "load",
+        ("engine", settings),
+        ("ready", engine),
+    ]
+
+
+def test_reset_template_and_plain_digest_remain_compatible_after_extraction(
+    monkeypatch,
+):
+    import auth_email_delivery
+    import password_reset_delivery
+
+    captured = {}
+    monkeypatch.setattr(
+        auth_email_delivery,
+        "send_smtp_message",
+        lambda settings, recipient, message: captured.update(
+            recipient=recipient,
+            message=message.as_string(),
+        )
+        or True,
+    )
+    settings = password_reset_delivery.PasswordResetEmailSettings(
+        frontend_url="https://litblogs.school.org",
+        email_host="smtp.school.org",
+        email_port=587,
+        email_smtp_timeout_seconds=5,
+        email_username="litblogs-reset",
+        email_password="private-smtp-password",
+        email_from="no-reply@school.org",
+    )
+    raw_token = "plain-reset-digest-token"
+
+    assert password_reset_delivery.password_reset_token_digest(
+        raw_token
+    ) == hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    assert password_reset_delivery.send_password_reset_email(
+        settings,
+        "student@school.org",
+        raw_token,
+    ) is True
+    assert captured["recipient"] == "student@school.org"
+    assert f"/reset-password#token={raw_token}" in captured["message"]
+    assert "/verify-email" not in captured["message"]
 
 
 def test_dispatch_batch_is_bounded_and_uses_claim_capability_tokens():

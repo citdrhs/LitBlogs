@@ -796,8 +796,11 @@ def test_release_admission_requires_every_shipped_runtime_module():
     required = set(deployment_check.REQUIRED_RELEASE_FILES)
     assert {
         "litblogs/access_control.py",
+        "litblogs/auth_email_delivery.py",
+        "litblogs/auth_email_job.py",
         "litblogs/auth_security.py",
         "litblogs/base.py",
+        "litblogs/email_verification_delivery.py",
         "litblogs/identity_controls.py",
         "litblogs/manage_accounts.py",
         "litblogs/manage_teacher_invitations.py",
@@ -1422,6 +1425,13 @@ def test_release_artifact_uses_a_runtime_allowlist_instead_of_shipping_the_repos
     assert 'test -f "$staging/tree/litblogs/THIRD_PARTY_EDITOR_NOTICES.md"' in release
     assert 'test -f "$staging/tree/litblogs/rich_text_contract.py"' in release
     assert 'test -f "$staging/tree/litblogs/rich_text_security.py"' in release
+    for auth_email_runtime in (
+        "litblogs/auth_email_delivery.py",
+        "litblogs/auth_email_job.py",
+        "litblogs/email_verification_delivery.py",
+        "litblogs/password_reset_delivery.py",
+    ):
+        assert f'test -f "$staging/tree/{auth_email_runtime}"' in release
     assert "litblogs/migrations/0001_create_federated_identities.sql" not in release
     assert "litblogs/alembic.ini litblogs/migrations litblogs/requirements" not in release
 
