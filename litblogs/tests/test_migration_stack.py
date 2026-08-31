@@ -19,6 +19,11 @@ from sqlalchemy.engine import make_url
 import database
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
+DEPLOY_SCRIPT_DIR = BACKEND_DIR.parent / "deploy" / "scripts"
+sys.path.insert(0, str(DEPLOY_SCRIPT_DIR))
+
+import restore_verify_postgres  # noqa: E402
+
 VERSIONS_DIR = BACKEND_DIR / "migrations" / "versions"
 EXPECTED_REVISIONS = (
     "985a04df032a",
@@ -1178,6 +1183,219 @@ def test_postgresql_upgrade_has_exact_schema_and_acl_when_available(
             assert "No new upgrade operations detected." in cli_check.stdout
 
         database.check_database_readiness(runtime_engine)
+
+        with admin_engine.begin() as connection:
+            connection.exec_driver_sql(
+                "ALTER TABLE public.email_verifications "
+                "OWNER TO litblogs_runtime"
+            )
+            connection.exec_driver_sql(
+                "REVOKE ALL PRIVILEGES ON TABLE public.email_verifications "
+                "FROM litblogs_runtime"
+            )
+            connection.exec_driver_sql(
+                "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE "
+                "public.email_verifications TO litblogs_runtime"
+            )
+            connection.exec_driver_sql(
+                "REVOKE ALL PRIVILEGES ON SEQUENCE "
+                "public.email_verifications_id_seq FROM litblogs_runtime"
+            )
+            connection.exec_driver_sql(
+                "GRANT USAGE, SELECT ON SEQUENCE "
+                "public.email_verifications_id_seq TO litblogs_runtime"
+            )
+        with runtime_engine.connect() as connection:
+            with pytest.raises(RuntimeError, match="privilege boundary"):
+                database.verify_runtime_database_identity(connection)
+        with admin_engine.begin() as connection:
+            connection.exec_driver_sql(
+                "ALTER TABLE public.email_verifications "
+                "OWNER TO litblogs_migrator"
+            )
+            connection.exec_driver_sql(
+                "REVOKE ALL PRIVILEGES ON TABLE public.email_verifications "
+                "FROM litblogs_runtime"
+            )
+            connection.exec_driver_sql(
+                "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE "
+                "public.email_verifications TO litblogs_runtime"
+            )
+            connection.exec_driver_sql(
+                "REVOKE ALL PRIVILEGES ON SEQUENCE "
+                "public.email_verifications_id_seq FROM litblogs_runtime"
+            )
+            connection.exec_driver_sql(
+                "GRANT USAGE, SELECT ON SEQUENCE "
+                "public.email_verifications_id_seq TO litblogs_runtime"
+            )
+        with runtime_engine.connect() as connection:
+            database.verify_runtime_database_identity(connection)
+
+        with admin_engine.begin() as connection:
+            assert (
+                connection.exec_driver_sql(
+                    restore_verify_postgres.SCHEMA_INTEGRITY_SQL
+                ).scalar_one()
+                == "ok"
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE public.email_verifications DROP CONSTRAINT "
+                "ck_email_verification_delivery_status"
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE public.email_verifications ADD CONSTRAINT "
+                "ck_email_verification_delivery_status CHECK (TRUE)"
+            )
+            assert (
+                connection.exec_driver_sql(
+                    restore_verify_postgres.SCHEMA_INTEGRITY_SQL
+                ).scalar_one()
+                == "failed"
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE public.email_verifications DROP CONSTRAINT "
+                "ck_email_verification_delivery_status"
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE public.email_verifications ADD CONSTRAINT "
+                "ck_email_verification_delivery_status CHECK ("
+                "delivery_status IN ('PENDING', 'PROCESSING', 'DELIVERED', 'FAILED'))"
+            )
+            assert (
+                connection.exec_driver_sql(
+                    restore_verify_postgres.SCHEMA_INTEGRITY_SQL
+                ).scalar_one()
+                == "ok"
+            )
+
+            index_tampers = (
+                (
+                    "ix_email_verifications_user_id",
+                    "CREATE UNIQUE INDEX ix_email_verifications_user_id ON "
+                    "public.email_verifications (id)",
+                    "CREATE UNIQUE INDEX ix_email_verifications_user_id ON "
+                    "public.email_verifications (user_id)",
+                ),
+                (
+                    "ix_email_verifications_token_digest",
+                    "CREATE INDEX ix_email_verifications_token_digest ON "
+                    "public.email_verifications (token_digest)",
+                    "CREATE UNIQUE INDEX ix_email_verifications_token_digest ON "
+                    "public.email_verifications (token_digest)",
+                ),
+                (
+                    "ix_email_verifications_delivery_status",
+                    "CREATE INDEX ix_email_verifications_delivery_status ON "
+                    "public.email_verifications (delivery_status) "
+                    "WHERE delivery_status = 'PENDING'",
+                    "CREATE INDEX ix_email_verifications_delivery_status ON "
+                    "public.email_verifications (delivery_status)",
+                ),
+                (
+                    "ix_email_verifications_delivery_status",
+                    "CREATE INDEX ix_email_verifications_delivery_status ON "
+                    "public.email_verifications USING hash (delivery_status)",
+                    "CREATE INDEX ix_email_verifications_delivery_status ON "
+                    "public.email_verifications (delivery_status)",
+                ),
+            )
+            for index_name, tampered_ddl, restored_ddl in index_tampers:
+                connection.exec_driver_sql(
+                    f'DROP INDEX public."{index_name}"'
+                )
+                connection.exec_driver_sql(tampered_ddl)
+                assert (
+                    connection.exec_driver_sql(
+                        restore_verify_postgres.SCHEMA_INTEGRITY_SQL
+                    ).scalar_one()
+                    == "failed"
+                )
+                connection.exec_driver_sql(
+                    f'DROP INDEX public."{index_name}"'
+                )
+                connection.exec_driver_sql(restored_ddl)
+                assert (
+                    connection.exec_driver_sql(
+                        restore_verify_postgres.SCHEMA_INTEGRITY_SQL
+                    ).scalar_one()
+                    == "ok"
+                )
+
+        revision_spec = importlib.util.spec_from_file_location(
+            "email_verification_revision_for_tamper",
+            VERSIONS_DIR / "a82f8f2b1d7c_email_verification.py",
+        )
+        assert revision_spec is not None and revision_spec.loader is not None
+        revision_module = importlib.util.module_from_spec(revision_spec)
+        revision_spec.loader.exec_module(revision_module)
+        renamed_argument_sql = revision_module.OPERATOR_FUNCTIONS_SQL.replace(
+            "p_email VARCHAR(100)",
+            "renamed_email VARCHAR(100)",
+            1,
+        )
+        account_signature = (
+            "public.operator_set_account_status("
+            "VARCHAR, BOOLEAN, VARCHAR, VARCHAR)"
+        )
+
+        def catalog_runner(command_parts, **_kwargs):
+            with admin_engine.connect() as connection:
+                serialized = connection.exec_driver_sql(
+                    restore_verify_postgres.OPERATOR_ROUTINE_CATALOG_SQL
+                ).scalar_one()
+            return subprocess.CompletedProcess(
+                command_parts,
+                0,
+                stdout=f"{serialized}\n",
+                stderr="",
+            )
+
+        restore_verify_postgres._verify_operator_routine_contract(
+            {},
+            runner=catalog_runner,
+        )
+        with admin_engine.begin() as connection:
+            connection.exec_driver_sql(f"DROP FUNCTION {account_signature}")
+            connection.exec_driver_sql(renamed_argument_sql)
+            connection.exec_driver_sql(
+                f"ALTER FUNCTION {account_signature} "
+                "OWNER TO litblog_identity_owner"
+            )
+            connection.exec_driver_sql(
+                f"REVOKE ALL ON FUNCTION {account_signature} FROM PUBLIC"
+            )
+            connection.exec_driver_sql(
+                f"GRANT EXECUTE ON FUNCTION {account_signature} "
+                "TO litblog_account_operator"
+            )
+
+        with pytest.raises(
+            restore_verify_postgres.PostgresOperatorError,
+            match="operator routine integrity",
+        ):
+            restore_verify_postgres._verify_operator_routine_contract(
+                {},
+                runner=catalog_runner,
+            )
+        with admin_engine.begin() as connection:
+            connection.exec_driver_sql(f"DROP FUNCTION {account_signature}")
+            connection.exec_driver_sql(revision_module.OPERATOR_FUNCTIONS_SQL)
+            connection.exec_driver_sql(
+                f"ALTER FUNCTION {account_signature} "
+                "OWNER TO litblog_identity_owner"
+            )
+            connection.exec_driver_sql(
+                f"REVOKE ALL ON FUNCTION {account_signature} FROM PUBLIC"
+            )
+            connection.exec_driver_sql(
+                f"GRANT EXECUTE ON FUNCTION {account_signature} "
+                "TO litblog_account_operator"
+            )
+        restore_verify_postgres._verify_operator_routine_contract(
+            {},
+            runner=catalog_runner,
+        )
 
         with migrator_engine.begin() as connection:
             connection.exec_driver_sql(

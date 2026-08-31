@@ -23,6 +23,7 @@ EXPECTED_RUNTIME_BOUNDARY = (
     True,
     True,
     True,
+    True,
 )
 
 
@@ -100,6 +101,13 @@ def test_runtime_database_identity_accepts_only_the_exact_runtime_boundary():
         "aclexplode",
         "is_grantable",
         "public",
+        "runtime_owns_no_application_objects",
+        "pg_catalog.pg_database",
+        "database_record.datdba",
+        "namespace.nspowner",
+        "relation.relowner",
+        "routine.proowner",
+        "object_type.typowner",
     ):
         assert required_fragment in statement
     for boundary_name in (

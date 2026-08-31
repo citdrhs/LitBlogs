@@ -23,6 +23,7 @@ EXPECTED_RUNTIME_DATABASE_BOUNDARY = (
     True,
     True,
     True,
+    True,
 )
 
 
@@ -369,7 +370,28 @@ def verify_runtime_database_identity(connection) -> None:
                     SELECT * FROM actual_function_acl
                     EXCEPT
                     SELECT * FROM expected_function_acl
-                ) AS function_acl_is_exact
+                ) AS function_acl_is_exact,
+                NOT EXISTS (
+                    SELECT 1
+                    FROM pg_catalog.pg_database AS database_record
+                    WHERE database_record.datdba = roles.oid
+                ) AND NOT EXISTS (
+                    SELECT 1
+                    FROM pg_catalog.pg_namespace AS namespace
+                    WHERE namespace.nspowner = roles.oid
+                ) AND NOT EXISTS (
+                    SELECT 1
+                    FROM pg_catalog.pg_class AS relation
+                    WHERE relation.relowner = roles.oid
+                ) AND NOT EXISTS (
+                    SELECT 1
+                    FROM pg_catalog.pg_proc AS routine
+                    WHERE routine.proowner = roles.oid
+                ) AND NOT EXISTS (
+                    SELECT 1
+                    FROM pg_catalog.pg_type AS object_type
+                    WHERE object_type.typowner = roles.oid
+                ) AS runtime_owns_no_application_objects
             FROM pg_catalog.pg_roles AS roles
             WHERE roles.rolname = current_user
             """

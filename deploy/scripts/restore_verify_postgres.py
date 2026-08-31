@@ -113,6 +113,26 @@ EXPECTED_OPERATOR_ROUTINE_SIGNATURES = {
         ),
     ),
 }
+EXPECTED_OPERATOR_ROUTINE_ARGUMENT_NAMES = {
+    "operator_set_account_status": [
+        "p_email",
+        "p_disabled",
+        "p_actor_identifier",
+        "p_resource_digest",
+    ],
+    "operator_create_teacher_invitation": [
+        "p_token_digest",
+        "p_email_digest",
+        "p_expires_at",
+        "p_actor_identifier",
+        "p_resource_digest",
+    ],
+    "operator_revoke_teacher_invitation": [
+        "p_email_digest",
+        "p_actor_identifier",
+        "p_resource_digest",
+    ],
+}
 OPERATOR_ROUTINE_SOURCE = re.compile(
     r"CREATE OR REPLACE FUNCTION public\."
     r"(?P<name>operator_[a-z_]+)\((?P<arguments>.*?)\)\n"
@@ -202,6 +222,9 @@ def _load_expected_operator_routine_contract(
                 "security_definer": True,
                 "configuration": ["search_path=pg_catalog, pg_temp"],
                 "argument_defaults": 0,
+                "argument_names": EXPECTED_OPERATOR_ROUTINE_ARGUMENT_NAMES[name],
+                "argument_modes": None,
+                "all_argument_types": None,
                 "owner": "litblog_identity_owner",
             }
     if set(contract) != {
@@ -233,6 +256,9 @@ SELECT COALESCE(
             'security_definer', routine.prosecdef,
             'configuration', routine.proconfig,
             'argument_defaults', routine.pronargdefaults,
+            'argument_names', routine.proargnames,
+            'argument_modes', routine.proargmodes,
+            'all_argument_types', routine.proallargtypes,
             'owner', owner.rolname
         ) ORDER BY routine.proname,
             pg_catalog.oidvectortypes(routine.proargtypes)
@@ -421,6 +447,236 @@ actual_foreign_keys AS (
     WHERE constraint_table.constraint_type = 'FOREIGN KEY'
       AND constraint_table.table_schema = 'public'
       AND foreign_column.table_schema = 'public'
+),
+expected_email_verification_checks(
+    constraint_name,
+    definition,
+    is_validated,
+    no_inherit
+) AS (
+    VALUES
+        (
+            'ck_email_verification_delivery_status',
+            $check$CHECK (((delivery_status)::text = ANY ((ARRAY['PENDING'::character varying, 'PROCESSING'::character varying, 'DELIVERED'::character varying, 'FAILED'::character varying])::text[])))$check$,
+            TRUE,
+            FALSE
+        ),
+        (
+            'ck_email_verification_delivery_claim_digest',
+            $check$CHECK (((delivery_claim_digest IS NULL) OR (length((delivery_claim_digest)::text) = 64)))$check$,
+            TRUE,
+            FALSE
+        ),
+        (
+            'ck_email_verification_delivery_claim_digest_lower_hex',
+            $check$CHECK (((delivery_claim_digest IS NULL) OR ((delivery_claim_digest)::text ~ '^[0-9a-f]{64}$'::text)))$check$,
+            TRUE,
+            FALSE
+        ),
+        (
+            'ck_email_verification_token_digest_lower_hex',
+            $check$CHECK (((token_digest IS NULL) OR ((token_digest)::text ~ '^[0-9a-f]{64}$'::text)))$check$,
+            TRUE,
+            FALSE
+        )
+),
+actual_email_verification_checks AS (
+    SELECT
+        constraint_record.conname::text,
+        pg_catalog.pg_get_constraintdef(constraint_record.oid, FALSE),
+        constraint_record.convalidated,
+        constraint_record.connoinherit
+    FROM pg_catalog.pg_constraint AS constraint_record
+    WHERE constraint_record.conrelid =
+          pg_catalog.to_regclass('public.email_verifications')
+      AND constraint_record.contype = 'c'
+),
+expected_email_verification_indexes(
+    index_name,
+    key_columns,
+    key_definitions,
+    included_columns,
+    is_unique,
+    is_primary,
+    is_exclusion,
+    predicate,
+    access_method,
+    key_attribute_count,
+    total_attribute_count,
+    is_valid,
+    is_ready,
+    is_live,
+    nulls_not_distinct
+) AS (
+    VALUES
+        (
+            'email_verifications_pkey',
+            ARRAY['id']::text[],
+            ARRAY['id']::text[],
+            ARRAY[]::text[],
+            TRUE,
+            TRUE,
+            FALSE,
+            NULL::text,
+            'btree',
+            1,
+            1,
+            TRUE,
+            TRUE,
+            TRUE,
+            FALSE
+        ),
+        (
+            'ix_email_verifications_id',
+            ARRAY['id']::text[],
+            ARRAY['id']::text[],
+            ARRAY[]::text[],
+            FALSE,
+            FALSE,
+            FALSE,
+            NULL::text,
+            'btree',
+            1,
+            1,
+            TRUE,
+            TRUE,
+            TRUE,
+            FALSE
+        ),
+        (
+            'ix_email_verifications_user_id',
+            ARRAY['user_id']::text[],
+            ARRAY['user_id']::text[],
+            ARRAY[]::text[],
+            TRUE,
+            FALSE,
+            FALSE,
+            NULL::text,
+            'btree',
+            1,
+            1,
+            TRUE,
+            TRUE,
+            TRUE,
+            FALSE
+        ),
+        (
+            'ix_email_verifications_token_digest',
+            ARRAY['token_digest']::text[],
+            ARRAY['token_digest']::text[],
+            ARRAY[]::text[],
+            TRUE,
+            FALSE,
+            FALSE,
+            NULL::text,
+            'btree',
+            1,
+            1,
+            TRUE,
+            TRUE,
+            TRUE,
+            FALSE
+        ),
+        (
+            'ix_email_verifications_delivery_status',
+            ARRAY['delivery_status']::text[],
+            ARRAY['delivery_status']::text[],
+            ARRAY[]::text[],
+            FALSE,
+            FALSE,
+            FALSE,
+            NULL::text,
+            'btree',
+            1,
+            1,
+            TRUE,
+            TRUE,
+            TRUE,
+            FALSE
+        )
+),
+actual_email_verification_indexes AS (
+    SELECT
+        index_relation.relname::text,
+        index_keys.key_columns,
+        index_keys.key_definitions,
+        index_keys.included_columns,
+        index_record.indisunique,
+        index_record.indisprimary,
+        index_record.indisexclusion,
+        pg_catalog.pg_get_expr(
+            index_record.indpred,
+            index_record.indrelid,
+            FALSE
+        ),
+        access_method.amname::text,
+        index_record.indnkeyatts,
+        index_record.indnatts,
+        index_record.indisvalid,
+        index_record.indisready,
+        index_record.indislive,
+        index_record.indnullsnotdistinct
+    FROM pg_catalog.pg_index AS index_record
+    JOIN pg_catalog.pg_class AS index_relation
+      ON index_relation.oid = index_record.indexrelid
+    JOIN pg_catalog.pg_am AS access_method
+      ON access_method.oid = index_relation.relam
+    CROSS JOIN LATERAL (
+        SELECT
+            COALESCE(
+                pg_catalog.array_agg(
+                    COALESCE(
+                        attribute.attname::text,
+                        pg_catalog.pg_get_indexdef(
+                            index_record.indexrelid,
+                            index_key.ordinality::integer,
+                            FALSE
+                        )
+                    )
+                    ORDER BY index_key.ordinality
+                ) FILTER (
+                    WHERE index_key.ordinality <= index_record.indnkeyatts
+                ),
+                ARRAY[]::text[]
+            ) AS key_columns,
+            COALESCE(
+                pg_catalog.array_agg(
+                    pg_catalog.pg_get_indexdef(
+                        index_record.indexrelid,
+                        index_key.ordinality::integer,
+                        FALSE
+                    )
+                    ORDER BY index_key.ordinality
+                ) FILTER (
+                    WHERE index_key.ordinality <= index_record.indnkeyatts
+                ),
+                ARRAY[]::text[]
+            ) AS key_definitions,
+            COALESCE(
+                pg_catalog.array_agg(
+                    COALESCE(
+                        attribute.attname::text,
+                        pg_catalog.pg_get_indexdef(
+                            index_record.indexrelid,
+                            index_key.ordinality::integer,
+                            FALSE
+                        )
+                    )
+                    ORDER BY index_key.ordinality
+                ) FILTER (
+                    WHERE index_key.ordinality > index_record.indnkeyatts
+                ),
+                ARRAY[]::text[]
+            ) AS included_columns
+        FROM pg_catalog.unnest(index_record.indkey) WITH ORDINALITY
+             AS index_key(attnum, ordinality)
+        LEFT JOIN pg_catalog.pg_attribute AS attribute
+          ON attribute.attrelid = index_record.indrelid
+         AND attribute.attnum = index_key.attnum
+         AND NOT attribute.attisdropped
+    ) AS index_keys
+    WHERE index_record.indrelid =
+          pg_catalog.to_regclass('public.email_verifications')
 )
 SELECT CASE WHEN COUNT(to_regclass('public.' || name)) = COUNT(*)
                  AND BOOL_AND(to_regclass('public.' || name) IS NOT NULL)
@@ -468,25 +724,31 @@ SELECT CASE WHEN COUNT(to_regclass('public.' || name)) = COUNT(*)
                      FROM pg_catalog.pg_constraint AS verification_constraint
                      WHERE verification_constraint.conrelid =
                            to_regclass('public.email_verifications')
-                       AND verification_constraint.conname IN (
-                           'email_verifications_pkey',
-                           'ck_email_verification_delivery_status',
-                           'ck_email_verification_delivery_claim_digest',
-                           'ck_email_verification_delivery_claim_digest_lower_hex',
-                           'ck_email_verification_token_digest_lower_hex'
-                       )
-                     GROUP BY verification_constraint.conrelid
-                     HAVING COUNT(*) = 5
+                       AND verification_constraint.conname =
+                           'email_verifications_pkey'
+                       AND verification_constraint.contype = 'p'
+                       AND verification_constraint.convalidated
                  )
-                 AND to_regclass(
-                     'public.ix_email_verifications_user_id'
-                 ) IS NOT NULL
-                 AND to_regclass(
-                     'public.ix_email_verifications_token_digest'
-                 ) IS NOT NULL
-                 AND to_regclass(
-                     'public.ix_email_verifications_delivery_status'
-                 ) IS NOT NULL
+                 AND NOT EXISTS (
+                     SELECT * FROM expected_email_verification_checks
+                     EXCEPT
+                     SELECT * FROM actual_email_verification_checks
+                 )
+                 AND NOT EXISTS (
+                     SELECT * FROM actual_email_verification_checks
+                     EXCEPT
+                     SELECT * FROM expected_email_verification_checks
+                 )
+                 AND NOT EXISTS (
+                     SELECT * FROM expected_email_verification_indexes
+                     EXCEPT
+                     SELECT * FROM actual_email_verification_indexes
+                 )
+                 AND NOT EXISTS (
+                     SELECT * FROM actual_email_verification_indexes
+                     EXCEPT
+                     SELECT * FROM expected_email_verification_indexes
+                 )
                  AND (
                      to_regclass('public.federated_identities') IS NULL
                      OR (
@@ -1498,6 +1760,9 @@ def _verify_operator_routine_contract(
             "security_definer",
             "configuration",
             "argument_defaults",
+            "argument_names",
+            "argument_modes",
+            "all_argument_types",
             "owner",
         }
         for record in records:

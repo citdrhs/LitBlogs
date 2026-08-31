@@ -115,11 +115,13 @@ class _RestoreRunner:
         inventory,
         *,
         current_head_integrity="ok:0",
+        schema_integrity="ok",
         target_state="absent",
     ):
         self.calls = []
         self.inventory = inventory
         self.current_head_integrity = current_head_integrity
+        self.schema_integrity = schema_integrity
         self.target_state = target_state
 
     def __call__(self, command, **kwargs):
@@ -135,7 +137,7 @@ class _RestoreRunner:
             if "FROM pg_database" in sql:
                 stdout = f"{self.target_state}\n"
             elif sql == restore_verify_postgres.SCHEMA_INTEGRITY_SQL:
-                stdout = "ok\n"
+                stdout = f"{self.schema_integrity}\n"
             elif sql == restore_verify_postgres.MIGRATION_STATE_SQL:
                 stdout = "versioned\n"
             elif sql == "SELECT version_num FROM alembic_version;":
@@ -167,6 +169,61 @@ class _RestoreRunner:
                     for row in rows
                 )
         return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+
+class _RoutineCatalogRunner:
+    def __init__(self, records):
+        self.records = records
+
+    def __call__(self, command, **_kwargs):
+        import subprocess
+
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(self.records) + "\n",
+            stderr="",
+        )
+
+
+def _routine_catalog_records_with_argument_metadata():
+    argument_names = {
+        "operator_set_account_status": [
+            "p_email",
+            "p_disabled",
+            "p_actor_identifier",
+            "p_resource_digest",
+        ],
+        "operator_create_teacher_invitation": [
+            "p_token_digest",
+            "p_email_digest",
+            "p_expires_at",
+            "p_actor_identifier",
+            "p_resource_digest",
+        ],
+        "operator_revoke_teacher_invitation": [
+            "p_email_digest",
+            "p_actor_identifier",
+            "p_resource_digest",
+        ],
+    }
+    records = []
+    for signature, expected in (
+        restore_verify_postgres.EXPECTED_OPERATOR_ROUTINE_CONTRACT.items()
+    ):
+        name = signature.split("(", 1)[0]
+        record = {key: value for key, value in expected.items() if key != "source"}
+        record.update(
+            {
+                "signature": signature,
+                "source_hex": expected["source"].encode("utf-8").hex(),
+                "argument_names": argument_names[name],
+                "argument_modes": None,
+                "all_argument_types": None,
+            }
+        )
+        records.append(record)
+    return records
 
 
 def test_registry_inventory_contains_every_state_and_file_inventory_excludes_tombstones():
@@ -968,6 +1025,37 @@ def test_current_head_restore_fails_closed_on_owner_or_acl_drift(tmp_path):
     assert not list(restore_root.glob("objects/*/*"))
 
 
+def test_current_head_restore_fails_closed_on_schema_definition_drift(tmp_path):
+    database, uploads, assets, manifest, inventory, _payloads = _recovery_fixture(tmp_path)
+    upload_snapshot_common.write_coupled_manifest(
+        manifest,
+        database_path=database,
+        upload_archive_path=uploads,
+        asset_inventory_path=assets,
+        inventory=inventory,
+        created_at="2026-08-22T12:00:00Z",
+    )
+    restore_root = tmp_path / "litblog_restore_uploads_20260822_schema"
+    restore_root.mkdir(mode=0o700)
+
+    with pytest.raises(
+        restore_verify_postgres.PostgresOperatorError,
+        match="schema integrity",
+    ):
+        restore_verify_postgres.restore_coupled_and_verify(
+            manifest,
+            "litblog_restore_verify_20260822_schema",
+            upload_target=restore_root,
+            confirmation="litblog_restore_verify_20260822_schema",
+            database_url=DATABASE_URL,
+            runner=_RestoreRunner(inventory, schema_integrity="failed"),
+            drift_checker=lambda _connection, _target: None,
+            tls_custody_validator=lambda _connection: None,
+        )
+
+    assert not list(restore_root.glob("objects/*/*"))
+
+
 def test_restore_requires_isolated_nologin_roles_before_creating_targets(tmp_path):
     database, uploads, assets, manifest, inventory, _payloads = _recovery_fixture(tmp_path)
     upload_snapshot_common.write_coupled_manifest(
@@ -1065,8 +1153,108 @@ def test_restore_email_verification_schema_data_and_acl_inventory_is_exact():
         "token_digest",
         "delivery_status",
         "email_verifications_id_seq",
+        "expected_email_verification_checks",
+        "actual_email_verification_checks",
+        "pg_catalog.pg_get_constraintdef",
+        "expected_email_verification_indexes",
+        "actual_email_verification_indexes",
+        "pg_catalog.pg_index",
+        "pg_catalog.pg_get_expr",
+        "pg_catalog.pg_get_indexdef",
+        "WITH ORDINALITY",
+        "index_record.indisunique",
+        "index_record.indisprimary",
+        "index_record.indnkeyatts",
+        "index_record.indnatts",
+        "index_record.indisvalid",
+        "index_record.indisready",
+        "index_record.indislive",
+        "index_record.indisexclusion",
+        "index_record.indnullsnotdistinct",
+        "access_method.amname",
+        "ARRAY['user_id']::text[]",
+        "ARRAY['token_digest']::text[]",
+        "ARRAY['delivery_status']::text[]",
     ):
         assert fragment in schema_probe
+
+    normalized_schema_probe = " ".join(schema_probe.split())
+    for expected_check in (
+        (
+            "'ck_email_verification_delivery_status', "
+            "$check$CHECK (((delivery_status)::text = ANY ((ARRAY["
+            "'PENDING'::character varying, 'PROCESSING'::character varying, "
+            "'DELIVERED'::character varying, 'FAILED'::character varying]"
+            ")::text[])))$check$, TRUE, FALSE"
+        ),
+        (
+            "'ck_email_verification_delivery_claim_digest', "
+            "$check$CHECK (((delivery_claim_digest IS NULL) OR "
+            "(length((delivery_claim_digest)::text) = 64)))$check$, TRUE, FALSE"
+        ),
+        (
+            "'ck_email_verification_delivery_claim_digest_lower_hex', "
+            "$check$CHECK (((delivery_claim_digest IS NULL) OR "
+            "((delivery_claim_digest)::text ~ "
+            "'^[0-9a-f]{64}$'::text)))$check$, TRUE, FALSE"
+        ),
+        (
+            "'ck_email_verification_token_digest_lower_hex', "
+            "$check$CHECK (((token_digest IS NULL) OR ((token_digest)::text ~ "
+            "'^[0-9a-f]{64}$'::text)))$check$, TRUE, FALSE"
+        ),
+    ):
+        assert expected_check in normalized_schema_probe
+
+    for expected_index in (
+        (
+            "'email_verifications_pkey', ARRAY['id']::text[], "
+            "ARRAY['id']::text[], ARRAY[]::text[], TRUE, TRUE, FALSE, "
+            "NULL::text, 'btree', 1, 1, TRUE, TRUE, TRUE, FALSE"
+        ),
+        (
+            "'ix_email_verifications_id', ARRAY['id']::text[], "
+            "ARRAY['id']::text[], ARRAY[]::text[], FALSE, FALSE, FALSE, "
+            "NULL::text, 'btree', 1, 1, TRUE, TRUE, TRUE, FALSE"
+        ),
+        (
+            "'ix_email_verifications_user_id', ARRAY['user_id']::text[], "
+            "ARRAY['user_id']::text[], ARRAY[]::text[], TRUE, FALSE, FALSE, "
+            "NULL::text, 'btree', 1, 1, TRUE, TRUE, TRUE, FALSE"
+        ),
+        (
+            "'ix_email_verifications_token_digest', "
+            "ARRAY['token_digest']::text[], ARRAY['token_digest']::text[], "
+            "ARRAY[]::text[], TRUE, FALSE, FALSE, NULL::text, 'btree', "
+            "1, 1, TRUE, TRUE, TRUE, FALSE"
+        ),
+        (
+            "'ix_email_verifications_delivery_status', "
+            "ARRAY['delivery_status']::text[], ARRAY['delivery_status']::text[], "
+            "ARRAY[]::text[], FALSE, FALSE, FALSE, NULL::text, 'btree', "
+            "1, 1, TRUE, TRUE, TRUE, FALSE"
+        ),
+    ):
+        assert expected_index in normalized_schema_probe
+
+    for expected_inventory, actual_inventory in (
+        (
+            "expected_email_verification_checks",
+            "actual_email_verification_checks",
+        ),
+        (
+            "expected_email_verification_indexes",
+            "actual_email_verification_indexes",
+        ),
+    ):
+        assert (
+            f"SELECT * FROM {expected_inventory} EXCEPT "
+            f"SELECT * FROM {actual_inventory}"
+        ) in normalized_schema_probe
+        assert (
+            f"SELECT * FROM {actual_inventory} EXCEPT "
+            f"SELECT * FROM {expected_inventory}"
+        ) in normalized_schema_probe
 
     core_probe = restore_verify_postgres.CORE_DATA_INTEGRITY_SQL
     assert "FROM public.email_verifications" in core_probe
@@ -1138,8 +1326,18 @@ def test_restore_pins_exact_reviewed_operator_routine_bodies_and_metadata():
             "security_definer": True,
             "configuration": ["search_path=pg_catalog, pg_temp"],
             "argument_defaults": 0,
+            "argument_names": expected["argument_names"],
+            "argument_modes": None,
+            "all_argument_types": None,
             "owner": "litblog_identity_owner",
         }
+
+    assert contract[account_signature]["argument_names"] == [
+        "p_email",
+        "p_disabled",
+        "p_actor_identifier",
+        "p_resource_digest",
+    ]
 
     catalog_probe = restore_verify_postgres.OPERATOR_ROUTINE_CATALOG_SQL
     for fragment in (
@@ -1154,9 +1352,31 @@ def test_restore_pins_exact_reviewed_operator_routine_bodies_and_metadata():
         "routine.prosecdef",
         "routine.proconfig",
         "routine.pronargdefaults",
+        "routine.proargnames",
+        "routine.proargmodes",
+        "routine.proallargtypes",
         "owner.rolname",
     ):
         assert fragment in catalog_probe
+
+
+def test_restore_accepts_only_exact_operator_argument_metadata():
+    records = _routine_catalog_records_with_argument_metadata()
+
+    restore_verify_postgres._verify_operator_routine_contract(
+        {},
+        runner=_RoutineCatalogRunner(records),
+    )
+
+    records[0]["argument_names"][0] = "renamed_argument"
+    with pytest.raises(
+        restore_verify_postgres.PostgresOperatorError,
+        match="operator routine integrity",
+    ):
+        restore_verify_postgres._verify_operator_routine_contract(
+            {},
+            runner=_RoutineCatalogRunner(records),
+        )
 
 
 @pytest.mark.parametrize("mutation", ["missing", "duplicate"])
