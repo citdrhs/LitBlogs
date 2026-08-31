@@ -565,6 +565,7 @@ def test_restore_verifier_expected_head_matches_the_release_migration_graph():
     migration_head = ScriptDirectory.from_config(config).get_current_head()
 
     assert restore_verify_postgres.EXPECTED_ALEMBIC_HEAD == migration_head
+    assert restore_verify_postgres.EXPECTED_ALEMBIC_HEAD == "a82f8f2b1d7c"
 
 
 def test_backup_publishes_custom_archive_and_matching_checksum_manifest(tmp_path):
@@ -814,7 +815,11 @@ def test_restore_creates_only_a_new_synthetic_database_and_runs_integrity_checks
             {"returncode": 0, "stdout": "", "stderr": ""},
             {"returncode": 0, "stdout": "ok\n", "stderr": ""},
             {"returncode": 0, "stdout": "versioned\n", "stderr": ""},
-            {"returncode": 0, "stdout": "f1ad78b2035f\n", "stderr": ""},
+            {
+                "returncode": 0,
+                "stdout": f"{restore_verify_postgres.EXPECTED_ALEMBIC_HEAD}\n",
+                "stderr": "",
+            },
             {"returncode": 0, "stdout": "ok\n", "stderr": ""},
             {"returncode": 0, "stdout": "ok:3\n", "stderr": ""},
             {
@@ -840,7 +845,7 @@ def test_restore_creates_only_a_new_synthetic_database_and_runs_integrity_checks
 
     assert result.target_database == target
     assert result.migration_state == "current_head"
-    assert result.alembic_revision == "f1ad78b2035f"
+    assert result.alembic_revision == restore_verify_postgres.EXPECTED_ALEMBIC_HEAD
     assert result.federated_identity_count == 3
     assert drift_checks == [("litblogs", target)]
     commands = [call[0] for call in runner.calls]
@@ -1005,7 +1010,11 @@ def test_verify_existing_is_read_only_and_requires_current_head_and_mapping_coun
             {"returncode": 0, "stdout": "exists\n", "stderr": ""},
             {"returncode": 0, "stdout": "ok\n", "stderr": ""},
             {"returncode": 0, "stdout": "versioned\n", "stderr": ""},
-            {"returncode": 0, "stdout": "f1ad78b2035f\n", "stderr": ""},
+            {
+                "returncode": 0,
+                "stdout": f"{restore_verify_postgres.EXPECTED_ALEMBIC_HEAD}\n",
+                "stderr": "",
+            },
             {"returncode": 0, "stdout": "ok\n", "stderr": ""},
             {"returncode": 0, "stdout": "ok:4\n", "stderr": ""},
             {
@@ -1029,7 +1038,7 @@ def test_verify_existing_is_read_only_and_requires_current_head_and_mapping_coun
     )
 
     assert result.migration_state == "current_head"
-    assert result.alembic_revision == "f1ad78b2035f"
+    assert result.alembic_revision == restore_verify_postgres.EXPECTED_ALEMBIC_HEAD
     assert result.federated_identity_count == 4
     assert drift_checks == [("litblogs", target)]
     assert [Path(call[0][0]).name for call in runner.calls] == ["psql"] * 7
@@ -1053,7 +1062,11 @@ def test_current_head_restore_aborts_when_alembic_detects_schema_drift(tmp_path)
             {"returncode": 0, "stdout": "", "stderr": ""},
             {"returncode": 0, "stdout": "ok\n", "stderr": ""},
             {"returncode": 0, "stdout": "versioned\n", "stderr": ""},
-            {"returncode": 0, "stdout": "f1ad78b2035f\n", "stderr": ""},
+            {
+                "returncode": 0,
+                "stdout": f"{restore_verify_postgres.EXPECTED_ALEMBIC_HEAD}\n",
+                "stderr": "",
+            },
             {"returncode": 0, "stdout": "ok\n", "stderr": ""},
             {"returncode": 0, "stdout": "ok:0\n", "stderr": ""},
             {
@@ -1085,7 +1098,11 @@ def test_verify_existing_rejects_mapping_count_mismatch_without_mutation(tmp_pat
             {"returncode": 0, "stdout": "exists\n", "stderr": ""},
             {"returncode": 0, "stdout": "ok\n", "stderr": ""},
             {"returncode": 0, "stdout": "versioned\n", "stderr": ""},
-            {"returncode": 0, "stdout": "f1ad78b2035f\n", "stderr": ""},
+            {
+                "returncode": 0,
+                "stdout": f"{restore_verify_postgres.EXPECTED_ALEMBIC_HEAD}\n",
+                "stderr": "",
+            },
             {"returncode": 0, "stdout": "ok\n", "stderr": ""},
             {"returncode": 0, "stdout": "ok:3\n", "stderr": ""},
         ]
@@ -1983,6 +2000,7 @@ def test_runbook_matches_the_runtime_database_identity_postflight():
         "classes",
         "comment_likes",
         "comments",
+        "email_verifications",
         "federated_identities",
         "password_resets",
         "post_likes",
@@ -2020,6 +2038,45 @@ def test_runbook_matches_the_runtime_database_identity_postflight():
     )
     assert "must fail with insufficient_privilege" in runbook
     assert "create table litblogs_runtime_privilege_probe" in runbook
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "deploy/README.md",
+        "docs/operations/production-runbook.md",
+        "litblogs/migrations/README-identity-controls.md",
+    ),
+)
+def test_operator_docs_publish_the_email_verification_acl_and_routine_contract(
+    relative_path,
+):
+    documentation = (ROOT_DIR / relative_path).read_text(encoding="utf-8").lower()
+    normalized = " ".join(documentation.replace("`", "").split())
+
+    assert "a82f8f2b1d7c" in documentation
+    assert "email_verifications" in documentation
+    assert "email_verifications_id_seq" in documentation
+    assert "select, insert, update, delete" in documentation
+    assert "usage, select" in documentation
+    assert "select (user_id)" in normalized
+    assert (
+        "update (token_digest, expires_at, delivery_status, "
+        "delivery_attempted_at, delivery_claim_digest)" in normalized
+    )
+    assert "litblog_identity_owner" in documentation
+    assert "no sequence" in documentation
+    assert "operator_set_account_status" in documentation
+    assert "invalidates" in documentation
+    assert "latest reviewed definition" in documentation
+
+
+def test_repository_policy_validator_pins_the_email_verification_head():
+    validator = (ROOT_DIR / "scripts/validate-repository-policy.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'EXPECTED_ALEMBIC_HEAD = "a82f8f2b1d7c"' in validator
 
 
 def test_runtime_browser_configuration_is_backend_owned_and_checked_in_the_bundle():

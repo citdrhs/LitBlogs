@@ -49,6 +49,7 @@ class User(Base):
     is_admin = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     disabled_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    email_verified_at = Column(DateTime(timezone=True), nullable=True)
     bio = Column(String(500), nullable=True)
     profile_image = Column(String(255), nullable=True)
     cover_image = Column(String(255), nullable=True)
@@ -736,5 +737,53 @@ class PasswordReset(Base):
         CheckConstraint(
             "token IS NULL OR token ~ '^[0-9a-f]{64}$'",
             name="ck_password_reset_token_lower_hex",
+        ).ddl_if(dialect="postgresql"),
+    )
+
+
+class EmailVerification(Base):
+    __tablename__ = "email_verifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(
+        Integer,
+        ForeignKey(
+            "users.id",
+            ondelete="CASCADE",
+            name="fk_email_verifications_user_id_users",
+        ),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    token_digest = Column(String(64), unique=True, nullable=True, index=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=_utc_now_naive,
+        server_default=func.now(),
+        nullable=False,
+    )
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    delivery_status = Column(String(16), default="PENDING", nullable=False, index=True)
+    delivery_attempted_at = Column(DateTime(timezone=True), nullable=True)
+    delivery_claim_digest = Column(String(64), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "delivery_status IN ('PENDING', 'PROCESSING', 'DELIVERED', 'FAILED')",
+            name="ck_email_verification_delivery_status",
+        ),
+        CheckConstraint(
+            "delivery_claim_digest IS NULL OR length(delivery_claim_digest) = 64",
+            name="ck_email_verification_delivery_claim_digest",
+        ),
+        CheckConstraint(
+            "delivery_claim_digest IS NULL OR "
+            "delivery_claim_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_email_verification_delivery_claim_digest_lower_hex",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "token_digest IS NULL OR token_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_email_verification_token_digest_lower_hex",
         ).ddl_if(dialect="postgresql"),
     )

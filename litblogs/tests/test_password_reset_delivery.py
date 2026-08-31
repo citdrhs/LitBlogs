@@ -206,6 +206,7 @@ def test_worker_expected_revision_tracks_the_repository_head():
     scripts = ScriptDirectory.from_config(config)
 
     assert password_reset_delivery.EXPECTED_ALEMBIC_HEAD == scripts.get_current_head()
+    assert password_reset_delivery.EXPECTED_ALEMBIC_HEAD == "a82f8f2b1d7c"
 
 
 def test_dispatch_batch_is_bounded_and_uses_claim_capability_tokens():

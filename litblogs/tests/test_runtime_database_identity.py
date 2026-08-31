@@ -18,6 +18,11 @@ EXPECTED_RUNTIME_BOUNDARY = (
     False,
     False,
     True,
+    True,
+    True,
+    True,
+    True,
+    True,
 )
 
 
@@ -76,6 +81,35 @@ def test_runtime_database_identity_accepts_only_the_exact_runtime_boundary():
     assert "pg_catalog.has_schema_privilege" in statement
     assert "pg_catalog.has_database_privilege" in statement
     assert "pg_catalog.current_schemas(false)" in statement
+    for required_fragment in (
+        "runtime_crud_tables",
+        "email_verifications",
+        "runtime_sequences",
+        "email_verifications_id_seq",
+        "expected_schema_acl",
+        "actual_schema_acl",
+        "expected_table_acl",
+        "actual_table_acl",
+        "expected_column_acl",
+        "actual_column_acl",
+        "expected_sequence_acl",
+        "actual_sequence_acl",
+        "expected_function_acl",
+        "actual_function_acl",
+        "alembic_version",
+        "aclexplode",
+        "is_grantable",
+        "public",
+    ):
+        assert required_fragment in statement
+    for boundary_name in (
+        "schema_acl_is_exact",
+        "table_acl_is_exact",
+        "column_acl_is_exact",
+        "sequence_acl_is_exact",
+        "function_acl_is_exact",
+    ):
+        assert boundary_name in statement
 
 
 @pytest.mark.parametrize("field_index", range(len(EXPECTED_RUNTIME_BOUNDARY)))

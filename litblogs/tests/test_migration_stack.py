@@ -28,6 +28,7 @@ EXPECTED_REVISIONS = (
     "f0684bf8ff2e",
     "b983b7aebe7b",
     "f1ad78b2035f",
+    "a82f8f2b1d7c",
 )
 EXPECTED_TABLES = (
     "assignment_drafts",
@@ -41,6 +42,7 @@ EXPECTED_TABLES = (
     "classes",
     "comment_likes",
     "comments",
+    "email_verifications",
     "federated_identities",
     "operator_audit_events",
     "password_resets",
@@ -52,6 +54,9 @@ EXPECTED_TABLES = (
     "upload_assets",
     "user_settings",
     "users",
+)
+HISTORICAL_F1_TABLES = tuple(
+    table_name for table_name in EXPECTED_TABLES if table_name != "email_verifications"
 )
 
 EXPECTED_PRODUCTION_MIGRATOR_BOUNDARY = (
@@ -263,8 +268,120 @@ def test_final_acl_revision_uses_explicit_runtime_grants_and_operator_boundaries
         "ALTER DEFAULT PRIVILEGES FOR ROLE litblogs_migrator IN SCHEMA public"
         not in source
     )
-    for table_name in EXPECTED_TABLES:
+    assert "email_verifications" not in source
+    for table_name in HISTORICAL_F1_TABLES:
         assert table_name in source
+
+
+def test_email_verification_revision_is_append_only_and_publishes_exact_contract():
+    revision_path = VERSIONS_DIR / "a82f8f2b1d7c_email_verification.py"
+    assert revision_path.is_file()
+    source = revision_path.read_text(encoding="utf-8")
+    normalized = " ".join(source.split())
+
+    assert 'revision: str = "a82f8f2b1d7c"' in source
+    assert 'down_revision: str | Sequence[str] | None = "f1ad78b2035f"' in source
+    assert "email_verified_at" in source
+    assert "CURRENT_TIMESTAMP" in source
+    assert "email_verifications" in source
+    for contract_name in (
+        "fk_email_verifications_user_id_users",
+        "ck_email_verification_delivery_status",
+        "ck_email_verification_delivery_claim_digest",
+        "ck_email_verification_delivery_claim_digest_lower_hex",
+        "ck_email_verification_token_digest_lower_hex",
+        "ix_email_verifications_user_id",
+        "ix_email_verifications_token_digest",
+        "ix_email_verifications_delivery_status",
+    ):
+        assert contract_name in source
+    assert 'ondelete="CASCADE"' in source
+    assert (
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE "
+        "public.email_verifications TO litblogs_runtime"
+    ) in normalized
+    assert (
+        "GRANT USAGE, SELECT ON SEQUENCE public.email_verifications_id_seq "
+        "TO litblogs_runtime"
+    ) in normalized
+    assert (
+        "GRANT SELECT (user_id), UPDATE (token_digest, expires_at, "
+        "delivery_status, delivery_attempted_at, delivery_claim_digest) ON TABLE "
+        "public.email_verifications TO litblog_identity_owner"
+    ) in normalized
+    identity_grants = normalized.split("def _grant_identity_acl()", 1)[1].split(
+        "def ", 1
+    )[0]
+    assert "email_verifications_id_seq" not in identity_grants
+    assert "UPDATE public.email_verifications" in normalized
+    assert "delivery_status = 'FAILED'" in normalized
+    assert "SET search_path = pg_catalog, pg_temp" in source
+
+
+def test_email_verification_model_matches_the_persistence_contract():
+    import models
+
+    verified_column = models.User.__table__.c.email_verified_at
+    assert isinstance(verified_column.type, sa.DateTime)
+    assert verified_column.type.timezone is True
+    assert verified_column.nullable is True
+
+    table = models.EmailVerification.__table__
+    assert table.name == "email_verifications"
+    assert set(table.c.keys()) == {
+        "id",
+        "user_id",
+        "token_digest",
+        "created_at",
+        "expires_at",
+        "delivery_status",
+        "delivery_attempted_at",
+        "delivery_claim_digest",
+    }
+    assert table.c.user_id.nullable is False
+    assert table.c.token_digest.nullable is True
+    assert table.c.created_at.nullable is False
+    assert table.c.expires_at.nullable is True
+    assert table.c.delivery_status.nullable is False
+    assert table.c.delivery_attempted_at.nullable is True
+    assert table.c.delivery_claim_digest.nullable is True
+    assert all(
+        table.c[column_name].type.timezone is True
+        for column_name in (
+            "created_at",
+            "expires_at",
+            "delivery_attempted_at",
+        )
+    )
+    foreign_key = next(iter(table.c.user_id.foreign_keys))
+    assert foreign_key.target_fullname == "users.id"
+    assert foreign_key.ondelete == "CASCADE"
+    assert foreign_key.name == "fk_email_verifications_user_id_users"
+    indexes = {
+        index.name: (tuple(column.name for column in index.columns), index.unique)
+        for index in table.indexes
+    }
+    assert indexes == {
+        "ix_email_verifications_delivery_status": (("delivery_status",), False),
+        "ix_email_verifications_id": (("id",), False),
+        "ix_email_verifications_token_digest": (("token_digest",), True),
+        "ix_email_verifications_user_id": (("user_id",), True),
+    }
+    check_constraints = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in table.constraints
+        if isinstance(constraint, sa.CheckConstraint)
+    }
+    assert set(check_constraints) == {
+        "ck_email_verification_delivery_status",
+        "ck_email_verification_delivery_claim_digest",
+        "ck_email_verification_delivery_claim_digest_lower_hex",
+        "ck_email_verification_token_digest_lower_hex",
+    }
+    assert "PENDING" in check_constraints["ck_email_verification_delivery_status"]
+    assert "PROCESSING" in check_constraints["ck_email_verification_delivery_status"]
+    assert "DELIVERED" in check_constraints["ck_email_verification_delivery_status"]
+    assert "FAILED" in check_constraints["ck_email_verification_delivery_status"]
 
 
 def test_final_acl_publishes_the_exact_pre_upgrade_role_contract():
@@ -688,6 +805,93 @@ def test_populated_current_sqlite_adoption_runs_identity_data_transitions(tmp_pa
         engine.dispose()
 
 
+def test_email_verification_upgrade_backfills_existing_users_at_one_transaction_time(
+    tmp_path,
+):
+    engine = sa.create_engine(
+        f"sqlite:///{(tmp_path / 'email-verification-backfill.db').as_posix()}"
+    )
+    try:
+        _upgrade(engine, "f1ad78b2035f")
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "INSERT INTO users (id, username, email, password, role) VALUES "
+                "(1, 'first', 'first@example.com', 'hash', 'STUDENT'), "
+                "(2, 'second', 'second@example.com', 'hash', 'STUDENT')"
+            )
+
+        _upgrade(engine)
+
+        with engine.connect() as connection:
+            backfilled = connection.exec_driver_sql(
+                "SELECT email_verified_at FROM users ORDER BY id"
+            ).scalars().all()
+        assert len(backfilled) == 2
+        assert backfilled[0] is not None
+        assert backfilled[0] == backfilled[1]
+        assert _current_revision(engine) == "a82f8f2b1d7c"
+    finally:
+        engine.dispose()
+
+
+def test_email_verification_sqlite_complete_model_metadata_is_adopted_and_backfilled(
+    tmp_path,
+):
+    from base import Base
+
+    assert "email_verifications" in Base.metadata.tables
+
+    engine = sa.create_engine(
+        f"sqlite:///{(tmp_path / 'email-verification-current-adoption.db').as_posix()}"
+    )
+    try:
+        Base.metadata.create_all(bind=engine)
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "INSERT INTO users (id, username, email, password, role, email_verified_at) "
+                "VALUES (1, 'pending', 'pending@example.com', 'hash', 'STUDENT', NULL)"
+            )
+        _stamp(engine, "f1ad78b2035f")
+
+        _upgrade(engine)
+
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql(
+                "SELECT email_verified_at IS NOT NULL FROM users WHERE id = 1"
+            ).scalar_one()
+        assert _current_revision(engine) == "a82f8f2b1d7c"
+    finally:
+        engine.dispose()
+
+
+def test_email_verification_sqlite_partial_adoption_is_rejected_and_retryable(
+    tmp_path,
+):
+    engine = sa.create_engine(
+        f"sqlite:///{(tmp_path / 'email-verification-partial.db').as_posix()}"
+    )
+    try:
+        _upgrade(engine, "f1ad78b2035f")
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "ALTER TABLE users ADD COLUMN email_verified_at DATETIME"
+            )
+
+        with pytest.raises(RuntimeError, match="partial SQLite schema"):
+            _upgrade(engine)
+        assert _current_revision(engine) == "f1ad78b2035f"
+        assert "email_verifications" not in sa.inspect(engine).get_table_names()
+
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "ALTER TABLE users DROP COLUMN email_verified_at"
+            )
+        _upgrade(engine)
+        assert _current_revision(engine) == "a82f8f2b1d7c"
+    finally:
+        engine.dispose()
+
+
 @pytest.mark.parametrize("starting_revision", EXPECTED_REVISIONS[3:])
 def test_invalidated_password_reset_secrets_block_downgrade_before_schema_changes(
     tmp_path,
@@ -918,6 +1122,18 @@ def test_postgresql_upgrade_has_exact_schema_and_acl_when_available(
                 ).scalar_one()
                 == EXPECTED_REVISIONS[-1]
             )
+            assert (
+                connection.exec_driver_sql(
+                    "SELECT pg_catalog.to_regclass('public.email_verifications')::text"
+                ).scalar_one()
+                == "email_verifications"
+            )
+            email_verified_at = connection.exec_driver_sql(
+                "SELECT data_type, is_nullable FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'users' "
+                "AND column_name = 'email_verified_at'"
+            ).one()
+            assert email_verified_at == ("timestamp with time zone", "YES")
         with admin_engine.begin() as connection:
             connection.exec_driver_sql(
                 "REVOKE litblog_identity_owner FROM litblogs_migrator"
@@ -969,6 +1185,14 @@ def test_postgresql_upgrade_has_exact_schema_and_acl_when_available(
                 "('opclass-hyphen', 'identity-a@example.com', 'hash', 'STUDENT'), "
                 "('opclass-underscore', 'identity_a@example.com', 'hash', 'STUDENT')"
             )
+            connection.exec_driver_sql(
+                "INSERT INTO public.email_verifications "
+                "(user_id, token_digest, expires_at, delivery_status, "
+                "delivery_claim_digest) "
+                "SELECT id, repeat('a', 64), CURRENT_TIMESTAMP + INTERVAL '1 hour', "
+                "'DELIVERED', repeat('b', 64) FROM public.users "
+                "WHERE email = 'identity-a@example.com'"
+            )
         with pytest.raises(sa.exc.IntegrityError):
             with migrator_engine.begin() as connection:
                 connection.exec_driver_sql(
@@ -1007,6 +1231,40 @@ def test_postgresql_upgrade_has_exact_schema_and_acl_when_available(
             )
             assert (
                 connection.exec_driver_sql(
+                    "SELECT has_table_privilege('litblogs_runtime', "
+                    "'public.email_verifications', 'SELECT,INSERT,UPDATE,DELETE')"
+                ).scalar_one()
+                is True
+            )
+            assert (
+                connection.exec_driver_sql(
+                    "SELECT has_sequence_privilege('litblogs_runtime', "
+                    "'public.email_verifications_id_seq', 'USAGE,SELECT')"
+                ).scalar_one()
+                is True
+            )
+            assert (
+                connection.exec_driver_sql(
+                    "SELECT bool_and(has_column_privilege("
+                    "'litblog_identity_owner', 'public.email_verifications', "
+                    "column_name, privilege_name)) FROM (VALUES "
+                    "('user_id', 'SELECT'), ('token_digest', 'UPDATE'), "
+                    "('expires_at', 'UPDATE'), ('delivery_status', 'UPDATE'), "
+                    "('delivery_attempted_at', 'UPDATE'), "
+                    "('delivery_claim_digest', 'UPDATE')) "
+                    "AS required(column_name, privilege_name)"
+                ).scalar_one()
+                is True
+            )
+            assert (
+                connection.exec_driver_sql(
+                    "SELECT has_sequence_privilege('litblog_identity_owner', "
+                    "'public.email_verifications_id_seq', 'USAGE,SELECT,UPDATE')"
+                ).scalar_one()
+                is False
+            )
+            assert (
+                connection.exec_driver_sql(
                     "SELECT bool_and(has_column_privilege("
                     "'litblogs_runtime', 'public.teacher_invitations', "
                     "column_name, privilege_name)) "
@@ -1025,6 +1283,22 @@ def test_postgresql_upgrade_has_exact_schema_and_acl_when_available(
                 ).scalar_one()
                 is False
             )
+
+        with admin_engine.begin() as connection:
+            outcome = connection.exec_driver_sql(
+                "SELECT public.operator_set_account_status("
+                "'identity-a@example.com'::VARCHAR, TRUE, "
+                "'migration-smoke'::VARCHAR, repeat('c', 64)::VARCHAR)"
+            ).scalar_one()
+            assert outcome == "SUCCEEDED"
+            invalidated = connection.exec_driver_sql(
+                "SELECT token_digest, expires_at, delivery_status, "
+                "delivery_attempted_at IS NOT NULL, delivery_claim_digest "
+                "FROM public.email_verifications AS verification "
+                "JOIN public.users AS account ON account.id = verification.user_id "
+                "WHERE account.email = 'identity-a@example.com'"
+            ).one()
+            assert invalidated == (None, None, "FAILED", True, None)
             assert (
                 connection.exec_driver_sql(
                     "SELECT bool_and(has_column_privilege("

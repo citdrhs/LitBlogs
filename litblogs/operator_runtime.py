@@ -230,6 +230,7 @@ def require_expected_database_role(
                     FROM pg_catalog.unnest(ARRAY[
                         'public.users',
                         'public.browser_sessions',
+                        'public.email_verifications',
                         'public.password_resets',
                         'public.teacher_invitations',
                         'public.operator_audit_events'

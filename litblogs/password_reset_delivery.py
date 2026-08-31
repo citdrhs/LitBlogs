@@ -32,7 +32,7 @@ from identity_controls import invalidate_password_reset_requests
 from runtime_database_identity import verify_runtime_database_identity
 
 APP_DIRECTORY = Path(__file__).resolve().parent
-EXPECTED_ALEMBIC_HEAD = "f1ad78b2035f"
+EXPECTED_ALEMBIC_HEAD = "a82f8f2b1d7c"
 MAX_PASSWORD_RESET_BATCH_SIZE = 100
 
 PASSWORD_RESET_PENDING = "PENDING"

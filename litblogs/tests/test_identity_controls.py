@@ -620,6 +620,39 @@ def test_operator_runtime_rejects_direct_grants_or_wrong_function_boundary(
     assert session.closed is True
 
 
+def test_latest_operator_account_disable_invalidates_email_verification_state():
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / "migrations/versions/a82f8f2b1d7c_email_verification.py"
+    )
+    assert migration_path.is_file()
+    migration_source = migration_path.read_text(encoding="utf-8")
+    normalized = " ".join(migration_source.split())
+    function_body = normalized.split(
+        "CREATE OR REPLACE FUNCTION public.operator_set_account_status(", 1
+    )[1].split("$operator_set_account_status$;", 1)[0]
+
+    assert "SECURITY DEFINER" in function_body
+    assert "SET search_path = pg_catalog, pg_temp" in function_body
+    assert "IF p_disabled THEN" in function_body
+    assert "UPDATE public.email_verifications" in function_body
+    assert "token_digest = NULL" in function_body
+    assert "expires_at = NULL" in function_body
+    assert "delivery_status = 'FAILED'" in function_body
+    assert "delivery_attempted_at = v_now" in function_body
+    assert "delivery_claim_digest = NULL" in function_body
+    assert "WHERE user_id = v_user_id" in function_body
+    assert (
+        "REVOKE ALL ON FUNCTION public.operator_set_account_status( "
+        "VARCHAR, BOOLEAN, VARCHAR, VARCHAR ) FROM PUBLIC" in normalized
+    )
+    assert (
+        "GRANT EXECUTE ON FUNCTION public.operator_set_account_status( "
+        "VARCHAR, BOOLEAN, VARCHAR, VARCHAR ) TO litblog_account_operator"
+        in normalized
+    )
+
+
 def test_operator_runtime_rejects_set_role_from_broader_authenticated_session():
     operator_runtime = import_module("operator_runtime")
 

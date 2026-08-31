@@ -13,6 +13,7 @@ import yaml
 from yaml.constructor import ConstructorError
 
 ROOT = Path(__file__).resolve().parents[1]
+EXPECTED_ALEMBIC_HEAD = "a82f8f2b1d7c"
 ACTION_PIN = re.compile(
     r"^\s*uses:\s*(?P<action>(?:actions|github)/[^@\s]+)@(?P<sha>[0-9a-f]{40})"
     r"\s+#\s+(?P<version>v(?P<major>\d+)\.\d+\.\d+)\s*$"
@@ -2481,7 +2482,7 @@ def validate_coupled_recovery_contract() -> None:
     for fragment in (
         '"--manifest"',
         '"--upload-target"',
-        "EXPECTED_ALEMBIC_HEAD = \"f1ad78b2035f\"",
+        f'EXPECTED_ALEMBIC_HEAD = "{EXPECTED_ALEMBIC_HEAD}"',
         "pg_catalog.aclexplode",
         "pg_catalog.pg_auth_members",
         "expected_default_function_acl",

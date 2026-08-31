@@ -1054,6 +1054,41 @@ def test_restore_acl_probe_is_catalog_wide_and_checks_fixed_security_boundary():
     assert "has_database_privilege('litblogs_backup', datname, 'connect')" in recovery_docs
 
 
+def test_restore_email_verification_schema_data_and_acl_inventory_is_exact():
+    assert restore_verify_postgres.EXPECTED_ALEMBIC_HEAD == "a82f8f2b1d7c"
+
+    schema_probe = restore_verify_postgres.SCHEMA_INTEGRITY_SQL
+    for fragment in (
+        "('email_verifications')",
+        "('email_verifications', 'user_id', 'users', 'id')",
+        "email_verified_at",
+        "token_digest",
+        "delivery_status",
+        "email_verifications_id_seq",
+    ):
+        assert fragment in schema_probe
+
+    core_probe = restore_verify_postgres.CORE_DATA_INTEGRITY_SQL
+    assert "FROM public.email_verifications" in core_probe
+
+    identity_probe = restore_verify_postgres.IDENTITY_DATA_INTEGRITY_SQL
+    for fragment in (
+        "('email_verifications')",
+        "('email_verifications_id_seq')",
+        "('litblog_identity_owner', 'email_verifications', 'user_id', 'SELECT', FALSE)",
+        "('litblog_identity_owner', 'email_verifications', 'token_digest', 'UPDATE', FALSE)",
+        "('litblog_identity_owner', 'email_verifications', 'expires_at', 'UPDATE', FALSE)",
+        "('litblog_identity_owner', 'email_verifications', 'delivery_status', 'UPDATE', FALSE)",
+        "('litblog_identity_owner', 'email_verifications', 'delivery_attempted_at', 'UPDATE', FALSE)",
+        "('litblog_identity_owner', 'email_verifications', 'delivery_claim_digest', 'UPDATE', FALSE)",
+    ):
+        assert fragment in identity_probe
+    identity_sequence_inventory = identity_probe.split(
+        "UNION ALL\n    SELECT\n        'litblog_identity_owner'", 1
+    )[1].split("actual_sequence_acl", 1)[0]
+    assert "email_verifications_id_seq" not in identity_sequence_inventory
+
+
 def test_restore_pins_exact_reviewed_operator_routine_bodies_and_metadata():
     contract = restore_verify_postgres._load_expected_operator_routine_contract(
         ROOT_DIR / "litblogs"
@@ -1073,12 +1108,24 @@ def test_restore_pins_exact_reviewed_operator_routine_bodies_and_metadata():
             "varying, character varying)"
         ),
     }
-    migration_source = (
+    historical_source = (
         ROOT_DIR
         / "litblogs/migrations/versions/c5136f36e302_identity_controls.py"
     ).read_text(encoding="utf-8")
-    for expected in contract.values():
-        assert expected["source"] in migration_source
+    latest_path = (
+        ROOT_DIR
+        / "litblogs/migrations/versions/a82f8f2b1d7c_email_verification.py"
+    )
+    assert latest_path.is_file()
+    latest_source = latest_path.read_text(encoding="utf-8")
+    account_signature = (
+        "operator_set_account_status(character varying, boolean, "
+        "character varying, character varying)"
+    )
+    assert contract[account_signature]["source"] in latest_source
+    for signature, expected in contract.items():
+        if signature != account_signature:
+            assert expected["source"] in historical_source
         assert expected == {
             **expected,
             "language": "plpgsql",
@@ -1113,11 +1160,12 @@ def test_restore_pins_exact_reviewed_operator_routine_bodies_and_metadata():
 
 
 @pytest.mark.parametrize("mutation", ["missing", "duplicate"])
-def test_restore_rejects_ambiguous_migration_routine_sources(tmp_path, mutation):
+def test_restore_rejects_ambiguous_latest_migration_routine_sources(tmp_path, mutation):
     source_path = (
         ROOT_DIR
-        / "litblogs/migrations/versions/c5136f36e302_identity_controls.py"
+        / "litblogs/migrations/versions/a82f8f2b1d7c_email_verification.py"
     )
+    assert source_path.is_file()
     migration_source = source_path.read_text(encoding="utf-8")
     marker = "CREATE OR REPLACE FUNCTION public.operator_set_account_status("
     if mutation == "missing":
@@ -1130,10 +1178,20 @@ def test_restore_rejects_ambiguous_migration_routine_sources(tmp_path, mutation)
 
     backend_root = tmp_path / "litblogs"
     candidate = (
-        backend_root / "migrations/versions/c5136f36e302_identity_controls.py"
+        backend_root / "migrations/versions/a82f8f2b1d7c_email_verification.py"
     )
     candidate.parent.mkdir(parents=True)
     candidate.write_text(migration_source, encoding="utf-8")
+    historical_candidate = (
+        backend_root / "migrations/versions/c5136f36e302_identity_controls.py"
+    )
+    historical_candidate.write_text(
+        (
+            ROOT_DIR
+            / "litblogs/migrations/versions/c5136f36e302_identity_controls.py"
+        ).read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
 
     with pytest.raises(
         restore_verify_postgres.PostgresOperatorError,
@@ -1160,6 +1218,18 @@ def test_restore_rejects_decoy_routines_outside_the_reviewed_migration_constant(
     )
     candidate.parent.mkdir(parents=True)
     candidate.write_text(migration_source, encoding="utf-8")
+    latest_candidate = (
+        backend_root / "migrations/versions/a82f8f2b1d7c_email_verification.py"
+    )
+    latest_source_path = (
+        ROOT_DIR
+        / "litblogs/migrations/versions/a82f8f2b1d7c_email_verification.py"
+    )
+    assert latest_source_path.is_file()
+    latest_candidate.write_text(
+        latest_source_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
 
     with pytest.raises(
         restore_verify_postgres.PostgresOperatorError,
@@ -1258,6 +1328,7 @@ def test_registry_and_restore_data_probes_pin_the_public_schema():
         "assignment_reminder_notifications",
         "assignment_submissions",
         "comments",
+        "email_verifications",
         "post_likes",
         "saved_posts",
         "assignment_submission_replies",

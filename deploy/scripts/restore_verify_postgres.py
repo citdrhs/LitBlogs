@@ -57,10 +57,23 @@ UTC_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
 IDENTITY_RESULT = re.compile(r"^ok:([0-9]+)$")
 PSQL_VARIABLE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 MAX_MANIFEST_BYTES = 16 * 1024
-EXPECTED_ALEMBIC_HEAD = "f1ad78b2035f"
+EXPECTED_ALEMBIC_HEAD = "a82f8f2b1d7c"
 BACKEND_ROOT = Path(__file__).resolve().parents[2] / "litblogs"
-OPERATOR_ROUTINE_MIGRATION = (
-    BACKEND_ROOT / "migrations/versions/c5136f36e302_identity_controls.py"
+OPERATOR_ROUTINE_MIGRATIONS = (
+    (
+        "migrations/versions/c5136f36e302_identity_controls.py",
+        frozenset(
+            {
+                "operator_set_account_status",
+                "operator_create_teacher_invitation",
+                "operator_revoke_teacher_invitation",
+            }
+        ),
+    ),
+    (
+        "migrations/versions/a82f8f2b1d7c_email_verification.py",
+        frozenset({"operator_set_account_status"}),
+    ),
 )
 EXPECTED_OPERATOR_ROUTINE_SIGNATURES = {
     "operator_set_account_status": (
@@ -115,79 +128,82 @@ OPERATOR_ROUTINE_SOURCE = re.compile(
 def _load_expected_operator_routine_contract(
     backend_root: Path = BACKEND_ROOT,
 ) -> dict[str, dict[str, object]]:
-    """Extract the reviewed byte-exact routine bodies from the creating migration."""
-
-    migration_path = (
-        backend_root / "migrations/versions/c5136f36e302_identity_controls.py"
-    )
-    try:
-        migration_source = migration_path.read_text(encoding="utf-8")
-        migration_module = ast.parse(migration_source, filename=str(migration_path))
-    except (OSError, SyntaxError, UnicodeError):
-        raise PostgresOperatorError(
-            "The reviewed operator routine source contract is invalid"
-        ) from None
-
-    operator_sql_values: list[str] = []
-    for statement in migration_module.body:
-        if not isinstance(statement, ast.Assign):
-            continue
-        if not any(
-            isinstance(target, ast.Name)
-            and target.id == "OPERATOR_FUNCTIONS_SQL"
-            for target in statement.targets
-        ):
-            continue
-        if not isinstance(statement.value, ast.Constant) or not isinstance(
-            statement.value.value, str
-        ):
-            raise PostgresOperatorError(
-                "The reviewed operator routine source contract is invalid"
-            )
-        operator_sql_values.append(statement.value.value)
-    if len(operator_sql_values) != 1:
-        raise PostgresOperatorError(
-            "The reviewed operator routine source contract is invalid"
-        )
-    operator_sql = operator_sql_values[0]
-    matches = list(OPERATOR_ROUTINE_SOURCE.finditer(operator_sql))
-    if (
-        operator_sql.count("CREATE OR REPLACE FUNCTION public.") != 3
-        or len(matches) != 3
-    ):
-        raise PostgresOperatorError(
-            "The reviewed operator routine source contract is invalid"
-        )
+    """Extract each routine from its latest reviewed defining revision."""
 
     contract: dict[str, dict[str, object]] = {}
-    for match in matches:
-        name = match.group("name")
-        expected_signature = EXPECTED_OPERATOR_ROUTINE_SIGNATURES.get(name)
+    for relative_path, expected_names in OPERATOR_ROUTINE_MIGRATIONS:
+        migration_path = backend_root / relative_path
+        try:
+            migration_source = migration_path.read_text(encoding="utf-8")
+            migration_module = ast.parse(
+                migration_source,
+                filename=str(migration_path),
+            )
+        except (OSError, SyntaxError, UnicodeError):
+            raise PostgresOperatorError(
+                "The reviewed operator routine source contract is invalid"
+            ) from None
+
+        operator_sql_values: list[str] = []
+        for statement in migration_module.body:
+            if not isinstance(statement, ast.Assign):
+                continue
+            if not any(
+                isinstance(target, ast.Name)
+                and target.id == "OPERATOR_FUNCTIONS_SQL"
+                for target in statement.targets
+            ):
+                continue
+            if not isinstance(statement.value, ast.Constant) or not isinstance(
+                statement.value.value,
+                str,
+            ):
+                raise PostgresOperatorError(
+                    "The reviewed operator routine source contract is invalid"
+                )
+            operator_sql_values.append(statement.value.value)
+        if len(operator_sql_values) != 1:
+            raise PostgresOperatorError(
+                "The reviewed operator routine source contract is invalid"
+            )
+        operator_sql = operator_sql_values[0]
+        matches = list(OPERATOR_ROUTINE_SOURCE.finditer(operator_sql))
         if (
-            expected_signature is None
-            or match.group("arguments") != expected_signature[0]
-            or match.group("return_type") != "VARCHAR(16)"
-            or match.group("language") != "plpgsql"
-            or match.group("tag") != name
-            or expected_signature[1] in contract
+            operator_sql.count("CREATE OR REPLACE FUNCTION public.")
+            != len(expected_names)
+            or len(matches) != len(expected_names)
+            or {match.group("name") for match in matches} != expected_names
         ):
             raise PostgresOperatorError(
                 "The reviewed operator routine source contract is invalid"
             )
-        contract[expected_signature[1]] = {
-            "source": match.group("body"),
-            "language": "plpgsql",
-            "return_type": "character varying",
-            "volatility": "v",
-            "parallel_safety": "u",
-            "strict": False,
-            "leakproof": False,
-            "kind": "f",
-            "security_definer": True,
-            "configuration": ["search_path=pg_catalog, pg_temp"],
-            "argument_defaults": 0,
-            "owner": "litblog_identity_owner",
-        }
+        for match in matches:
+            name = match.group("name")
+            expected_signature = EXPECTED_OPERATOR_ROUTINE_SIGNATURES.get(name)
+            if (
+                expected_signature is None
+                or match.group("arguments") != expected_signature[0]
+                or match.group("return_type") != "VARCHAR(16)"
+                or match.group("language") != "plpgsql"
+                or match.group("tag") != name
+            ):
+                raise PostgresOperatorError(
+                    "The reviewed operator routine source contract is invalid"
+                )
+            contract[expected_signature[1]] = {
+                "source": match.group("body"),
+                "language": "plpgsql",
+                "return_type": "character varying",
+                "volatility": "v",
+                "parallel_safety": "u",
+                "strict": False,
+                "leakproof": False,
+                "kind": "f",
+                "security_definer": True,
+                "configuration": ["search_path=pg_catalog, pg_temp"],
+                "argument_defaults": 0,
+                "owner": "litblog_identity_owner",
+            }
     if set(contract) != {
         signature for _arguments, signature in EXPECTED_OPERATOR_ROUTINE_SIGNATURES.values()
     }:
@@ -314,11 +330,41 @@ WITH required_tables(name) AS (
         ('assignment_reminder_notifications'),
         ('assignment_submissions'),
         ('comments'),
+        ('email_verifications'),
         ('post_likes'),
         ('saved_posts'),
         ('assignment_submission_replies'),
         ('comment_likes'),
         ('upload_assets')
+),
+required_columns(
+    table_name,
+    column_name,
+    data_type,
+    is_nullable,
+    character_maximum_length
+) AS (
+    VALUES
+        ('users', 'email_verified_at', 'timestamp with time zone', 'YES', NULL),
+        ('email_verifications', 'id', 'integer', 'NO', NULL),
+        ('email_verifications', 'user_id', 'integer', 'NO', NULL),
+        ('email_verifications', 'token_digest', 'character varying', 'YES', 64),
+        ('email_verifications', 'created_at', 'timestamp with time zone', 'NO', NULL),
+        ('email_verifications', 'expires_at', 'timestamp with time zone', 'YES', NULL),
+        ('email_verifications', 'delivery_status', 'character varying', 'NO', 16),
+        ('email_verifications', 'delivery_attempted_at', 'timestamp with time zone', 'YES', NULL),
+        ('email_verifications', 'delivery_claim_digest', 'character varying', 'YES', 64)
+),
+actual_columns AS (
+    SELECT
+        columns.table_name,
+        columns.column_name,
+        columns.data_type,
+        columns.is_nullable,
+        columns.character_maximum_length
+    FROM information_schema.columns
+    WHERE columns.table_schema = 'public'
+      AND columns.table_name IN ('users', 'email_verifications')
 ),
 expected_foreign_keys(
     table_name,
@@ -328,6 +374,7 @@ expected_foreign_keys(
 ) AS (
     VALUES
         ('password_resets', 'user_id', 'users', 'id'),
+        ('email_verifications', 'user_id', 'users', 'id'),
         ('push_subscriptions', 'user_id', 'users', 'id'),
         ('teachers', 'user_id', 'users', 'id'),
         ('user_settings', 'user_id', 'users', 'id'),
@@ -377,6 +424,23 @@ actual_foreign_keys AS (
 )
 SELECT CASE WHEN COUNT(to_regclass('public.' || name)) = COUNT(*)
                  AND BOOL_AND(to_regclass('public.' || name) IS NOT NULL)
+                 AND to_regclass(
+                     'public.email_verifications_id_seq'
+                 ) IS NOT NULL
+                 AND NOT EXISTS (
+                     SELECT * FROM required_columns
+                     EXCEPT
+                     SELECT * FROM actual_columns
+                 )
+                 AND NOT EXISTS (
+                     SELECT *
+                     FROM actual_columns
+                     WHERE table_name = 'email_verifications'
+                     EXCEPT
+                     SELECT *
+                     FROM required_columns
+                     WHERE table_name = 'email_verifications'
+                 )
                  AND NOT EXISTS (
                      SELECT 1
                      FROM expected_foreign_keys AS expected
@@ -389,6 +453,40 @@ SELECT CASE WHEN COUNT(to_regclass('public.' || name)) = COUNT(*)
                            AND actual.foreign_column_name = expected.foreign_column_name
                      )
                  )
+                 AND EXISTS (
+                     SELECT 1
+                     FROM pg_catalog.pg_constraint AS verification_fk
+                     WHERE verification_fk.conrelid =
+                           to_regclass('public.email_verifications')
+                       AND verification_fk.conname =
+                           'fk_email_verifications_user_id_users'
+                       AND verification_fk.contype = 'f'
+                       AND verification_fk.confdeltype = 'c'
+                 )
+                 AND EXISTS (
+                     SELECT 1
+                     FROM pg_catalog.pg_constraint AS verification_constraint
+                     WHERE verification_constraint.conrelid =
+                           to_regclass('public.email_verifications')
+                       AND verification_constraint.conname IN (
+                           'email_verifications_pkey',
+                           'ck_email_verification_delivery_status',
+                           'ck_email_verification_delivery_claim_digest',
+                           'ck_email_verification_delivery_claim_digest_lower_hex',
+                           'ck_email_verification_token_digest_lower_hex'
+                       )
+                     GROUP BY verification_constraint.conrelid
+                     HAVING COUNT(*) = 5
+                 )
+                 AND to_regclass(
+                     'public.ix_email_verifications_user_id'
+                 ) IS NOT NULL
+                 AND to_regclass(
+                     'public.ix_email_verifications_token_digest'
+                 ) IS NOT NULL
+                 AND to_regclass(
+                     'public.ix_email_verifications_delivery_status'
+                 ) IS NOT NULL
                  AND (
                      to_regclass('public.federated_identities') IS NULL
                      OR (
@@ -470,6 +568,7 @@ CORE_DATA_INTEGRITY_SQL = """
 SELECT CASE WHEN
     (SELECT COUNT(*) FROM public.users) >= 0
     AND (SELECT COUNT(*) FROM public.password_resets) >= 0
+    AND (SELECT COUNT(*) FROM public.email_verifications) >= 0
     AND (SELECT COUNT(*) FROM public.push_subscriptions) >= 0
     AND (SELECT COUNT(*) FROM public.teachers) >= 0
     AND (SELECT COUNT(*) FROM public.user_settings) >= 0
@@ -486,6 +585,37 @@ SELECT CASE WHEN
     AND (SELECT COUNT(*) FROM public.assignment_submission_replies) >= 0
     AND (SELECT COUNT(*) FROM public.comment_likes) >= 0
     AND (SELECT COUNT(*) FROM public.upload_assets) >= 0
+    AND NOT EXISTS (
+        SELECT 1
+        FROM public.email_verifications AS verification
+        LEFT JOIN public.users AS verification_user
+          ON verification_user.id = verification.user_id
+        WHERE verification_user.id IS NULL
+           OR verification.delivery_status NOT IN (
+               'PENDING', 'PROCESSING', 'DELIVERED', 'FAILED'
+           )
+           OR (
+               verification.token_digest IS NOT NULL
+               AND verification.token_digest !~ '^[0-9a-f]{64}$'
+           )
+           OR (
+               verification.delivery_claim_digest IS NOT NULL
+               AND verification.delivery_claim_digest !~ '^[0-9a-f]{64}$'
+           )
+    )
+    AND NOT EXISTS (
+        SELECT 1
+        FROM public.email_verifications
+        GROUP BY user_id
+        HAVING COUNT(*) > 1
+    )
+    AND NOT EXISTS (
+        SELECT 1
+        FROM public.email_verifications
+        WHERE token_digest IS NOT NULL
+        GROUP BY token_digest
+        HAVING COUNT(*) > 1
+    )
     AND NOT EXISTS (
         SELECT 1
         FROM public.blogs AS blog
@@ -525,6 +655,7 @@ runtime_crud_tables(table_name) AS (
         ('classes'),
         ('comment_likes'),
         ('comments'),
+        ('email_verifications'),
         ('federated_identities'),
         ('password_resets'),
         ('post_likes'),
@@ -548,6 +679,7 @@ runtime_sequences(sequence_name) AS (
         ('classes_id_seq'),
         ('comment_likes_id_seq'),
         ('comments_id_seq'),
+        ('email_verifications_id_seq'),
         ('federated_identities_id_seq'),
         ('operator_audit_events_id_seq'),
         ('password_resets_id_seq'),
@@ -649,6 +781,12 @@ expected_column_acl(
         ('litblog_identity_owner', 'password_resets', 'delivery_status', 'UPDATE', FALSE),
         ('litblog_identity_owner', 'password_resets', 'delivery_attempted_at', 'UPDATE', FALSE),
         ('litblog_identity_owner', 'password_resets', 'delivery_claim_digest', 'UPDATE', FALSE),
+        ('litblog_identity_owner', 'email_verifications', 'user_id', 'SELECT', FALSE),
+        ('litblog_identity_owner', 'email_verifications', 'token_digest', 'UPDATE', FALSE),
+        ('litblog_identity_owner', 'email_verifications', 'expires_at', 'UPDATE', FALSE),
+        ('litblog_identity_owner', 'email_verifications', 'delivery_status', 'UPDATE', FALSE),
+        ('litblog_identity_owner', 'email_verifications', 'delivery_attempted_at', 'UPDATE', FALSE),
+        ('litblog_identity_owner', 'email_verifications', 'delivery_claim_digest', 'UPDATE', FALSE),
         ('litblog_identity_owner', 'teacher_invitations', 'email_digest', 'SELECT', FALSE),
         ('litblog_identity_owner', 'teacher_invitations', 'consumed_at', 'SELECT', FALSE),
         ('litblog_identity_owner', 'teacher_invitations', 'revoked_at', 'SELECT', FALSE),
@@ -885,6 +1023,7 @@ database_acl_valid AS (
 )
 SELECT CASE WHEN
     (SELECT COUNT(*) FROM public.federated_identities) >= 0
+    AND (SELECT COUNT(*) FROM public.email_verifications) >= 0
     AND NOT EXISTS (
         SELECT 1
         FROM public.federated_identities AS identity

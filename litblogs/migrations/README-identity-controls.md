@@ -1,7 +1,9 @@
 # Identity controls migration runbook
 
-Revisions `c5136f36e302` and `f1ad78b2035f` are the authoritative identity-schema and
-exact-ACL migrations in the reviewed single-head Alembic chain.
+Revisions `c5136f36e302`, `f1ad78b2035f`, and append-only head `a82f8f2b1d7c` are
+the authoritative identity-schema and exact-ACL migrations in the reviewed single-head
+Alembic chain. Historical revision `f1ad78b2035f` remains authoritative for the objects
+it created; `a82f8f2b1d7c` adds the exact email-verification delta without rewriting it.
 `0002_add_authorization_constraints.sql` and `0003_add_identity_controls.sql` are
 retained only as semantic references for the pre-Alembic lineage. Raw SQL must not ship
 or be applied alongside the Alembic history. The standalone SQL commands below
@@ -24,6 +26,42 @@ links will stop working and users must request a new one.
 There is intentionally no session backfill. All pre-migration JWT cookies become
 invalid as soon as the new application version is active, so every user must sign in
 again. Announce this planned logout to the school before the maintenance window.
+
+## Append-only email-verification head
+
+Revision `a82f8f2b1d7c` adds nullable `users.email_verified_at`, backfills every
+preexisting null value to one transaction-stable timestamp, and creates one optional
+`email_verifications` row per user. The runtime has exactly `SELECT, INSERT, UPDATE,
+DELETE` on `email_verifications` and `USAGE, SELECT` on
+`email_verifications_id_seq`. Both objects remain owned by `litblogs_migrator`, and
+`PUBLIC` plus both operator logins have no direct privilege on either object.
+
+The non-login `litblog_identity_owner` receives only `SELECT (user_id)` and `UPDATE
+(token_digest, expires_at, delivery_status, delivery_attempted_at,
+delivery_claim_digest)` on `email_verifications`, with no sequence privilege on
+`email_verifications_id_seq`. Its latest reviewed definition of
+`operator_set_account_status` remains `SECURITY DEFINER` with fixed `search_path =
+pg_catalog, pg_temp`; disabling an account invalidates its verification token, expiry,
+delivery claim, and delivery state in the same transaction. Execute remains granted
+only to `litblog_account_operator`, never `litblogs_runtime`,
+`litblog_invitation_operator`, or `PUBLIC`.
+
+```sql
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON TABLE email_verifications TO litblogs_runtime;
+GRANT USAGE, SELECT
+    ON SEQUENCE email_verifications_id_seq TO litblogs_runtime;
+GRANT SELECT (user_id),
+      UPDATE (
+          token_digest, expires_at, delivery_status,
+          delivery_attempted_at, delivery_claim_digest
+      )
+    ON TABLE email_verifications TO litblog_identity_owner;
+```
+
+Restore verification loads each operator routine from its latest reviewed definition:
+the invitation routines from `c5136f36e302` and the replaced account-status routine
+from `a82f8f2b1d7c`. It rejects any body, metadata, owner, or execute-ACL drift.
 
 ## Preflight
 
