@@ -36,10 +36,12 @@ BASE_URL=https://<school-approved-host>
 CORS_ALLOWED_ORIGINS=https://<school-approved-host>
 ALLOWED_HOSTS=<school-approved-host>
 ALLOWED_EMAIL_DOMAINS=<school-approved-email-domain>
-GOOGLE_CLIENT_ID=<registered-google-client-id.apps.googleusercontent.com>
-MICROSOFT_CLIENT_ID=<registered-application-uuid>
-MICROSOFT_TENANT_ID=<fixed-school-tenant-uuid>
-MICROSOFT_ALLOWED_TENANT_IDS=<comma-separated-approved-tenant-uuids-including-the-fixed-tenant>
+GOOGLE_OAUTH_ENABLED=false
+GOOGLE_CLIENT_ID=
+MICROSOFT_OAUTH_ENABLED=false
+MICROSOFT_CLIENT_ID=
+MICROSOFT_TENANT_ID=
+MICROSOFT_ALLOWED_TENANT_IDS=
 SESSION_COOKIE_NAME=__Host-litblogs-session
 CSRF_COOKIE_NAME=__Host-litblogs-csrf
 SESSION_COOKIE_SECURE=true
@@ -75,7 +77,9 @@ runuser -u litblogs -- test -r /etc/litblogs/postgres-root-ca.pem
 
 `SECRET_KEY`, `ADMIN_ACCESS_CODE`, `TEACHER_INVITE_HMAC_KEY`, and `EMAIL_PASSWORD` must be independently generated, non-placeholder managed secrets. The application and invitation-HMAC secrets need at least 32 bytes, `SECRET_KEY` needs at least 12 distinct characters, and the other managed secrets need at least 16 bytes. Never put any of them in command arguments, Git, tickets, or validation logs.
 
-`JWT_ISSUER` and `FRONTEND_URL` must be HTTPS. `CORS_ALLOWED_ORIGINS` is a comma-separated list of explicit HTTPS origins. `ALLOWED_HOSTS` and `ALLOWED_EMAIL_DOMAINS` contain exact DNS names, not wildcards, URLs, ports, or paths. Localhost and reserved documentation domains such as `.example`, `.invalid`, and `.test` fail production preflight. The session and CSRF names must be distinct valid `__Host-` cookie names; retain Secure, path `/`, and no Domain attribute. Microsoft application and tenant identifiers must be UUIDs, the allowlist must include the fixed tenant, and the Google ID must be the exact registered `.apps.googleusercontent.com` value.
+`JWT_ISSUER` and `FRONTEND_URL` must be HTTPS. `CORS_ALLOWED_ORIGINS` is a comma-separated list of explicit HTTPS origins. `ALLOWED_HOSTS` and `ALLOWED_EMAIL_DOMAINS` contain exact DNS names, not wildcards, URLs, ports, or paths. Localhost and reserved documentation domains such as `.example`, `.invalid`, and `.test` fail production preflight. The session and CSRF names must be distinct valid `__Host-` cookie names; retain Secure, path `/`, and no Domain attribute.
+
+OAuth identifiers alone no longer enable a provider. The explicit switches default to `false`. When `GOOGLE_OAUTH_ENABLED=false`, omit `GOOGLE_CLIENT_ID`; when `MICROSOFT_OAUTH_ENABLED=false`, omit `MICROSOFT_CLIENT_ID`, `MICROSOFT_TENANT_ID`, and `MICROSOFT_ALLOWED_TENANT_IDS`. When Google is enabled, its client ID is required and must be the exact registered `.apps.googleusercontent.com` value. When Microsoft is enabled, its client and fixed-tenant IDs are required UUIDs, and the allowed-tenant list is required and must include the fixed tenant. Existing OAuth deployments must set each provider's explicit switch to `true` before upgrade preflight and restart, retaining the reviewed identifiers for every provider still in use; otherwise that provider is disabled even if old identifiers remain. Enabling a provider with missing or invalid identifiers fails preflight.
 
 The authenticated school SMTP relay requires `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USERNAME`, `EMAIL_PASSWORD`, and `EMAIL_FROM`; verify certificate-validated TLS, sender policy, rate limits, bounce handling, and a synthetic reset-message delivery before go-live. Delivery runs only through the bounded external `litblogs-password-reset.service`, never an in-process web thread. Push dispatch is deliberately disabled in this release. Production must retain `PUSH_NOTIFICATIONS_ENABLED=false`, leave `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and `VAPID_SUBJECT` unset, and do not enable litblogs-reminders.timer. A later push implementation requires separate endpoint-validation, egress, and bounded-timeout review. Changes to `JWT_CLOCK_SKEW_SECONDS`, `ACCESS_TOKEN_EXPIRE_MINUTES`, `OAUTH_HTTP_TIMEOUT_SECONDS`, `OAUTH_JWKS_CACHE_SECONDS`, or any `DB_*` pool/timeout setting require the same review as a code change.
 

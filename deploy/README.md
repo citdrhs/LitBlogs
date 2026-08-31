@@ -32,10 +32,12 @@ BASE_URL=https://<school-approved-host>
 CORS_ALLOWED_ORIGINS=https://<school-approved-host>
 ALLOWED_HOSTS=<school-approved-host>
 ALLOWED_EMAIL_DOMAINS=<school-approved-email-domain>
-GOOGLE_CLIENT_ID=<registered-google-client-id.apps.googleusercontent.com>
-MICROSOFT_CLIENT_ID=<registered-application-uuid>
-MICROSOFT_TENANT_ID=<fixed-school-tenant-uuid>
-MICROSOFT_ALLOWED_TENANT_IDS=<comma-separated-approved-tenant-uuids-including-the-fixed-tenant>
+GOOGLE_OAUTH_ENABLED=false
+GOOGLE_CLIENT_ID=
+MICROSOFT_OAUTH_ENABLED=false
+MICROSOFT_CLIENT_ID=
+MICROSOFT_TENANT_ID=
+MICROSOFT_ALLOWED_TENANT_IDS=
 SESSION_COOKIE_NAME=__Host-litblogs-session
 CSRF_COOKIE_NAME=__Host-litblogs-csrf
 SESSION_COOKIE_SECURE=true
@@ -71,7 +73,7 @@ runuser -u litblogs -- test -r /etc/litblogs/postgres-root-ca.pem
 
 Supply the runtime credential through the protected environment file or an approved credential provider, never through a unit command line. `JWT_ISSUER` and `FRONTEND_URL` must be unambiguous HTTPS URLs. `CORS_ALLOWED_ORIGINS` must contain explicit HTTPS origins; `ALLOWED_HOSTS` and `ALLOWED_EMAIL_DOMAINS` are comma-separated exact DNS names without wildcards, schemes, ports, or paths. Localhost and reserved documentation domains such as `.example`, `.invalid`, and `.test` are production blockers, not acceptable placeholders. The two valid `__Host-` cookie names must remain distinct; their prefix also requires Secure transport, path `/`, and no Domain attribute.
 
-Google and Microsoft IDs must be the exact registered values. `MICROSOFT_CLIENT_ID` and every tenant ID must be UUIDs, and `MICROSOFT_ALLOWED_TENANT_IDS` must include `MICROSOFT_TENANT_ID`. The browser obtains its public CSRF-cookie and OAuth identifiers from backend settings at runtime through `/api/runtime-config`; do not bake environment-specific `VITE_*` identity values into the frontend bundle. `EMAIL_HOST`, `EMAIL_USERNAME`, `EMAIL_PASSWORD`, and `EMAIL_FROM` are mandatory; `EMAIL_PORT` defaults to 587 but must be recorded explicitly for the school relay. Permit only an authenticated, certificate-validated TLS SMTP relay and test delivery without logging reset links or credentials.
+OAuth identifiers alone no longer enable a provider. The explicit switches default to `false`. When `GOOGLE_OAUTH_ENABLED=false`, omit `GOOGLE_CLIENT_ID`; when `MICROSOFT_OAUTH_ENABLED=false`, omit `MICROSOFT_CLIENT_ID`, `MICROSOFT_TENANT_ID`, and `MICROSOFT_ALLOWED_TENANT_IDS`. When Google is enabled, its client ID is required and must be the exact registered `.apps.googleusercontent.com` value. When Microsoft is enabled, its client and fixed-tenant IDs are required UUIDs, and the allowed-tenant list is required and must include the fixed tenant. Existing OAuth deployments must set each provider's explicit switch to `true` before upgrade preflight and restart, retaining the reviewed identifiers for every provider still in use; otherwise that provider is disabled even if old identifiers remain. Enabling a provider with missing or invalid identifiers fails preflight. The browser obtains its public CSRF-cookie and OAuth identifiers from backend settings at runtime through `/api/runtime-config`; do not bake environment-specific `VITE_*` identity values into the frontend bundle. `EMAIL_HOST`, `EMAIL_USERNAME`, `EMAIL_PASSWORD`, and `EMAIL_FROM` are mandatory; `EMAIL_PORT` defaults to 587 but must be recorded explicitly for the school relay. Permit only an authenticated, certificate-validated TLS SMTP relay and test delivery without logging reset links or credentials.
 
 Push delivery is deliberately disabled in this release: production must set `PUSH_NOTIFICATIONS_ENABLED=false`, leave `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and `VAPID_SUBJECT` unset, and do not enable litblogs-reminders.timer. Enabling push remains a deployment blocker until endpoint validation, egress policy, and bounded dispatch behavior have a separately reviewed implementation. The bounded defaults for `JWT_CLOCK_SKEW_SECONDS`, `ACCESS_TOKEN_EXPIRE_MINUTES`, `OAUTH_HTTP_TIMEOUT_SECONDS`, `OAUTH_JWKS_CACHE_SECONDS`, and the `DB_*` pool/timeout settings may be changed only through a reviewed capacity or security change.
 

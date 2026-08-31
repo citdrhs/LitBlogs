@@ -50,14 +50,27 @@ describe("local password registration configuration", () => {
     )).toBe(false);
   });
 
-  it("cannot be enabled by runtime configuration in a production build", () => {
+  it("trusts exact runtime true in a production build", () => {
     expect(applyPublicRegistrationConfig(
       { localPasswordRegistrationEnabled: true },
       {
         MODE: "production",
         PROD: true,
-        VITE_LOCAL_PASSWORD_REGISTRATION_ENABLED: "true",
       },
-    )).toBe(false);
+    )).toBe(true);
   });
+
+  it.each([undefined, false, "true", 1])(
+    "does not let the production build variable enable runtime value %s",
+    (runtimeValue) => {
+      expect(applyPublicRegistrationConfig(
+        { localPasswordRegistrationEnabled: runtimeValue },
+        {
+          MODE: "production",
+          PROD: true,
+          VITE_LOCAL_PASSWORD_REGISTRATION_ENABLED: "true",
+        },
+      )).toBe(false);
+    },
+  );
 });

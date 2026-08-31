@@ -12,9 +12,11 @@ export let localPasswordRegistrationEnabled = localPasswordRegistrationEnabledFo
 );
 
 export const applyPublicRegistrationConfig = (runtimeConfig, env = import.meta.env) => {
+  const mode = String(env.MODE || "").trim().toLowerCase();
+  const productionBuild = env.PROD === true && mode === "production";
   localPasswordRegistrationEnabled = (
     runtimeConfig?.localPasswordRegistrationEnabled === true
-    && localPasswordRegistrationEnabledFor(env)
+    && (productionBuild || localPasswordRegistrationEnabledFor(env))
   );
   return localPasswordRegistrationEnabled;
 };

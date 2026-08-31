@@ -2037,6 +2037,39 @@ def test_runtime_browser_configuration_is_backend_owned_and_checked_in_the_bundl
     assert "vite_google_client_id" not in documentation
 
 
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "deploy/README.md",
+        "docs/operations/production-runbook.md",
+    ),
+)
+def test_operator_docs_require_explicit_oauth_provider_switches(relative_path):
+    documentation = (ROOT_DIR / relative_path).read_text(encoding="utf-8").lower()
+
+    assert "google_oauth_enabled=false" in documentation
+    assert "microsoft_oauth_enabled=false" in documentation
+    assert "\ngoogle_client_id=\n" in documentation
+    assert "\nmicrosoft_client_id=\n" in documentation
+    assert "\nmicrosoft_tenant_id=\n" in documentation
+    assert "\nmicrosoft_allowed_tenant_ids=\n" in documentation
+    assert "oauth identifiers alone no longer enable a provider" in documentation
+    assert (
+        "existing oauth deployments must set each provider's explicit switch "
+        "to `true` before upgrade preflight and restart"
+        in documentation
+    )
+    assert (
+        "when `google_oauth_enabled=false`, omit `google_client_id`"
+        in documentation
+    )
+    assert (
+        "when `microsoft_oauth_enabled=false`, omit `microsoft_client_id`, "
+        "`microsoft_tenant_id`, and `microsoft_allowed_tenant_ids`"
+        in documentation
+    )
+
+
 def test_operator_docs_require_hash_locked_runtime_and_lock_tool_installs():
     documentation = "\n".join(
         [
@@ -2133,7 +2166,9 @@ def test_operator_docs_enumerate_the_production_environment_contract():
         "CORS_ALLOWED_ORIGINS",
         "ALLOWED_HOSTS",
         "ALLOWED_EMAIL_DOMAINS",
+        "GOOGLE_OAUTH_ENABLED",
         "GOOGLE_CLIENT_ID",
+        "MICROSOFT_OAUTH_ENABLED",
         "MICROSOFT_CLIENT_ID",
         "MICROSOFT_TENANT_ID",
         "MICROSOFT_ALLOWED_TENANT_IDS",
