@@ -111,7 +111,9 @@ const configureContext = async (browser) => {
         headers: { "Cache-Control": "no-store" },
         body: JSON.stringify({
           csrf_cookie_name: "litblogs_e2e_csrf",
+          google_oauth_enabled: false,
           google_client_id: "",
+          microsoft_oauth_enabled: false,
           microsoft_client_id: "",
           microsoft_tenant_id: "",
           local_password_registration_enabled: true,
