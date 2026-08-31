@@ -1102,17 +1102,22 @@ def test_preflight_skips_only_postmigration_upload_attestations(
     )
 
 
-def test_postflight_rejects_upload_attestations_before_database_checks(
+@pytest.mark.parametrize(
+    "setting_name",
+    (
+        "upload_registry_schema_ready",
+        "upload_legacy_import_complete",
+        "upload_backup_restore_verified",
+    ),
+)
+def test_postflight_rejects_each_upload_attestation_before_database_checks(
     tmp_path,
     capsys,
+    setting_name,
 ):
     import deployment_check
 
-    settings = _production_settings(
-        upload_registry_schema_ready=False,
-        upload_legacy_import_complete=False,
-        upload_backup_restore_verified=False,
-    )
+    settings = _production_settings(**{setting_name: False})
     calls = []
     result = deployment_check.run(
         app_settings=settings,
@@ -1132,21 +1137,49 @@ def test_postflight_rejects_upload_attestations_before_database_checks(
     )
 
 
-def test_normal_settings_load_requires_postmigration_upload_attestations(
+@pytest.mark.parametrize(
+    ("setting_name", "error_marker"),
+    (
+        ("upload_registry_schema_ready", "UPLOAD_REGISTRY_SCHEMA_READY"),
+        ("upload_legacy_import_complete", "UPLOAD_LEGACY_IMPORT_COMPLETE"),
+        ("upload_backup_restore_verified", "UPLOAD_BACKUP_RESTORE_VERIFIED"),
+    ),
+)
+def test_normal_settings_load_requires_each_postmigration_upload_attestation(
     monkeypatch,
+    setting_name,
+    error_marker,
 ):
     _set_production_environment(
         monkeypatch,
-        upload_registry_schema_ready=False,
-        upload_legacy_import_complete=False,
-        upload_backup_restore_verified=False,
+        **{setting_name: False},
     )
 
     with pytest.raises(
         ValueError,
-        match="Missing production readiness attestation: UPLOAD_REGISTRY_SCHEMA_READY",
+        match=f"Missing production readiness attestation: {error_marker}",
     ):
         config.load_settings()
+
+
+def test_get_settings_cached_normal_load_requires_runtime_readiness(monkeypatch):
+    _set_production_environment(
+        monkeypatch,
+        upload_backup_restore_verified=False,
+    )
+    config.reset_settings_cache()
+
+    try:
+        with pytest.raises(
+            ValueError,
+            match=(
+                "Missing production readiness attestation: "
+                "UPLOAD_BACKUP_RESTORE_VERIFIED"
+            ),
+        ):
+            config.get_settings()
+    finally:
+        config.reset_settings_cache()
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX ownership and modes required")

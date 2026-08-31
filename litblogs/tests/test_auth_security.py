@@ -281,7 +281,7 @@ def test_production_requires_password_reset_delivery_worker():
         Settings(**data)
 
 
-def test_local_password_registration_requires_explicit_nonproduction_opt_in():
+def test_local_password_registration_supports_password_only_production():
     assert Settings(**_test_settings_data()).local_password_registration_enabled is False
     for app_env in ("test", "development"):
         settings = Settings(
@@ -293,19 +293,32 @@ def test_local_password_registration_requires_explicit_nonproduction_opt_in():
         assert settings.local_password_registration_enabled is True
 
     production_data = _production_settings_data()
-    production_data["local_password_registration_enabled"] = True
-    with pytest.raises(
-        ValidationError,
-        match="LOCAL_PASSWORD_REGISTRATION_ENABLED",
-    ):
-        Settings(**production_data)
+    production_data.update(
+        local_password_registration_enabled=True,
+        google_oauth_enabled=False,
+        microsoft_oauth_enabled=False,
+        google_client_id=None,
+        microsoft_client_id=None,
+        microsoft_tenant_id=None,
+        microsoft_allowed_tenant_ids=(),
+    )
+
+    settings = Settings(**production_data)
+
+    assert settings.local_password_registration_enabled is True
+    assert settings.google_oauth_enabled is False
+    assert settings.microsoft_oauth_enabled is False
+    assert settings.google_client_id is None
+    assert settings.microsoft_client_id is None
+    assert settings.microsoft_tenant_id is None
+    assert settings.microsoft_allowed_tenant_ids == ()
 
 
 @pytest.mark.parametrize("value", ["1", "yes", "on", "TRUE "])
 def test_local_password_registration_rejects_ambiguous_boolean_values(value):
     with pytest.raises(
         ValidationError,
-        match="LOCAL_PASSWORD_REGISTRATION_ENABLED",
+        match="authentication flags must be literal true or false",
     ):
         Settings(
             **_test_settings_data(
