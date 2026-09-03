@@ -3,9 +3,9 @@ bleach[css]==6.4.0
 # Click requires this only on Windows; pin it explicitly so the Linux-generated lock is portable.
 colorama==0.4.6
 fastapi==0.141.1
-google-auth==2.56.3
+google-auth==2.57.0
 psycopg2-binary==2.9.12
-pydantic[email]==2.13.4
+pydantic[email]==2.13.5
 pydantic-settings==2.15.0
 pwdlib[argon2,bcrypt]==0.3.1
 PyJWT[crypto]==2.13.0
