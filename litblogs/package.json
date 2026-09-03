@@ -24,7 +24,7 @@
     "@react-oauth/google": "^0.13.5",
     "@tailwindcss/forms": "^0.5.11",
     "@tailwindcss/typography": "^0.5.20",
-    "@tiptap/core": "^3.30.3",
+    "@tiptap/core": "^3.30.4",
     "@tiptap/extension-character-count": "^3.30.3",
     "@tiptap/extension-color": "^3.30.3",
     "@tiptap/extension-font-family": "^3.30.3",
