@@ -1877,6 +1877,68 @@ def test_resend_verification_recreates_a_missing_outbox_row(client):
         assert verification.delivery_claim_digest is None
 
 
+def test_resend_verification_preserves_an_in_flight_worker_claim(client):
+    payload = _registration_payload("resend-in-flight")
+    assert client.post("/api/auth/register", json=payload).status_code == 202
+    with SessionLocal() as db:
+        verification = db.query(models.EmailVerification).one()
+        verification.created_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+            minutes=6
+        )
+        db.commit()
+
+    claim = email_verification_delivery.claim_email_verification_delivery(
+        SessionLocal,
+        claim_timeout_seconds=120,
+    )
+    assert claim is not None
+    verification_id, claimed_email, claim_nonce = claim
+    assert claimed_email == payload["email"]
+    with SessionLocal() as db:
+        claimed = db.get(models.EmailVerification, verification_id)
+        claimed_created_at = claimed.created_at
+        claimed_attempted_at = claimed.delivery_attempted_at
+        claimed_digest = claimed.delivery_claim_digest
+        assert claimed.delivery_status == "PROCESSING"
+        assert claimed_digest is not None
+
+    response = client.post(
+        "/api/auth/resend-verification",
+        json={"email": payload["email"]},
+    )
+
+    assert response.status_code == 202
+    assert response.json() == RESEND_ACCEPTED
+    assert response.headers.get_list("set-cookie") == []
+    with SessionLocal() as db:
+        preserved = db.get(models.EmailVerification, verification_id)
+        assert preserved.created_at == claimed_created_at
+        assert preserved.delivery_status == "PROCESSING"
+        assert preserved.delivery_attempted_at == claimed_attempted_at
+        assert preserved.delivery_claim_digest == claimed_digest
+
+    raw_token = "synthetic-in-flight-verification-token"
+    completed = (
+        email_verification_delivery.complete_email_verification_delivery_outcome(
+            SessionLocal,
+            verification_id,
+            claim_nonce,
+            raw_token,
+            True,
+        )
+    )
+
+    assert completed is (
+        email_verification_delivery.EmailVerificationCompletionOutcome.COMPLETED
+    )
+    with SessionLocal() as db:
+        delivered = db.get(models.EmailVerification, verification_id)
+        assert delivered.delivery_status == "DELIVERED"
+        assert delivered.token_digest == (
+            email_verification_delivery.email_verification_token_digest(raw_token)
+        )
+
+
 def test_verification_endpoints_never_log_email_or_raw_token(client, caplog, capsys):
     private_email = "private-verification-recipient@example.com"
     private_token = "private-raw-verification-token-material"

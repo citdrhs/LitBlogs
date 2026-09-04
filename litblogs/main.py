@@ -1806,6 +1806,13 @@ def resend_verification(
                 models.EmailVerification.id == verification_id,
                 models.EmailVerification.user_id == user.id,
                 models.EmailVerification.created_at <= cooldown_start,
+                models.EmailVerification.delivery_status.in_(
+                    (
+                        email_verification_delivery.EMAIL_VERIFICATION_PENDING,
+                        email_verification_delivery.EMAIL_VERIFICATION_DELIVERED,
+                        email_verification_delivery.EMAIL_VERIFICATION_FAILED,
+                    )
+                ),
             ).update(
                 {
                     models.EmailVerification.created_at: now,
