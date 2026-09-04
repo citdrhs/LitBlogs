@@ -18,7 +18,9 @@ PUBLIC_API_ROUTES = frozenset(
         ("POST", "/api/auth/microsoft-login"),
         ("POST", "/api/auth/microsoft-signup"),
         ("POST", "/api/auth/register"),
+        ("POST", "/api/auth/resend-verification"),
         ("POST", "/api/auth/reset-password"),
+        ("POST", "/api/auth/verify-email"),
     }
 )
 

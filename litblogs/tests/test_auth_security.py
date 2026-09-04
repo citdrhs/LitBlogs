@@ -314,6 +314,40 @@ def test_local_password_registration_supports_password_only_production():
     assert settings.microsoft_allowed_tenant_ids == ()
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("email_host", None),
+        ("email_username", None),
+        ("email_password", None),
+        ("email_from", None),
+        ("password_reset_worker_enabled", False),
+    ],
+)
+def test_password_only_production_requires_authenticated_smtp_and_combined_worker(
+    field,
+    value,
+):
+    production_data = _production_settings_data()
+    production_data.update(
+        local_password_registration_enabled=True,
+        google_oauth_enabled=False,
+        microsoft_oauth_enabled=False,
+        google_client_id=None,
+        microsoft_client_id=None,
+        microsoft_tenant_id=None,
+        microsoft_allowed_tenant_ids=(),
+    )
+    production_data[field] = value
+
+    with pytest.raises(ValidationError):
+        Settings(**production_data)
+
+
+def test_email_verification_has_no_runtime_opt_out_setting():
+    assert "email_verification_enabled" not in Settings.model_fields
+
+
 @pytest.mark.parametrize("value", ["1", "yes", "on", "TRUE "])
 def test_local_password_registration_rejects_ambiguous_boolean_values(value):
     with pytest.raises(
@@ -554,6 +588,49 @@ def test_password_primitives_reject_oversized_passwords_before_hashing():
         verify_and_update_password(oversized, LEGACY_BCRYPT_HASH)
 
 
+@pytest.mark.parametrize(
+    "password",
+    [
+        "Short1!",
+        "lowercase-password-1!",
+        "UPPERCASE-PASSWORD-1!",
+        "Missing-number-password!",
+        "MissingSpecialPassword1",
+    ],
+)
+def test_all_new_password_request_schemas_enforce_signup_strength_policy(password):
+    import main
+
+    constructors = (
+        lambda: main.schemas.UserCreate(
+            username="policy-user",
+            email="policy-user@example.com",
+            password=password,
+            role="STUDENT",
+        ),
+        lambda: main.schemas.ChangePasswordRequest(
+            current_password="existing-password",
+            new_password=password,
+        ),
+        lambda: main.ResetPasswordRequest(
+            token="synthetic-reset-token",
+            new_password=password,
+        ),
+    )
+
+    for construct in constructors:
+        with pytest.raises(ValidationError, match="password"):
+            construct()
+
+
+def test_reusable_password_policy_accepts_current_signup_contract():
+    import schemas
+
+    valid_password = "Strong-school-password-1!"
+
+    assert schemas.validate_new_password_policy(valid_password) == valid_password
+
+
 def test_login_atomically_upgrades_legacy_bcrypt_hash(client):
     import models
     from database import SessionLocal
@@ -567,6 +644,7 @@ def test_login_atomically_upgrades_legacy_bcrypt_hash(client):
             last_name="User",
             role=models.UserRole.STUDENT,
             is_admin=False,
+            email_verified_at=datetime.now(timezone.utc),
         )
         db.add(user)
         db.commit()
@@ -600,6 +678,7 @@ def test_password_upgrade_compare_and_swap_preserves_concurrent_reset(client):
             last_name="Reset",
             role=models.UserRole.STUDENT,
             is_admin=False,
+            email_verified_at=datetime.now(timezone.utc),
         )
         db.add(user)
         db.commit()
@@ -627,6 +706,38 @@ def test_password_upgrade_compare_and_swap_preserves_concurrent_reset(client):
     assert persisted is False
     with SessionLocal() as db:
         assert db.get(models.User, user_id).password == reset_hash
+
+
+def test_pending_legacy_password_login_never_upgrades_hash_or_issues_session(client):
+    import models
+    from database import SessionLocal
+
+    with SessionLocal() as db:
+        user = models.User(
+            username="pending-legacy-user",
+            email="pending-legacy@example.test",
+            password=LEGACY_BCRYPT_HASH,
+            first_name="Pending",
+            last_name="Legacy",
+            role=models.UserRole.STUDENT,
+            is_admin=False,
+            email_verified_at=None,
+        )
+        db.add(user)
+        db.commit()
+        user_id = user.id
+
+    response = client.post(
+        "/api/auth/login",
+        json={"email": "pending-legacy@example.test", "password": LEGACY_PASSWORD},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Invalid email or password"}
+    assert response.headers.get_list("set-cookie") == []
+    with SessionLocal() as db:
+        assert db.get(models.User, user_id).password == LEGACY_BCRYPT_HASH
+        assert db.query(models.BrowserSession).count() == 0
 
 
 def test_malformed_bearer_token_remains_unauthorized(client):

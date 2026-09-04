@@ -21,6 +21,7 @@ __all__ = [
     "delete_expired_sessions",
     "find_active_browser_session",
     "get_settings",
+    "invalidate_email_verification_requests",
     "invalidate_password_reset_requests",
     "invitation_email_digest",
     "issue_browser_session",
@@ -78,6 +79,7 @@ def issue_browser_session(
     account_filters = [
         models.User.id == user_id,
         models.User.disabled_at.is_(None),
+        models.User.email_verified_at.is_not(None),
     ]
     if expected_password_hash is not None:
         account_filters.append(models.User.password == expected_password_hash)
@@ -201,6 +203,30 @@ def invalidate_password_reset_requests(
             token=None,
             expires_at=None,
             used=True,
+            delivery_status="FAILED",
+            delivery_attempted_at=current_time,
+            delivery_claim_digest=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    return int(result.rowcount or 0)
+
+
+def invalidate_email_verification_requests(
+    db: Session,
+    *,
+    user_id: int,
+    now: datetime | None = None,
+) -> int:
+    """Make every verification/outbox row for an account unusable."""
+
+    current_time = _aware_utc(now or utc_now())
+    result = db.execute(
+        update(models.EmailVerification)
+        .where(models.EmailVerification.user_id == user_id)
+        .values(
+            token_digest=None,
+            expires_at=None,
             delivery_status="FAILED",
             delivery_attempted_at=current_time,
             delivery_claim_digest=None,

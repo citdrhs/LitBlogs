@@ -83,6 +83,7 @@ def _create_user(email: str, *, role: models.UserRole = models.UserRole.STUDENT)
             last_name="User",
             role=role,
             is_admin=role == models.UserRole.ADMIN,
+            email_verified_at=datetime.now(timezone.utc),
         )
         db.add(user)
         db.commit()
@@ -427,7 +428,9 @@ def test_public_password_registration_rejects_admin_even_with_valid_code(
 
     assert response.status_code == 202
     assert response.json() == {
-        "message": "If registration can be completed, sign in with the submitted credentials."
+        "message": (
+            "If registration can be completed, verification instructions will be sent."
+        )
     }
     assert response.headers.get_list("set-cookie") == []
     with SessionLocal() as db:
@@ -721,6 +724,7 @@ def test_google_signup_defaults_to_student_and_issues_only_protected_session_met
         user = db.query(models.User).one()
         assert user.role == models.UserRole.STUDENT
         assert user.is_admin is False
+        assert user.email_verified_at is not None
         identity = db.query(models.FederatedIdentity).one()
         assert identity.provider == "google"
         assert identity.issuer == GOOGLE_ISSUER
@@ -884,6 +888,39 @@ def test_disabled_federated_identity_cannot_create_a_new_session(
     _install_google_claims(
         monkeypatch,
         _google_claims(sub="disabled-google-subject", email=email),
+    )
+
+    response = client.post(
+        "/api/auth/google-login",
+        json={"idToken": "synthetic-google-id-token"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "External authentication failed"}
+    assert main.settings.session_cookie_name not in response.cookies
+    with SessionLocal() as db:
+        assert db.query(models.BrowserSession).count() == 0
+
+
+def test_unverified_federated_identity_cannot_create_a_new_session(
+    client,
+    oauth_settings,
+    monkeypatch,
+):
+    email = f"pending-oauth@{ALLOWED_DOMAIN}"
+    user_id = _create_user(email)
+    _bind_identity(
+        user_id,
+        provider="google",
+        issuer=GOOGLE_ISSUER,
+        subject="pending-google-subject",
+    )
+    with SessionLocal() as db:
+        db.get(models.User, user_id).email_verified_at = None
+        db.commit()
+    _install_google_claims(
+        monkeypatch,
+        _google_claims(sub="pending-google-subject", email=email),
     )
 
     response = client.post(
@@ -1355,6 +1392,7 @@ def test_microsoft_signup_defaults_to_student_and_creates_subject_binding(
     _assert_safe_session(response, expected_role="STUDENT")
     with SessionLocal() as db:
         user = db.query(models.User).one()
+        assert user.email_verified_at is not None
         identity = db.query(models.FederatedIdentity).one()
         assert identity.provider == "microsoft"
         assert identity.issuer == MICROSOFT_ISSUER

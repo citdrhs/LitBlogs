@@ -307,6 +307,7 @@ def _user(db, user_id: int, role=models.UserRole.STUDENT):
         first_name="Test",
         last_name=str(user_id),
         role=role,
+        email_verified_at=datetime.now(UTC),
     )
     db.add(user)
     db.flush()

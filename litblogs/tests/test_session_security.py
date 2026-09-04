@@ -1,6 +1,7 @@
 import logging
 import secrets
 import time
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import BaseModel
@@ -19,7 +20,7 @@ def _student_payload(suffix: str = "one") -> dict:
     return {
         "username": f"session-student-{suffix}",
         "email": f"session-student-{suffix}@example.com",
-        "password": "synthetic-session-password",
+        "password": "Synthetic-session-password-1!",
         "first_name": "Session",
         "last_name": "Student",
         "role": "STUDENT",
@@ -35,6 +36,7 @@ def _register(client, suffix: str = "one"):
 
 def _register_and_login(client, suffix: str = "one"):
     _register(client, suffix)
+    _verify_registered(_student_payload(suffix)["email"])
     response = client.post(
         "/api/auth/login",
         json={
@@ -44,6 +46,13 @@ def _register_and_login(client, suffix: str = "one"):
     )
     assert response.status_code == 200
     return response
+
+
+def _verify_registered(email: str) -> None:
+    with SessionLocal() as db:
+        user = db.query(models.User).filter(models.User.email == email).one()
+        user.email_verified_at = datetime.now(UTC)
+        db.commit()
 
 
 def _create_student(suffix: str) -> models.User:
@@ -56,6 +65,7 @@ def _create_student(suffix: str) -> models.User:
             last_name="Student",
             role=models.UserRole.STUDENT,
             is_admin=False,
+            email_verified_at=datetime.now(UTC),
         )
         db.add(user)
         db.commit()
@@ -170,7 +180,7 @@ def test_csrf_comparison_uses_constant_time_bytes(monkeypatch):
 def test_registration_is_generic_and_does_not_create_browser_session(client):
     response = _register(client)
     assert response.json() == {
-        "message": "If registration can be completed, sign in with the submitted credentials."
+        "message": "If registration can be completed, verification instructions will be sent."
     }
     assert client.cookies.get(main.settings.session_cookie_name) is None
     assert client.cookies.get(main.settings.csrf_cookie_name) is None
@@ -179,6 +189,7 @@ def test_registration_is_generic_and_does_not_create_browser_session(client):
 
 def test_login_rotates_csrf_and_never_returns_the_jwt(client):
     _register(client)
+    _verify_registered(_student_payload()["email"])
     first_response = client.post(
         "/api/auth/login",
         json={
@@ -248,6 +259,21 @@ def test_safe_session_endpoint_returns_typed_nonsecret_metadata(client):
     route = next(route for route in main.app.routes if route.path == "/api/auth/session")
     assert isinstance(route.response_model, type)
     assert issubclass(route.response_model, BaseModel)
+
+
+def test_current_user_rechecks_email_verification_for_existing_session(client):
+    user = _create_student("verification-revoked")
+    _set_cookie_auth(client, user.id)
+    assert client.get("/api/auth/session").status_code == 200
+
+    with SessionLocal() as db:
+        db.get(models.User, user.id).email_verified_at = None
+        db.commit()
+
+    denied = client.get("/api/auth/session")
+
+    assert denied.status_code == 401
+    assert denied.json() == {"detail": "Could not validate credentials"}
 
 
 def test_every_browser_auth_success_route_uses_the_nonsecret_session_schema():

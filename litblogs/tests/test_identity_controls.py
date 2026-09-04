@@ -13,12 +13,14 @@ from threading import Barrier, Event
 from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 from psycopg2 import DatabaseError as PsycopgDatabaseError
 from pydantic import ValidationError
 from settings_test_support import production_upload_settings
 from sqlalchemy import create_engine, event, select, update
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
+import email_verification_delivery
 import main
 import models
 from auth_security import (
@@ -33,8 +35,13 @@ from database import SessionLocal, engine
 identity_controls = import_module("identity_controls")
 
 REGISTRATION_ACCEPTED = {
-    "message": "If registration can be completed, sign in with the submitted credentials."
+    "message": "If registration can be completed, verification instructions will be sent."
 }
+RESEND_ACCEPTED = {
+    "message": "If the account can be verified, verification instructions will be sent."
+}
+INVALID_VERIFICATION = {"detail": "Invalid or expired verification link"}
+VALID_PASSWORD = "Synthetic-registration-password-1!"
 
 
 def _production_settings_data() -> dict:
@@ -755,6 +762,7 @@ def _create_user(*, suffix: str, role: models.UserRole) -> int:
             last_name=role.value.title(),
             role=role,
             is_admin=role == models.UserRole.ADMIN,
+            email_verified_at=datetime.now(UTC),
         )
         db.add(user)
         db.commit()
@@ -813,7 +821,7 @@ def _registration_payload(
     payload = {
         "username": username or f"registration-{suffix}",
         "email": email or f"registration-{suffix}@example.com",
-        "password": "synthetic-registration-password",
+        "password": VALID_PASSWORD,
         "first_name": "Registration",
         "last_name": "User",
         "role": role,
@@ -821,6 +829,33 @@ def _registration_payload(
     if teacher_invitation_token is not None:
         payload["teacher_invitation_token"] = teacher_invitation_token
     return payload
+
+
+def _mark_email_verified(email: str) -> None:
+    with SessionLocal() as db:
+        user = db.query(models.User).filter(models.User.email == email).one()
+        user.email_verified_at = datetime.now(UTC)
+        db.commit()
+
+
+def _deliver_email_verification(email: str, raw_token: str) -> int:
+    now = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
+    with SessionLocal() as db:
+        verification = (
+            db.query(models.EmailVerification)
+            .join(models.User, models.User.id == models.EmailVerification.user_id)
+            .filter(models.User.email == email)
+            .one()
+        )
+        verification.token_digest = (
+            email_verification_delivery.email_verification_token_digest(raw_token)
+        )
+        verification.expires_at = now + timedelta(hours=1)
+        verification.delivery_status = "DELIVERED"
+        verification.delivery_attempted_at = now
+        verification.delivery_claim_digest = None
+        db.commit()
+        return verification.id
 
 
 def _private_email_input(email: str) -> io.StringIO:
@@ -1608,6 +1643,12 @@ def test_password_registration_success_and_duplicates_share_generic_202(client):
                 models.UserRole.STUDENT,
             )
         ]
+        assert users[0].email_verified_at is None
+        verification = db.query(models.EmailVerification).one()
+        assert verification.user_id == users[0].id
+        assert verification.delivery_status == "PENDING"
+        assert verification.token_digest is None
+        assert verification.expires_at is None
 
     client.cookies.clear()
     assert client.get("/api/auth/session").status_code == 401
@@ -1662,14 +1703,361 @@ def test_password_registration_and_login_use_one_normalized_email_identity(clien
         assert len(users) == 1
         assert users[0].email == "case.sensitive@example.com"
 
+    _mark_email_verified("case.sensitive@example.com")
+
     login = client.post(
         "/api/auth/login",
         json={
             "email": "CASE.SENSITIVE@example.com",
-            "password": "synthetic-registration-password",
+            "password": VALID_PASSWORD,
         },
     )
     assert login.status_code == 200
+
+
+def test_pending_password_account_cannot_login_until_email_is_verified(client):
+    payload = _registration_payload("pending-login")
+    registered = client.post("/api/auth/register", json=payload)
+
+    pending_login = client.post(
+        "/api/auth/login",
+        json={"email": payload["email"], "password": payload["password"]},
+    )
+
+    assert registered.status_code == 202
+    assert pending_login.status_code == 401
+    assert pending_login.json() == {"detail": "Invalid email or password"}
+    assert pending_login.headers.get_list("set-cookie") == []
+    with SessionLocal() as db:
+        assert db.query(models.BrowserSession).count() == 0
+
+    raw_token = "synthetic-pending-login-verification-token"
+    _deliver_email_verification(payload["email"], raw_token)
+    verified = client.post("/api/auth/verify-email", json={"token": raw_token})
+    accepted_login = client.post(
+        "/api/auth/login",
+        json={"email": payload["email"], "password": payload["password"]},
+    )
+
+    assert verified.status_code == 200
+    assert verified.json() == {"message": "Email verified successfully"}
+    assert verified.headers.get_list("set-cookie") == []
+    assert accepted_login.status_code == 200
+
+
+def test_session_issuance_rechecks_verified_email_after_authentication(client):
+    del client
+    user_id = _create_student(suffix="verification-cleared-before-issue")
+    with SessionLocal() as db:
+        user = db.get(models.User, user_id)
+        verified_password_hash = user.password
+        user.email_verified_at = None
+        db.commit()
+
+    with SessionLocal() as db, pytest.raises(
+        identity_controls.SessionIssuanceDenied
+    ):
+        identity_controls.issue_browser_session(
+            db,
+            user_id=user_id,
+            settings=identity_controls.get_settings(),
+            expected_password_hash=verified_password_hash,
+        )
+
+    with SessionLocal() as db:
+        assert db.query(models.BrowserSession).count() == 0
+
+
+def test_resend_verification_is_generic_local_only_and_obeys_cooldown(client):
+    payload = _registration_payload("resend")
+    assert client.post("/api/auth/register", json=payload).status_code == 202
+    with SessionLocal() as db:
+        verification = db.query(models.EmailVerification).one()
+        original_created_at = verification.created_at
+        verification.created_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=6)
+        verification.token_digest = email_verification_delivery.email_verification_token_digest(
+            "superseded-token"
+        )
+        verification.expires_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=1)
+        verification.delivery_status = "DELIVERED"
+        verification.delivery_attempted_at = datetime.now(UTC).replace(tzinfo=None)
+        verification.delivery_claim_digest = "a" * 64
+        db.commit()
+
+    accepted = client.post(
+        "/api/auth/resend-verification",
+        json={"email": payload["email"]},
+    )
+    missing = client.post(
+        "/api/auth/resend-verification",
+        json={"email": "missing-account@example.com"},
+    )
+
+    assert accepted.status_code == missing.status_code == 202
+    assert accepted.json() == missing.json() == RESEND_ACCEPTED
+    assert accepted.headers.get_list("set-cookie") == []
+    assert missing.headers.get_list("set-cookie") == []
+    with SessionLocal() as db:
+        verification = db.query(models.EmailVerification).one()
+        assert verification.created_at > original_created_at
+        requeued_at = verification.created_at
+        assert verification.delivery_status == "PENDING"
+        assert verification.token_digest is None
+        assert verification.expires_at is None
+        assert verification.delivery_attempted_at is None
+        assert verification.delivery_claim_digest is None
+
+    immediate = client.post(
+        "/api/auth/resend-verification",
+        json={"email": payload["email"].upper()},
+    )
+    assert immediate.status_code == 202
+    assert immediate.json() == RESEND_ACCEPTED
+    with SessionLocal() as db:
+        assert db.query(models.EmailVerification).one().created_at == requeued_at
+
+
+def test_resend_verification_does_not_requeue_federated_accounts(client):
+    payload = _registration_payload("resend-federated")
+    assert client.post("/api/auth/register", json=payload).status_code == 202
+    with SessionLocal() as db:
+        user = db.query(models.User).filter(models.User.email == payload["email"]).one()
+        verification = db.query(models.EmailVerification).one()
+        verification.created_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+            minutes=6
+        )
+        verification.delivery_status = "FAILED"
+        db.add(
+            models.FederatedIdentity(
+                provider="google",
+                issuer=main.GOOGLE_IDENTITY_ISSUER,
+                subject="synthetic-resend-federated-subject",
+                user_id=user.id,
+            )
+        )
+        db.commit()
+        unchanged_created_at = verification.created_at
+
+    response = client.post(
+        "/api/auth/resend-verification",
+        json={"email": payload["email"]},
+    )
+
+    assert response.status_code == 202
+    assert response.json() == RESEND_ACCEPTED
+    assert response.headers.get_list("set-cookie") == []
+    with SessionLocal() as db:
+        verification = db.query(models.EmailVerification).one()
+        assert verification.created_at == unchanged_created_at
+        assert verification.delivery_status == "FAILED"
+
+
+def test_resend_verification_recreates_a_missing_outbox_row(client):
+    payload = _registration_payload("resend-missing-outbox")
+    assert client.post("/api/auth/register", json=payload).status_code == 202
+    with SessionLocal() as db:
+        db.query(models.EmailVerification).delete()
+        db.commit()
+
+    response = client.post(
+        "/api/auth/resend-verification",
+        json={"email": payload["email"]},
+    )
+
+    assert response.status_code == 202
+    assert response.json() == RESEND_ACCEPTED
+    with SessionLocal() as db:
+        user = db.query(models.User).one()
+        verification = db.query(models.EmailVerification).one()
+        assert verification.user_id == user.id
+        assert verification.delivery_status == "PENDING"
+        assert verification.token_digest is None
+        assert verification.expires_at is None
+        assert verification.delivery_attempted_at is None
+        assert verification.delivery_claim_digest is None
+
+
+def test_verification_endpoints_never_log_email_or_raw_token(client, caplog, capsys):
+    private_email = "private-verification-recipient@example.com"
+    private_token = "private-raw-verification-token-material"
+
+    with caplog.at_level(logging.DEBUG):
+        resend = client.post(
+            "/api/auth/resend-verification",
+            json={"email": private_email},
+        )
+        verify = client.post(
+            "/api/auth/verify-email",
+            json={"token": private_token},
+        )
+
+    captured = capsys.readouterr()
+    combined_output = (
+        resend.text
+        + verify.text
+        + caplog.text
+        + captured.out
+        + captured.err
+    )
+    assert resend.status_code == 202
+    assert resend.json() == RESEND_ACCEPTED
+    assert verify.status_code == 400
+    assert verify.json() == INVALID_VERIFICATION
+    assert private_email not in combined_output
+    assert private_token not in combined_output
+
+
+def test_verify_email_rejects_expired_disabled_replayed_and_unknown_tokens(client):
+    valid_payload = _registration_payload("verify-valid")
+    assert client.post("/api/auth/register", json=valid_payload).status_code == 202
+    valid_token = "synthetic-valid-verification-token"
+    verification_id = _deliver_email_verification(valid_payload["email"], valid_token)
+
+    accepted = client.post("/api/auth/verify-email", json={"token": valid_token})
+    replay = client.post("/api/auth/verify-email", json={"token": valid_token})
+    unknown = client.post(
+        "/api/auth/verify-email",
+        json={"token": "synthetic-unknown-verification-token"},
+    )
+
+    assert accepted.status_code == 200
+    assert accepted.json() == {"message": "Email verified successfully"}
+    assert accepted.headers.get_list("set-cookie") == []
+    assert replay.status_code == unknown.status_code == 400
+    assert replay.json() == unknown.json() == INVALID_VERIFICATION
+    with SessionLocal() as db:
+        user = db.query(models.User).filter(models.User.email == valid_payload["email"]).one()
+        verification = db.get(models.EmailVerification, verification_id)
+        assert user.email_verified_at is not None
+        assert verification.delivery_status == "DELIVERED"
+        assert verification.token_digest is None
+        assert verification.expires_at is None
+        assert verification.delivery_claim_digest is None
+
+    expired_payload = _registration_payload("verify-expired")
+    assert client.post("/api/auth/register", json=expired_payload).status_code == 202
+    expired_token = "synthetic-expired-verification-token"
+    _deliver_email_verification(expired_payload["email"], expired_token)
+    with SessionLocal() as db:
+        verification = (
+            db.query(models.EmailVerification)
+            .join(models.User)
+            .filter(models.User.email == expired_payload["email"])
+            .one()
+        )
+        verification.expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1)
+        db.commit()
+    expired = client.post("/api/auth/verify-email", json={"token": expired_token})
+    assert expired.status_code == 400
+    assert expired.json() == INVALID_VERIFICATION
+
+    disabled_payload = _registration_payload("verify-disabled")
+    assert client.post("/api/auth/register", json=disabled_payload).status_code == 202
+    disabled_token = "synthetic-disabled-verification-token"
+    _deliver_email_verification(disabled_payload["email"], disabled_token)
+    with SessionLocal() as db:
+        user = db.query(models.User).filter(models.User.email == disabled_payload["email"]).one()
+        user.disabled_at = datetime.now(UTC)
+        db.commit()
+    disabled = client.post("/api/auth/verify-email", json={"token": disabled_token})
+    assert disabled.status_code == 400
+    assert disabled.json() == INVALID_VERIFICATION
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"email": "not-an-email"},
+        {"email": ""},
+        {"email": f"{'a' * 101}@example.com"},
+        {"email": "student@example.com", "account_exists": True},
+    ],
+)
+def test_resend_validation_is_bounded_but_always_returns_generic_202(client, payload):
+    response = client.post("/api/auth/resend-verification", json=payload)
+
+    assert response.status_code == 202
+    assert response.json() == RESEND_ACCEPTED
+    assert response.headers.get_list("set-cookie") == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"token": ""},
+        {"token": "x" * 129},
+        {"token": "synthetic-token", "email": "student@example.com"},
+        {},
+    ],
+)
+def test_verify_validation_is_bounded_but_always_returns_generic_400(client, payload):
+    response = client.post("/api/auth/verify-email", json=payload)
+
+    assert response.status_code == 400
+    assert response.json() == INVALID_VERIFICATION
+    assert response.headers.get_list("set-cookie") == []
+
+
+@pytest.mark.skipif(
+    engine.dialect.name != "postgresql",
+    reason="PostgreSQL registration concurrency integration test",
+)
+def test_concurrent_registration_creates_one_user_and_one_verification_outbox(client):
+    del client
+    payload = _registration_payload("concurrent-registration")
+    barrier = Barrier(2)
+
+    def register_once(_index: int):
+        with TestClient(main.app) as concurrent_client:
+            barrier.wait(timeout=5)
+            response = concurrent_client.post("/api/auth/register", json=payload)
+            return response.status_code, response.json(), response.headers.get_list("set-cookie")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(register_once, range(2)))
+
+    assert results == [(202, REGISTRATION_ACCEPTED, []), (202, REGISTRATION_ACCEPTED, [])]
+    with SessionLocal() as db:
+        user = db.query(models.User).one()
+        verification = db.query(models.EmailVerification).one()
+        assert user.email_verified_at is None
+        assert verification.user_id == user.id
+        assert verification.delivery_status == "PENDING"
+
+
+@pytest.mark.skipif(
+    engine.dialect.name != "postgresql",
+    reason="PostgreSQL verification concurrency integration test",
+)
+def test_concurrent_verification_has_exactly_one_winner(client):
+    payload = _registration_payload("concurrent-verification")
+    assert client.post("/api/auth/register", json=payload).status_code == 202
+    raw_token = "synthetic-concurrent-verification-token"
+    _deliver_email_verification(payload["email"], raw_token)
+    barrier = Barrier(2)
+
+    def verify_once(_index: int):
+        with TestClient(main.app) as concurrent_client:
+            barrier.wait(timeout=5)
+            response = concurrent_client.post(
+                "/api/auth/verify-email",
+                json={"token": raw_token},
+            )
+            return response.status_code, response.json(), response.headers.get_list("set-cookie")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(verify_once, range(2)))
+
+    assert sorted(results, key=lambda item: item[0]) == [
+        (200, {"message": "Email verified successfully"}, []),
+        (400, INVALID_VERIFICATION, []),
+    ]
+    with SessionLocal() as db:
+        user = db.query(models.User).one()
+        verification = db.query(models.EmailVerification).one()
+        assert user.email_verified_at is not None
+        assert verification.token_digest is None
+        assert verification.delivery_status == "DELIVERED"
 
 
 @pytest.mark.parametrize(
@@ -2400,7 +2788,7 @@ def test_account_email_requests_are_bounded_to_database_contract(client, path, p
             "/api/auth/reset-password",
             {
                 "token": "sensitive-reset-token-" + ("x" * 128),
-                "new_password": "valid-synthetic-password-value",
+                "new_password": "Valid-synthetic-password-value-1!",
             },
             "sensitive-reset-token-" + ("x" * 128),
         ),
@@ -2453,11 +2841,17 @@ def test_sensitive_auth_validation_errors_never_echo_secret_inputs(
         ),
         (
             main.schemas.ChangePasswordRequest,
-            {"current_password": "🔐" * 300, "new_password": "valid-password-value"},
+            {
+                "current_password": "🔐" * 300,
+                "new_password": "Valid-password-value-1!",
+            },
         ),
         (
             main.schemas.ChangePasswordRequest,
-            {"current_password": "valid-password-value", "new_password": "🔐" * 300},
+            {
+                "current_password": "valid-password-value",
+                "new_password": "🔐" * 300,
+            },
         ),
     ],
 )
@@ -2533,7 +2927,55 @@ def test_teacher_password_registration_consumes_email_bound_invitation(client):
         teacher = db.query(models.User).filter(models.User.email == teacher_email).one()
         invitation = db.query(models.TeacherInvitation).one()
         assert teacher.role == models.UserRole.TEACHER
+        assert teacher.email_verified_at is None
         assert invitation.consumed_at is not None
+        verification = db.query(models.EmailVerification).one()
+        assert verification.user_id == teacher.id
+        assert verification.delivery_status == "PENDING"
+
+
+def test_teacher_registration_rolls_back_invitation_when_outbox_insert_fails(client):
+    now = datetime.now(UTC).replace(microsecond=0)
+    settings = identity_controls.get_settings()
+    teacher_email = "outbox-failure-registration@example.com"
+    with SessionLocal() as db:
+        token = identity_controls.create_teacher_invitation(
+            db,
+            email=teacher_email,
+            created_by="security-operator",
+            expires_at=now + timedelta(hours=1),
+            settings=settings,
+            now=now,
+        )
+        db.commit()
+
+    def fail_outbox_insert(*_args, **_kwargs):
+        raise IntegrityError(
+            "synthetic verification outbox insert failure",
+            {},
+            None,
+        )
+
+    event.listen(models.EmailVerification, "before_insert", fail_outbox_insert)
+    try:
+        response = client.post(
+            "/api/auth/register",
+            json=_registration_payload(
+                "outbox-failure-teacher",
+                role="TEACHER",
+                email=teacher_email,
+                teacher_invitation_token=token,
+            ),
+        )
+    finally:
+        event.remove(models.EmailVerification, "before_insert", fail_outbox_insert)
+
+    assert response.status_code == 202
+    assert response.json() == REGISTRATION_ACCEPTED
+    with SessionLocal() as db:
+        assert db.query(models.User).count() == 0
+        assert db.query(models.EmailVerification).count() == 0
+        assert db.query(models.TeacherInvitation).one().consumed_at is None
 
 
 def test_invalid_mismatched_expired_and_replayed_invitations_are_generic(client):
@@ -2894,7 +3336,7 @@ def test_change_password_revokes_all_sessions_and_requires_new_login(client):
         "/api/auth/change-password",
         json={
             "current_password": "synthetic-identity-password",
-            "new_password": "synthetic-new-identity-password",
+            "new_password": "Synthetic-new-identity-password-1!",
         },
         headers={"X-CSRF-Token": second_csrf},
     )
@@ -2923,7 +3365,7 @@ def test_change_password_revokes_all_sessions_and_requires_new_login(client):
         "/api/auth/reset-password",
         json={
             "token": raw_reset_token,
-            "new_password": "synthetic-stolen-reset-password",
+            "new_password": "Synthetic-stolen-reset-password-1!",
         },
     )
 
@@ -2938,7 +3380,7 @@ def test_change_password_revokes_all_sessions_and_requires_new_login(client):
         "/api/auth/login",
         json={
             "email": "identity-student-change-password@example.com",
-            "password": "synthetic-new-identity-password",
+            "password": "Synthetic-new-identity-password-1!",
         },
     )
     assert reset_replay.status_code == 400
@@ -2977,7 +3419,7 @@ def test_password_reset_revokes_every_existing_session(client):
         "/api/auth/reset-password",
         json={
             "token": raw_reset_token,
-            "new_password": "synthetic-reset-identity-password",
+            "new_password": "Synthetic-reset-identity-password-1!",
         },
     )
 
@@ -2996,7 +3438,7 @@ def test_password_reset_revokes_every_existing_session(client):
         "/api/auth/login",
         json={
             "email": "identity-student-reset-revokes@example.com",
-            "password": "synthetic-reset-identity-password",
+            "password": "Synthetic-reset-identity-password-1!",
         },
     ).status_code == 200
 
@@ -3021,7 +3463,7 @@ def test_legacy_raw_password_reset_token_is_never_accepted(client):
         "/api/auth/reset-password",
         json={
             "token": raw_token,
-            "new_password": "synthetic-password-that-must-not-win",
+            "new_password": "Synthetic-password-that-must-not-win-1!",
         },
     )
 
@@ -3045,6 +3487,17 @@ def test_user_status_route_is_admin_only_and_disable_revokes_all(client):
     del student_user_id, teacher_user_id
 
     with SessionLocal() as db:
+        db.add(
+            models.EmailVerification(
+                user_id=target_user_id,
+                token_digest=email_verification_delivery.email_verification_token_digest(
+                    "pre-disable-verification-token"
+                ),
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+                delivery_status="DELIVERED",
+                delivery_claim_digest="b" * 64,
+            )
+        )
         target_sessions = [
             identity_controls.issue_browser_session(
                 db,
@@ -3104,6 +3557,11 @@ def test_user_status_route_is_admin_only_and_disable_revokes_all(client):
             .filter(models.BrowserSession.user_id == target_user_id)
             .all()
         )
+        verification = db.query(models.EmailVerification).one()
+        assert verification.token_digest is None
+        assert verification.expires_at is None
+        assert verification.delivery_status == "FAILED"
+        assert verification.delivery_claim_digest is None
         disable_audit = db.query(models.OperatorAuditEvent).one()
         assert disable_audit.actor_identifier == f"admin-user:{admin_user_id}"
         assert disable_audit.action == "ACCOUNT_DISABLED"
@@ -3262,7 +3720,7 @@ def test_disabled_account_cannot_queue_or_consume_password_reset(client):
         "/api/auth/reset-password",
         json={
             "token": raw_reset_token,
-            "new_password": "synthetic-disabled-new-password",
+            "new_password": "Synthetic-disabled-new-password-1!",
         },
     )
 
@@ -3273,6 +3731,60 @@ def test_disabled_account_cannot_queue_or_consume_password_reset(client):
         password_reset = db.query(models.PasswordReset).one()
         assert user.password == original_password_hash
         assert password_reset.used is False
+
+
+def test_unverified_account_cannot_queue_claim_complete_or_consume_password_reset(
+    client,
+):
+    user_id = _create_student(suffix="unverified-reset")
+    raw_token = "synthetic-unverified-reset-token"
+    with SessionLocal() as db:
+        user = db.get(models.User, user_id)
+        user.email_verified_at = None
+        original_password_hash = user.password
+        db.add(
+            models.PasswordReset(
+                user_id=user_id,
+                token=main._password_reset_token_digest(raw_token),
+                created_at=datetime.now(UTC).replace(tzinfo=None),
+                expires_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=1),
+                used=False,
+                delivery_status="DELIVERED",
+            )
+        )
+        db.commit()
+
+    forgot = client.post(
+        "/api/auth/forgot-password",
+        json={"email": "identity-student-unverified-reset@example.com"},
+    )
+    reset = client.post(
+        "/api/auth/reset-password",
+        json={
+            "token": raw_token,
+            "new_password": "Synthetic-unverified-reset-password-1!",
+        },
+    )
+
+    assert forgot.status_code == 202
+    assert reset.status_code == 400
+    with SessionLocal() as db:
+        row = db.query(models.PasswordReset).one()
+        row.token = None
+        row.expires_at = None
+        row.used = False
+        row.delivery_status = "PENDING"
+        db.commit()
+
+    assert main._claim_password_reset_delivery() is None
+    with SessionLocal() as db:
+        user = db.get(models.User, user_id)
+        row = db.query(models.PasswordReset).one()
+        assert user.password == original_password_hash
+        assert row.token is None
+        assert row.expires_at is None
+        assert row.used is True
+        assert row.delivery_status == "FAILED"
 
 
 def test_admin_disable_invalidates_reset_and_reenable_cannot_restore_it(client):
@@ -3319,7 +3831,7 @@ def test_admin_disable_invalidates_reset_and_reenable_cannot_restore_it(client):
         "/api/auth/reset-password",
         json={
             "token": raw_reset_token,
-            "new_password": "synthetic-password-after-reenable",
+            "new_password": "Synthetic-password-after-reenable-1!",
         },
     )
     assert replay.status_code == 400
@@ -3366,7 +3878,7 @@ def test_operator_disable_invalidates_reset_and_reenable_cannot_restore_it(clien
         "/api/auth/reset-password",
         json={
             "token": raw_reset_token,
-            "new_password": "synthetic-operator-password-after-reenable",
+            "new_password": "Synthetic-operator-password-after-reenable-1!",
         },
     )
     assert replay.status_code == 400
@@ -3581,7 +4093,7 @@ def test_postgres_password_change_and_reset_have_one_winner(client, monkeypatch)
                 "/api/auth/change-password",
                 json={
                     "current_password": "synthetic-identity-password",
-                    "new_password": "synthetic-change-race-password",
+                    "new_password": "Synthetic-change-race-password-1!",
                 },
                 headers={"X-CSRF-Token": csrf_token},
             )
@@ -3619,7 +4131,7 @@ def test_postgres_password_change_and_reset_have_one_winner(client, monkeypatch)
             user.password,
         )
         assert not verify_password(
-            "synthetic-change-race-password",
+            "Synthetic-change-race-password-1!",
             user.password,
         )
         assert db.get(models.PasswordReset, reset_id).used is True

@@ -41,6 +41,7 @@ PasswordResetEmailSettings = auth_email_delivery.AuthEmailSettings
 class PasswordResetCompletionOutcome(StrEnum):
     COMPLETED = "COMPLETED"
     ACCOUNT_DISABLED = "ACCOUNT_DISABLED"
+    ACCOUNT_INELIGIBLE = "ACCOUNT_INELIGIBLE"
     CLAIM_LOST = "CLAIM_LOST"
 
 
@@ -147,7 +148,7 @@ def claim_password_reset_delivery(
                 db.rollback()
                 continue
             reset_request, user = locked_reset
-            if user.disabled_at is not None:
+            if user.disabled_at is not None or user.email_verified_at is None:
                 invalidate_password_reset_requests(db, user_id=user.id)
                 db.commit()
                 continue
@@ -209,10 +210,14 @@ def complete_password_reset_delivery_outcome(
             db.rollback()
             return PasswordResetCompletionOutcome.CLAIM_LOST
         _reset_request, user = locked_reset
-        if user.disabled_at is not None:
+        if user.disabled_at is not None or user.email_verified_at is None:
             invalidate_password_reset_requests(db, user_id=user.id)
             db.commit()
-            return PasswordResetCompletionOutcome.ACCOUNT_DISABLED
+            return (
+                PasswordResetCompletionOutcome.ACCOUNT_DISABLED
+                if user.disabled_at is not None
+                else PasswordResetCompletionOutcome.ACCOUNT_INELIGIBLE
+            )
 
         if delivered:
             completion_values = {

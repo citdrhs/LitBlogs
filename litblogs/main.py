@@ -23,6 +23,7 @@ from typing import List, Literal
 from urllib.parse import urlsplit
 
 import uvicorn
+from email_validator import EmailNotValidError, validate_email
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
@@ -39,6 +40,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import MutableHeaders
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+import email_verification_delivery
 import models
 import password_reset_delivery
 import schemas
@@ -110,6 +112,7 @@ from identity_controls import (
     SessionIssuanceDenied,
     consume_teacher_invitation,
     find_active_browser_session,
+    invalidate_email_verification_requests,
     invalidate_password_reset_requests,
     issue_browser_session,
     normalize_email,
@@ -233,10 +236,12 @@ OAUTH_AUTH_PATHS = frozenset(
 SENSITIVE_CREDENTIAL_AUTH_PATHS = frozenset(
     {
         "/api/auth/register",
+        "/api/auth/resend-verification",
         "/api/auth/login",
         "/api/auth/change-password",
         "/api/auth/forgot-password",
         "/api/auth/reset-password",
+        "/api/auth/verify-email",
     }
 )
 GOOGLE_IDENTITY_ISSUER = "https://accounts.google.com"
@@ -254,6 +259,16 @@ async def safe_auth_request_validation_error(request: Request, exc: RequestValid
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={"detail": "External authentication failed"},
+        )
+    if request.url.path == "/api/auth/resend-verification":
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content=RESEND_ACCEPTED_RESPONSE,
+        )
+    if request.url.path == "/api/auth/verify-email":
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": INVALID_VERIFICATION_DETAIL},
         )
     if request.url.path in SENSITIVE_CREDENTIAL_AUTH_PATHS:
         return JSONResponse(
@@ -1587,6 +1602,7 @@ def _create_federated_user(
         last_name=last_name[:50],
         role=role,
         is_admin=False,
+        email_verified_at=_utc_now_naive(),
     )
     identity = models.FederatedIdentity(
         provider=provider,
@@ -1615,7 +1631,7 @@ def _create_federated_user(
 
 
 def _require_active_federated_user(user: models.User) -> models.User:
-    if user.disabled_at is not None:
+    if user.disabled_at is not None or user.email_verified_at is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="External authentication failed",
@@ -1632,8 +1648,13 @@ def _require_oauth_provider_enabled(enabled: object) -> None:
 
 
 REGISTRATION_ACCEPTED_RESPONSE = {
-    "message": "If registration can be completed, sign in with the submitted credentials."
+    "message": "If registration can be completed, verification instructions will be sent."
 }
+RESEND_ACCEPTED_RESPONSE = {
+    "message": "If the account can be verified, verification instructions will be sent."
+}
+EMAIL_VERIFIED_RESPONSE = {"message": "Email verified successfully"}
+INVALID_VERIFICATION_DETAIL = "Invalid or expired verification link"
 
 
 def _registration_email_domain_allowed(normalized_email: str) -> bool:
@@ -1693,23 +1714,194 @@ async def register(
         db.rollback()
         return REGISTRATION_ACCEPTED_RESPONSE
 
-    db.add(
-        models.User(
-            username=user_data.username,
-            email=normalized_email,
-            password=hashed_password,
-            first_name=user_data.first_name,
-            last_name=user_data.last_name,
-            role=role,
-            is_admin=False,
-        )
+    user = models.User(
+        username=user_data.username,
+        email=normalized_email,
+        password=hashed_password,
+        first_name=user_data.first_name,
+        last_name=user_data.last_name,
+        role=role,
+        is_admin=False,
+        email_verified_at=None,
     )
+    db.add(user)
     try:
+        db.flush()
+        db.add(
+            models.EmailVerification(
+                user_id=user.id,
+                token_digest=None,
+                expires_at=None,
+                delivery_status=email_verification_delivery.EMAIL_VERIFICATION_PENDING,
+                delivery_attempted_at=None,
+                delivery_claim_digest=None,
+            )
+        )
         db.commit()
     except IntegrityError:
         db.rollback()
 
     return REGISTRATION_ACCEPTED_RESPONSE
+
+
+@app.post(
+    "/api/auth/resend-verification",
+    response_model=RegistrationAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def resend_verification(
+    request: schemas.ResendVerificationRequest,
+    db: Session = Depends(get_db),
+):
+    """Requeue eligible verification mail without disclosing account state."""
+
+    try:
+        normalized_email = normalize_email(str(request.email))
+        validate_email(normalized_email, check_deliverability=False)
+    except (EmailNotValidError, TypeError, ValueError):
+        return RESEND_ACCEPTED_RESPONSE
+
+    if not _registration_email_domain_allowed(normalized_email):
+        return RESEND_ACCEPTED_RESPONSE
+
+    user = (
+        db.query(models.User)
+        .filter(
+            models.User.email == normalized_email,
+            models.User.disabled_at.is_(None),
+            models.User.email_verified_at.is_(None),
+            ~models.User.federated_identities.any(),
+        )
+        .with_for_update(of=models.User)
+        .first()
+    )
+    if user is None:
+        db.rollback()
+        return RESEND_ACCEPTED_RESPONSE
+
+    now = _utc_now_naive()
+    cooldown_start = now - email_verification_delivery.EMAIL_VERIFICATION_RESEND_COOLDOWN
+    verification_id = (
+        db.query(models.EmailVerification.id)
+        .filter(models.EmailVerification.user_id == user.id)
+        .scalar()
+    )
+    try:
+        if verification_id is None:
+            db.add(
+                models.EmailVerification(
+                    user_id=user.id,
+                    created_at=now,
+                    token_digest=None,
+                    expires_at=None,
+                    delivery_status=(
+                        email_verification_delivery.EMAIL_VERIFICATION_PENDING
+                    ),
+                    delivery_attempted_at=None,
+                    delivery_claim_digest=None,
+                )
+            )
+        else:
+            db.query(models.EmailVerification).filter(
+                models.EmailVerification.id == verification_id,
+                models.EmailVerification.user_id == user.id,
+                models.EmailVerification.created_at <= cooldown_start,
+            ).update(
+                {
+                    models.EmailVerification.created_at: now,
+                    models.EmailVerification.token_digest: None,
+                    models.EmailVerification.expires_at: None,
+                    models.EmailVerification.delivery_status: (
+                        email_verification_delivery.EMAIL_VERIFICATION_PENDING
+                    ),
+                    models.EmailVerification.delivery_attempted_at: None,
+                    models.EmailVerification.delivery_claim_digest: None,
+                },
+                synchronize_session=False,
+            )
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+    return RESEND_ACCEPTED_RESPONSE
+
+
+def _invalid_verification_link() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=INVALID_VERIFICATION_DETAIL,
+    )
+
+
+@app.post(
+    "/api/auth/verify-email",
+    response_model=RegistrationAcceptedResponse,
+)
+def verify_email(
+    request: schemas.VerifyEmailRequest,
+    db: Session = Depends(get_db),
+):
+    """Consume one delivered verification capability and activate its account."""
+
+    now = _utc_now_naive()
+    token_digest = email_verification_delivery.email_verification_token_digest(
+        request.token
+    )
+    locked = (
+        db.query(models.EmailVerification.id, models.User.id)
+        .join(models.User, models.User.id == models.EmailVerification.user_id)
+        .filter(
+            models.EmailVerification.token_digest == token_digest,
+            models.EmailVerification.delivery_status
+            == email_verification_delivery.EMAIL_VERIFICATION_DELIVERED,
+            models.EmailVerification.expires_at > now,
+            models.User.disabled_at.is_(None),
+            models.User.email_verified_at.is_(None),
+        )
+        .with_for_update(of=models.User)
+        .first()
+    )
+    if locked is None:
+        db.rollback()
+        raise _invalid_verification_link()
+    verification_id, user_id = locked
+
+    activated = db.execute(
+        update(models.User)
+        .where(
+            models.User.id == user_id,
+            models.User.disabled_at.is_(None),
+            models.User.email_verified_at.is_(None),
+        )
+        .values(email_verified_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    if activated.rowcount != 1:
+        db.rollback()
+        raise _invalid_verification_link()
+
+    consumed = db.execute(
+        update(models.EmailVerification)
+        .where(
+            models.EmailVerification.id == verification_id,
+            models.EmailVerification.user_id == user_id,
+            models.EmailVerification.token_digest == token_digest,
+            models.EmailVerification.delivery_status
+            == email_verification_delivery.EMAIL_VERIFICATION_DELIVERED,
+            models.EmailVerification.expires_at > now,
+        )
+        .values(
+            token_digest=None,
+            expires_at=None,
+            delivery_claim_digest=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if consumed.rowcount != 1:
+        db.rollback()
+        raise _invalid_verification_link()
+
+    db.commit()
+    return EMAIL_VERIFIED_RESPONSE
 
 def create_access_token(data: dict):
     return issue_access_token(data.get("sub"), settings=settings)
@@ -1779,6 +1971,7 @@ async def get_current_user(
         .filter(
             models.User.id == user_id,
             models.User.disabled_at.is_(None),
+            models.User.email_verified_at.is_not(None),
         )
         .first()
     )
@@ -1889,6 +2082,7 @@ async def update_user_status(
             target_user.disabled_at = _utc_now_naive()
             revoke_all_sessions(db, user_id=target_user.id)
             invalidate_password_reset_requests(db, user_id=target_user.id)
+            invalidate_email_verification_requests(db, user_id=target_user.id)
             audit_action = "ACCOUNT_DISABLED"
         else:
             target_user.disabled_at = None
@@ -1937,6 +2131,11 @@ async def login(
         verified_password_hash,
     )
     if user is None or not password_valid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password",
+        )
+    if user.email_verified_at is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
@@ -5385,7 +5584,7 @@ class ResetPasswordRequest(BaseModel):
     @field_validator("new_password")
     @classmethod
     def validate_password_size(cls, value: str) -> str:
-        return schemas.validate_password_request_bytes(value)
+        return schemas.validate_new_password_policy(value)
 
 EMAIL_HOST = settings.email_host
 EMAIL_PORT = settings.email_port
@@ -5531,6 +5730,7 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
         .filter(
             models.User.email == normalized_email,
             models.User.disabled_at.is_(None),
+            models.User.email_verified_at.is_not(None),
         )
         .with_for_update(of=models.User)
         .first()
@@ -5561,6 +5761,7 @@ def _lock_usable_password_reset_user(
             models.PasswordReset.id == password_reset_id,
             *_usable_password_reset_filters(raw_token),
             models.User.disabled_at.is_(None),
+            models.User.email_verified_at.is_not(None),
         )
         .with_for_update(of=models.User)
         .first()
@@ -5581,6 +5782,7 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
         .filter(
             *_usable_password_reset_filters(request.token),
             models.User.disabled_at.is_(None),
+            models.User.email_verified_at.is_not(None),
         )
         .scalar()
     )

@@ -452,7 +452,11 @@ def test_completion_reports_claim_lost_without_committing():
 def test_completion_reports_disabled_account_race_after_invalidation(monkeypatch):
     import password_reset_delivery
 
-    user = SimpleNamespace(id=23, disabled_at=datetime.now(UTC))
+    user = SimpleNamespace(
+        id=23,
+        disabled_at=datetime.now(UTC),
+        email_verified_at=datetime.now(UTC),
+    )
     session = _CompletionSession((SimpleNamespace(id=19), user))
     invalidated = []
     monkeypatch.setattr(
@@ -473,6 +477,34 @@ def test_completion_reports_disabled_account_race_after_invalidation(monkeypatch
         password_reset_delivery.PasswordResetCompletionOutcome.ACCOUNT_DISABLED
     )
     assert invalidated == [(session, 23)]
+    assert session.commits == 1
+    assert session.closed is True
+
+
+def test_completion_rejects_account_that_became_unverified_after_enqueue(monkeypatch):
+    import password_reset_delivery
+
+    user = SimpleNamespace(id=24, disabled_at=None, email_verified_at=None)
+    session = _CompletionSession((SimpleNamespace(id=20), user))
+    invalidated = []
+    monkeypatch.setattr(
+        password_reset_delivery,
+        "invalidate_password_reset_requests",
+        lambda db, *, user_id: invalidated.append((db, user_id)),
+    )
+
+    outcome = password_reset_delivery.complete_password_reset_delivery_outcome(
+        lambda: session,
+        reset_id=20,
+        claim_nonce="unverified-claim",
+        raw_token="unused-token",
+        delivered=True,
+    )
+
+    assert outcome is (
+        password_reset_delivery.PasswordResetCompletionOutcome.ACCOUNT_INELIGIBLE
+    )
+    assert invalidated == [(session, 24)]
     assert session.commits == 1
     assert session.closed is True
 
@@ -510,7 +542,7 @@ def test_dispatch_smtp_failure_persists_failed_then_reports_failure():
 
 @pytest.mark.parametrize(
     "completion_outcome",
-    ["CLAIM_LOST", "ACCOUNT_DISABLED"],
+    ["CLAIM_LOST", "ACCOUNT_DISABLED", "ACCOUNT_INELIGIBLE"],
 )
 def test_dispatch_never_reports_success_after_sent_completion_race(
     completion_outcome,
