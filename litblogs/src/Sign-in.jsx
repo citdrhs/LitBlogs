@@ -13,6 +13,26 @@ import { resolveAppAsset } from './utils/urlUtils';
 import { applyGlobalUserSettings, saveLocalUserSettings } from './utils/userSettings';
 import { fetchBrowserSession, persistSessionMetadata } from './utils/auth';
 
+const MicrosoftSignInButton = ({ onAuthenticate }) => {
+  const { instance } = useMsal();
+
+  return (
+    <button
+      type="button"
+      onClick={() => onAuthenticate(instance)}
+      className="mt-4 flex items-center gap-2 w-full p-2 text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 rounded-sm transition-all duration-300"
+      style={{ height: '40px' }}
+    >
+      <div className="flex-1 flex items-center" aria-hidden="true">
+        <FaMicrosoft className="text-[#00a4ef] text-xl ml-1" />
+      </div>
+      <div className="flex-[2] text-center pr-20 text-sm">
+        <span>Sign in with Microsoft</span>
+      </div>
+    </button>
+  );
+};
+
 const SignIn = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -22,7 +42,6 @@ const SignIn = () => {
   const dropdownRef = useRef(null);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const navigate = useNavigate();
-  const { instance } = useMsal();
   const [showSignUpPrompt, setShowSignUpPrompt] = useState(false);
 
   useEffect(() => {
@@ -163,7 +182,7 @@ const SignIn = () => {
     setErrorMessage('Google sign-in failed. Please try again.');
   };
 
-  const handleMicrosoftLogin = async () => {
+  const handleMicrosoftLogin = async (instance) => {
     try {
       setIsLoading(true);
       const response = await instance.loginPopup(loginRequest);
@@ -351,19 +370,9 @@ return (
             onSuccess={handleGoogleSuccess}
             onError={handleGoogleFailure}
           />}
-          {oauthProviderConfig.microsoft.enabled && <button
-            type="button"
-            onClick={handleMicrosoftLogin}
-            className="mt-4 flex items-center gap-2 w-full p-2 text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 rounded-sm transition-all duration-300"
-            style={{ height: '40px' }}
-          >
-            <div className="flex-1 flex items-center">
-              <FaMicrosoft className="text-[#00a4ef] text-xl ml-1" />
-            </div>
-            <div className="flex-[2] text-center pr-20 text-sm">
-              <span>Sign in with Microsoft</span>
-            </div>
-          </button>}
+          {oauthProviderConfig.microsoft.enabled && (
+            <MicrosoftSignInButton onAuthenticate={handleMicrosoftLogin} />
+          )}
         </div>
 
         <div className="mt-6 text-center">
@@ -372,6 +381,15 @@ return (
             className={`text-sm text-blue-500 hover:text-blue-700 transition duration-300 ${darkMode ? 'hover:text-blue-400' : 'hover:text-blue-600'}`}
           >
             Forgot Password?
+          </Link>
+        </div>
+
+        <div className="mt-3 text-center">
+          <Link
+            to="/verify-email?resend=1"
+            className={`text-sm text-blue-500 hover:text-blue-700 transition duration-300 ${darkMode ? 'hover:text-blue-400' : 'hover:text-blue-600'}`}
+          >
+            Request another verification email
           </Link>
         </div>
 

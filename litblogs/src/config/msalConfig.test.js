@@ -29,7 +29,9 @@ describe("public OAuth environment configuration", () => {
     ) return;
 
     const env = {
+      VITE_GOOGLE_OAUTH_ENABLED: "true",
       VITE_GOOGLE_CLIENT_ID: "987654321.apps.googleusercontent.com",
+      VITE_MICROSOFT_OAUTH_ENABLED: "true",
       VITE_MICROSOFT_CLIENT_ID: "2f1c67a1-91e2-46a3-941f-b88e31763e51",
       VITE_MICROSOFT_TENANT_ID: "871bd3e0-2dc0-4a40-9b07-9d03068c2364",
       VITE_MICROSOFT_CLIENT_SECRET: "must-never-be-consumed-by-vite",
@@ -66,6 +68,7 @@ describe("public OAuth environment configuration", () => {
       if (typeof oauthConfiguration.buildOAuthProviderConfig !== "function") return;
 
       const providers = oauthConfiguration.buildOAuthProviderConfig({
+        VITE_MICROSOFT_OAUTH_ENABLED: "true",
         VITE_MICROSOFT_CLIENT_ID: "2f1c67a1-91e2-46a3-941f-b88e31763e51",
         VITE_MICROSOFT_TENANT_ID: tenantId,
       });
@@ -76,7 +79,9 @@ describe("public OAuth environment configuration", () => {
 
   it("keeps the shipped-style public placeholders disabled", () => {
     const providers = oauthConfiguration.buildOAuthProviderConfig({
+      VITE_GOOGLE_OAUTH_ENABLED: "true",
       VITE_GOOGLE_CLIENT_ID: "replace-with-google-client-id",
+      VITE_MICROSOFT_OAUTH_ENABLED: "true",
       VITE_MICROSOFT_CLIENT_ID: "replace-with-microsoft-client-id",
       VITE_MICROSOFT_TENANT_ID: "replace-with-microsoft-tenant-id",
     });
@@ -87,7 +92,9 @@ describe("public OAuth environment configuration", () => {
 
   it("applies backend-derived public settings before the app renders", () => {
     const providers = oauthConfiguration.applyPublicOAuthConfig({
+      googleOauthEnabled: true,
       googleClientId: "987654321.apps.googleusercontent.com",
+      microsoftOauthEnabled: true,
       microsoftClientId: "2f1c67a1-91e2-46a3-941f-b88e31763e51",
       microsoftTenantId: "871bd3e0-2dc0-4a40-9b07-9d03068c2364",
     });
@@ -100,4 +107,42 @@ describe("public OAuth environment configuration", () => {
         "https://login.microsoftonline.com/871bd3e0-2dc0-4a40-9b07-9d03068c2364",
     });
   });
+
+  it("keeps stale valid identifiers blank when explicit runtime flags are false", () => {
+    const providers = oauthConfiguration.applyPublicOAuthConfig({
+      googleOauthEnabled: false,
+      googleClientId: "987654321.apps.googleusercontent.com",
+      microsoftOauthEnabled: false,
+      microsoftClientId: "2f1c67a1-91e2-46a3-941f-b88e31763e51",
+      microsoftTenantId: "871bd3e0-2dc0-4a40-9b07-9d03068c2364",
+    });
+
+    expect(providers).toEqual({
+      google: { clientId: "", enabled: false },
+      microsoft: { clientId: "", tenantId: "", enabled: false },
+    });
+    expect(oauthConfiguration.msalConfig.auth).toMatchObject({
+      clientId: "",
+      authority: "",
+    });
+  });
+
+  it.each([
+    [true, "invalid-google-id", true, "2f1c67a1-91e2-46a3-941f-b88e31763e51", "invalid-tenant"],
+    [true, "", true, "invalid-client", "871bd3e0-2dc0-4a40-9b07-9d03068c2364"],
+  ])(
+    "fails closed when enabled providers receive invalid public identifiers",
+    (googleOauthEnabled, googleClientId, microsoftOauthEnabled, microsoftClientId, microsoftTenantId) => {
+      const providers = oauthConfiguration.applyPublicOAuthConfig({
+        googleOauthEnabled,
+        googleClientId,
+        microsoftOauthEnabled,
+        microsoftClientId,
+        microsoftTenantId,
+      });
+
+      expect(providers.google).toEqual({ clientId: "", enabled: false });
+      expect(providers.microsoft).toEqual({ clientId: "", tenantId: "", enabled: false });
+    },
+  );
 });
