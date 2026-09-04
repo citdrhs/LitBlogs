@@ -30,17 +30,17 @@ const EXPECTED_NARRATION = [
 ];
 
 const EXPECTED_CLICK_TARGETS = [
-  ["signup", 338, "Sign Up"],
+  ["signup", 264, "Sign Up"],
   ["signin", 22, "Verification Sign In"],
-  ["signin", 161, "Sign In"],
+  ["signin", 146, "Sign In"],
   ["join-class", 16, "Open Join Class"],
   ["join-class", 175, "Submit Join Class"],
   ["enter-class", 32, "English 10 Reading Circle class card"],
   ["open-post", 35, "Create New Post"],
-  ["compose", 200, "Bold"],
-  ["compose", 275, "Open Highlight palette"],
-  ["compose", 303, "Amber #fef3c7"],
-  ["publish", 69, "Publish"],
+  ["compose", 118, "Bold"],
+  ["compose", 156, "Open Highlight palette"],
+  ["compose", 190, "Amber #fef3c7"],
+  ["publish", 67, "Publish"],
 ];
 
 const EXPECTED_NARRATION_FRAMES = [135, 425, 170, 198, 123, 75, 326, 89, 134];
@@ -106,7 +106,7 @@ test("keeps scene metadata browser-safe, descriptive, and bounded", () => {
   for (const scene of scenes) {
     assert.ok(scene.title?.trim(), `${scene.id} needs a title`);
     assert.ok(scene.narration?.trim(), `${scene.id} needs narration`);
-    assert.ok(scene.caption?.text?.trim(), `${scene.id} needs a caption`);
+    assert.ok(scene.captionCues?.length, `${scene.id} needs phrase caption cues`);
     assert.ok(scene.captureAsset?.trim(), `${scene.id} needs a capture`);
     assert.ok(scene.camera?.length, `${scene.id} needs camera keyframes`);
     assert.ok(scene.cursor?.length, `${scene.id} needs cursor keyframes`);
@@ -126,6 +126,74 @@ test("uses the approved narration verbatim", () => {
     manifestModule.SCENES?.map(({ narrationDurationInFrames }) => narrationDurationInFrames),
     EXPECTED_NARRATION_FRAMES,
   );
+});
+
+test("derives narration from readable phrase cues with no more than two short lines", () => {
+  for (const scene of manifestModule.SCENES ?? []) {
+    const cueNarration = scene.captionCues
+      .map(({ text }) => text.replace(/\s+/g, " ").trim())
+      .join(" ");
+    assert.equal(scene.narration, cueNarration, scene.id);
+
+    let previousEnd = -1;
+    for (const cue of scene.captionCues) {
+      const lines = cue.text.split("\n");
+      assert.ok(lines.length <= 2, `${scene.id} cue exceeds two displayed lines`);
+      assert.ok(
+        lines.every((line) => line.length <= 52),
+        `${scene.id} cue has a line wider than 52 characters`,
+      );
+      assert.ok(cue.startOffsetFrames >= 0, `${scene.id} cue starts before its scene`);
+      assert.ok(cue.endOffsetFrames <= scene.durationInFrames, `${scene.id} cue ends after its scene`);
+      assert.ok(cue.startOffsetFrames < cue.endOffsetFrames, `${scene.id} cue has no duration`);
+      assert.ok(cue.startOffsetFrames >= previousEnd, `${scene.id} cues overlap`);
+      previousEnd = cue.endOffsetFrames;
+    }
+  }
+});
+
+test("synchronizes signup and formatting clicks to the phrases that describe them", () => {
+  const signup = manifestModule.SCENE_BY_ID?.signup;
+  const compose = manifestModule.SCENE_BY_ID?.compose;
+  const signupCue = signup.captionCues.find(({ text }) => text.includes("then select Sign Up"));
+  const boldCue = compose.captionCues.find(({ text }) => text.includes("choose Bold"));
+  const highlightCue = compose.captionCues.find(({ text }) => text.includes("highlight color"));
+  const signupClick = signup.cursor.find(({ target }) => target?.label === "Sign Up");
+  const boldClick = compose.cursor.find(({ target }) => target?.label === "Bold");
+  const paletteClick = compose.cursor.find(
+    ({ target }) => target?.label === "Open Highlight palette",
+  );
+  const amberClick = compose.cursor.find(({ target }) => target?.label === "Amber #fef3c7");
+
+  for (const [click, cue, label] of [
+    [signupClick, signupCue, "signup"],
+    [boldClick, boldCue, "bold"],
+    [paletteClick, highlightCue, "highlight palette"],
+    [amberClick, highlightCue, "highlight color"],
+  ]) {
+    assert.ok(click.frame >= cue.startOffsetFrames, `${label} happens before its narration`);
+    assert.ok(click.frame < cue.endOffsetFrames, `${label} happens after its narration`);
+  }
+
+  assert.ok(signup.alternateAtFrame - 10 > signupClick.frame + 12);
+  const verificationCue = signup.captionCues.find(({ text }) => text.includes("verification email"));
+  assert.ok(signup.alternateAtFrame + 10 <= verificationCue.startOffsetFrames + 1);
+});
+
+test("links every click to a unique caption phrase and keeps the action inside it", () => {
+  for (const scene of manifestModule.SCENES ?? []) {
+    assert.equal(
+      new Set(scene.captionCues.map(({ id }) => id)).size,
+      scene.captionCues.length,
+      `${scene.id} cue IDs`,
+    );
+    for (const click of scene.cursor.filter(({ click: isClick }) => isClick)) {
+      const cue = scene.captionCues.find(({ id }) => id === click.actionCueId);
+      assert.ok(cue, `${scene.id} ${click.target.label} needs a caption phrase link`);
+      assert.ok(click.frame >= cue.startOffsetFrames, `${scene.id} action starts before its phrase`);
+      assert.ok(click.frame < cue.endOffsetFrames, `${scene.id} action ends after its phrase`);
+    }
+  }
 });
 
 test("keeps cursor and callout visuals fully inside 1280x720", () => {
@@ -203,9 +271,9 @@ test("reveals the highlight palette and amber formatting only after their separa
     compose.captureTimeline?.map(({ frame, asset }) => [frame, asset]),
     [
       [0, "captures/post-written.jpg"],
-      [210, "captures/post-bold.jpg"],
-      [285, "captures/post-highlight-palette.jpg"],
-      [313, "captures/post-formatted.jpg"],
+      [142, "captures/post-bold.jpg"],
+      [180, "captures/post-highlight-palette.jpg"],
+      [213, "captures/post-formatted.jpg"],
     ],
   );
   const boldClick = compose.cursor.find(({ target }) => target?.label === "Bold");
@@ -242,7 +310,7 @@ test("reports missing or misaligned composition-space click targets", () => {
   const missing = structuredClone(manifestModule.SCENES);
   delete missing[1].cursor.find(({ click }) => click).target;
   assert.ok(validationModule.validateManifest(missing).includes(
-    "scene signup click at frame 338 has no composition-space target",
+    "scene signup click at frame 264 has no composition-space target",
   ));
 
   const misaligned = structuredClone(manifestModule.SCENES);
@@ -253,7 +321,7 @@ test("reports missing or misaligned composition-space click targets", () => {
     bounds: { left: 0, top: 0, right: 10, bottom: 10 },
   };
   assert.ok(validationModule.validateManifest(misaligned).includes(
-    "scene signup click at frame 338 misses target Sign Up",
+    "scene signup click at frame 264 misses target Sign Up",
   ));
 });
 
@@ -271,9 +339,10 @@ test("derives starts cumulatively and keeps cues and keyframes inside each scene
 
   for (const scene of scenes) {
     assert.equal(scene.startFrame, expectedStart);
-    assert.ok(scene.caption.startOffsetFrames >= 0);
-    assert.ok(scene.caption.endOffsetFrames <= scene.durationInFrames);
-    assert.ok(scene.caption.startOffsetFrames < scene.caption.endOffsetFrames);
+    assert.ok(scene.captionCues.length > 0);
+    assert.ok(scene.captionCues.every((cue) => cue.startOffsetFrames >= 0));
+    assert.ok(scene.captionCues.every((cue) => cue.endOffsetFrames <= scene.durationInFrames));
+    assert.ok(scene.captionCues.every((cue) => cue.startOffsetFrames < cue.endOffsetFrames));
 
     for (const collection of [scene.camera, scene.cursor, scene.callouts]) {
       for (const keyframe of collection) {

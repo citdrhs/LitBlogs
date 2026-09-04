@@ -68,7 +68,7 @@ Curated captures, compressed audio, source code, the manifest, and final app ass
 
 ## Timing and accessibility
 
-`src/manifest.js` is the only scene, narration, caption, camera, cursor, and callout source of truth. Scene starts and the media duration are derived cumulatively. The composition is fixed at 1280×720, 30fps, 1891 frames, approximately 63.033 seconds. Each scene ends exactly 24 frames after its measured narration unless a later required click needs the 18-frame action buffer.
+`src/manifest.js` is the only scene, narration, caption, camera, cursor, and callout source of truth. Narration is derived from its measured phrase cues, every exported cue is limited to two short lines, and each click links to the phrase that describes it. Scene starts and the media duration are derived cumulatively. The composition is fixed at 1280×720, 30fps, 1891 frames, approximately 63.033 seconds. Each scene ends exactly 24 frames after its measured narration unless a later required click needs the 18-frame action buffer.
 
 `npm run accessibility/export` regenerates all three synchronized text artifacts from that manifest:
 

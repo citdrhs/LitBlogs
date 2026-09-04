@@ -14,14 +14,26 @@ test("derives concise and spoken duration labels from the manifest", () => {
   assert.equal(exporters.formatDurationWords?.(manifestModule.VIDEO), "1 minute 3 seconds");
 });
 
-test("exports one ordered, bounded caption cue per scene", () => {
+test("exports ordered, bounded phrase cues from the manifest", () => {
   const vtt = exporters.manifestToVtt?.(manifestModule.SCENES, manifestModule.VIDEO);
   assert.match(vtt ?? "", /^WEBVTT\n\n/);
-  assert.equal((vtt.match(/--> /g) ?? []).length, 9);
-  assert.match(vtt, /00:00:00\.200 --> 00:00:05\.100/);
-  assert.match(vtt, /00:00:57\.967 --> 00:01:02\.833/);
+  assert.equal((vtt.match(/--> /g) ?? []).length, 19);
+  assert.match(vtt, /00:00:00\.033 --> 00:00:00\.633/);
+  assert.match(vtt, /00:00:12\.033 --> 00:00:14\.400/);
+  assert.match(vtt, /00:01:00\.633 --> 00:01:01\.733/);
   assert.match(vtt, /Welcome to LitBlog/);
   assert.match(vtt, /bold and highlighting preserved/);
+});
+
+test("keeps exported cues at two explicit lines or fewer", () => {
+  const vtt = exporters.manifestToVtt?.(manifestModule.SCENES, manifestModule.VIDEO);
+  const cueBlocks = vtt.trim().split(/\n\n/).slice(1);
+
+  for (const block of cueBlocks) {
+    const [, , ...captionLines] = block.split("\n");
+    assert.ok(captionLines.length <= 2, block);
+    assert.ok(captionLines.every((line) => line.length <= 52), block);
+  }
 });
 
 test("exports a readable plain transcript from the same narration", () => {

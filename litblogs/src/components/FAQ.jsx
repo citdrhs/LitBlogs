@@ -232,7 +232,10 @@ const FAQ = ({ darkMode = false, screenshots = {} }) => {
       <header className="faq-guide__header">
         <p className="faq-guide__eyebrow">Frequently asked questions</p>
         <h2 id={headingId}>Student FAQ</h2>
-        <p>Seven quick guides for getting from your first sign-in to a published post.</p>
+        <p>
+          Seven quick guides covering account creation, class participation, publishing,
+          and password recovery.
+        </p>
       </header>
 
       <div className="faq-guide__list">

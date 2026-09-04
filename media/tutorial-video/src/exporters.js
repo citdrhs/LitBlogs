@@ -33,13 +33,16 @@ export const formatVttTimestamp = (frame, fps) => {
 };
 
 export const manifestToVtt = (scenes, video) => {
-  const cues = scenes.map((scene, index) => {
-    const cueStart = scene.startFrame + scene.caption.startOffsetFrames;
-    const cueEnd = scene.startFrame + scene.caption.endOffsetFrames;
+  const cueRecords = scenes.flatMap((scene) => (
+    scene.captionCues.map((cue) => ({ scene, cue }))
+  ));
+  const cues = cueRecords.map(({ scene, cue }, index) => {
+    const cueStart = scene.startFrame + cue.startOffsetFrames;
+    const cueEnd = scene.startFrame + cue.endOffsetFrames;
     return [
       String(index + 1),
       `${formatVttTimestamp(cueStart, video.fps)} --> ${formatVttTimestamp(cueEnd, video.fps)}`,
-      scene.caption.text,
+      cue.text,
     ].join("\n");
   });
   return `WEBVTT\n\n${cues.join("\n\n")}\n`;

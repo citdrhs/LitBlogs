@@ -11,6 +11,7 @@ import {
   validateProbeData,
   validateTranscriptParity,
   validateVtt,
+  validateVttParity,
 } from "../src/validation.js";
 import {
   ffmpegPath,
@@ -66,6 +67,7 @@ for (const still of faqStills) {
 const vtt = fs.readFileSync(vttPath, "utf8");
 const transcript = fs.readFileSync(transcriptPath, "utf8");
 issues.push(...validateVtt(vtt, VIDEO.durationInSeconds));
+issues.push(...validateVttParity(vtt, SCENES, VIDEO));
 issues.push(...validateTranscriptParity(transcript, SCENES));
 if (!transcript.trim()) issues.push("plain transcript is empty");
 

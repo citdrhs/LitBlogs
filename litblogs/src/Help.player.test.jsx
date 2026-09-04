@@ -61,8 +61,8 @@ describe("Help tutorial", () => {
     fireEvent.click(screen.getByText("Read tutorial transcript"));
 
     expect(screen.getByText("Welcome to LitBlog")).toBeInTheDocument();
-    expect(screen.getByText("Sign up")).toBeInTheDocument();
-    expect(screen.getByText("Register and sign in")).toBeInTheDocument();
+    expect(screen.getByText("Sign up and verify")).toBeInTheDocument();
+    expect(screen.getByText("Verify and sign in")).toBeInTheDocument();
     expect(screen.getByText(/six-character code from your teacher/)).toBeInTheDocument();
     expect(screen.getByText(/Select Create New Post/)).toBeInTheDocument();
     expect(screen.getByText(/choose Bold.*highlight color/i)).toBeInTheDocument();

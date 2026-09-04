@@ -101,6 +101,54 @@ test("checks transcript narration parity independent of headings", () => {
   ]);
 });
 
+test("reports caption cue layout, timing, narration, and VTT parity drift", () => {
+  const scenes = [{
+    id: "one",
+    startFrame: 0,
+    durationInFrames: 90,
+    narration: "First phrase. Second phrase.",
+    captionCues: [
+      { startOffsetFrames: 1, endOffsetFrames: 30, text: "First phrase." },
+      { startOffsetFrames: 29, endOffsetFrames: 80, text: `${"x".repeat(53)}\nline two\nline three` },
+    ],
+    narrationDurationInFrames: 66,
+    camera: [{ frame: 0, scale: 1, x: 0, y: 0 }],
+    cursor: [{ frame: 0, x: 100, y: 100, visible: false }],
+    callouts: [{ id: "one", frame: 0, endFrame: 10, x: 0, y: 0 }],
+  }];
+  const manifestIssues = validation.validateManifest?.(scenes) ?? [];
+  assert.ok(manifestIssues.includes("scene one has overlapping caption cues"));
+  assert.ok(manifestIssues.includes("scene one caption cue 2 exceeds two lines"));
+  assert.ok(manifestIssues.includes("scene one caption cue 2 has a line wider than 52 characters"));
+  assert.ok(manifestIssues.includes("scene one captions do not match narration"));
+
+  const expectedScenes = [{
+    id: "one",
+    startFrame: 0,
+    captionCues: [{ startOffsetFrames: 1, endOffsetFrames: 30, text: "First phrase." }],
+  }];
+  const driftedVtt = "WEBVTT\n\n1\n00:00:00.033 --> 00:00:01.000\nDifferent phrase.\n";
+  assert.deepEqual(
+    validation.validateVttParity?.(driftedVtt, expectedScenes, { fps: 30 }),
+    ["caption cue 1 text does not match scene one"],
+  );
+});
+
+test("reports clicks that are not linked to their active narration phrase", async () => {
+  const { SCENES } = await import("../src/manifest.js");
+  const missing = structuredClone(SCENES);
+  delete missing[1].cursor.find(({ click }) => click).actionCueId;
+  assert.ok(validation.validateManifest(missing).includes(
+    "scene signup click at frame 264 has no caption cue link",
+  ));
+
+  const late = structuredClone(SCENES);
+  late[1].cursor.find(({ click }) => click).frame = 280;
+  assert.ok(validation.validateManifest(late).includes(
+    "scene signup click at frame 280 is outside caption cue signup-submit",
+  ));
+});
+
 test("parses ffmpeg volumedetect output and requires peak headroom", () => {
   const output = "[Parsed_volumedetect_0] mean_volume: -24.1 dB\n"
     + "[Parsed_volumedetect_0] max_volume: -1.7 dB\n";

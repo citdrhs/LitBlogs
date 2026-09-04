@@ -1,5 +1,4 @@
 const FPS = 30;
-const CAPTION_INSET_FRAMES = 6;
 
 const rawScenes = [
   {
@@ -7,7 +6,20 @@ const rawScenes = [
     title: "Welcome to LitBlog",
     durationInFrames: 159,
     narrationDurationInFrames: 135,
-    narration: "Welcome to LitBlog. In under two minutes, you'll create an account, join a class, and publish your first post.",
+    captionCues: [
+      {
+        id: "title-welcome",
+        startOffsetFrames: 1,
+        endOffsetFrames: 19,
+        text: "Welcome to LitBlog.",
+      },
+      {
+        id: "title-overview",
+        startOffsetFrames: 31,
+        endOffsetFrames: 123,
+        text: "In under two minutes, you'll create an account,\njoin a class, and publish your first post.",
+      },
+    ],
     captureAsset: "captures/student-hub.jpg",
     audioAsset: "audio/title.mp3",
     camera: [
@@ -27,42 +39,68 @@ const rawScenes = [
     title: "Sign up and verify",
     durationInFrames: 449,
     narrationDurationInFrames: 425,
-    narration: "Choose Sign Up. Enter your name, school email, a strong password, and choose Student. Confirm your password, then select Sign Up. Open the verification email and select Verify Email before you sign in.",
+    captionCues: [
+      {
+        id: "signup-open",
+        startOffsetFrames: 2,
+        endOffsetFrames: 25,
+        text: "Choose Sign Up.",
+      },
+      {
+        id: "signup-details",
+        startOffsetFrames: 47,
+        endOffsetFrames: 180,
+        text: "Enter your name, school email,\na strong password, and choose Student.",
+      },
+      {
+        id: "signup-submit",
+        startOffsetFrames: 202,
+        endOffsetFrames: 273,
+        text: "Confirm your password, then select Sign Up.",
+      },
+      {
+        id: "signup-verify",
+        startOffsetFrames: 297,
+        endOffsetFrames: 404,
+        text: "Open the verification email and select\nVerify Email before you sign in.",
+      },
+    ],
     captureAsset: "captures/signup-filled.jpg",
     alternateCaptureAsset: "captures/verification-success.jpg",
-    alternateAtFrame: 360,
+    alternateAtFrame: 288,
     audioAsset: "audio/signup.mp3",
     camera: [
       { frame: 0, scale: 1.04, x: 0, y: 4 },
-      { frame: 250, scale: 1.16, x: 175, y: -18 },
-      { frame: 338, scale: 1.18, x: 185, y: -24 },
-      { frame: 370, scale: 1.06, x: 38, y: -12 },
+      { frame: 200, scale: 1.16, x: 175, y: -18 },
+      { frame: 264, scale: 1.18, x: 185, y: -24 },
+      { frame: 298, scale: 1.06, x: 38, y: -12 },
       { frame: 448, scale: 1.04, x: 0, y: 0 },
     ],
     cursor: [
       { frame: 35, x: 904, y: 287, visible: true },
-      { frame: 280, x: 900, y: 555, visible: true },
-      { frame: 320, x: 815, y: 660, visible: true },
+      { frame: 222, x: 900, y: 555, visible: true },
+      { frame: 250, x: 815, y: 660, visible: true },
       {
-        frame: 338,
+        frame: 264,
         x: 815,
         y: 660,
         visible: true,
         click: true,
+        actionCueId: "signup-submit",
         target: {
           label: "Sign Up",
           space: "composition",
           bounds: { left: 582, top: 650, right: 1068, bottom: 680 },
         },
       },
-      { frame: 351, x: 815, y: 615, visible: false },
+      { frame: 277, x: 815, y: 615, visible: false },
       { frame: 448, x: 815, y: 615, visible: false },
     ],
     callouts: [
-      { id: "signup-fields", frame: 35, endFrame: 228, number: 1, label: "Use your school details", x: 52, y: 108 },
-      { id: "signup-role", frame: 190, endFrame: 330, number: 2, label: "Choose Student", x: 52, y: 220 },
-      { id: "signup-submit", frame: 295, endFrame: 354, number: 3, label: "Confirm, then Sign Up", x: 52, y: 332 },
-      { id: "signup-verify", frame: 374, endFrame: 442, number: 4, label: "Verify your school email", x: 52, y: 444 },
+      { id: "signup-fields", frame: 35, endFrame: 180, number: 1, label: "Use your school details", x: 52, y: 108 },
+      { id: "signup-role", frame: 145, endFrame: 205, number: 2, label: "Choose Student", x: 52, y: 220 },
+      { id: "signup-submit", frame: 202, endFrame: 277, number: 3, label: "Confirm, then Sign Up", x: 52, y: 332 },
+      { id: "signup-verify", frame: 297, endFrame: 430, number: 4, label: "Verify your school email", x: 52, y: 444 },
     ],
   },
   {
@@ -70,7 +108,20 @@ const rawScenes = [
     title: "Verify and sign in",
     durationInFrames: 194,
     narrationDurationInFrames: 170,
-    narration: "After verification, choose Sign In. Enter the same email and password to open your Student Hub.",
+    captionCues: [
+      {
+        id: "signin-verified",
+        startOffsetFrames: 1,
+        endOffsetFrames: 33,
+        text: "After verification, choose Sign In.",
+      },
+      {
+        id: "signin-credentials",
+        startOffsetFrames: 43,
+        endOffsetFrames: 149,
+        text: "Enter the same email and password\nto open your Student Hub.",
+      },
+    ],
     captureAsset: "captures/verification-success.jpg",
     alternateCaptureAsset: "captures/signin-filled.jpg",
     alternateAtFrame: 69,
@@ -90,6 +141,7 @@ const rawScenes = [
         y: 365,
         visible: true,
         click: true,
+        actionCueId: "signin-verified",
         target: {
           label: "Verification Sign In",
           space: "composition",
@@ -98,13 +150,15 @@ const rawScenes = [
       },
       { frame: 50, x: 637, y: 365, visible: false },
       { frame: 85, x: 915, y: 412, visible: true },
-      { frame: 143, x: 760, y: 345, visible: true },
+      { frame: 125, x: 760, y: 345, visible: true },
+      { frame: 134, x: 760, y: 400, visible: true },
       {
-        frame: 161,
+        frame: 146,
         x: 760,
         y: 400,
         visible: true,
         click: true,
+        actionCueId: "signin-credentials",
         target: {
           label: "Sign In",
           space: "composition",
@@ -123,7 +177,20 @@ const rawScenes = [
     title: "Join a class",
     durationInFrames: 222,
     narrationDurationInFrames: 198,
-    narration: "Select Join Class. Type the six-character code from your teacher, then choose Join Class again.",
+    captionCues: [
+      {
+        id: "join-open",
+        startOffsetFrames: 2,
+        endOffsetFrames: 39,
+        text: "Select Join Class.",
+      },
+      {
+        id: "join-submit",
+        startOffsetFrames: 60,
+        endOffsetFrames: 177,
+        text: "Type the six-character code from your teacher,\nthen choose Join Class again.",
+      },
+    ],
     captureAsset: "captures/student-hub-empty.jpg",
     alternateCaptureAsset: "captures/join-class-code.jpg",
     alternateAtFrame: 69,
@@ -145,6 +212,7 @@ const rawScenes = [
         y: 197,
         visible: true,
         click: true,
+        actionCueId: "join-open",
         target: {
           label: "Open Join Class",
           space: "composition",
@@ -160,6 +228,7 @@ const rawScenes = [
         y: 468,
         visible: true,
         click: true,
+        actionCueId: "join-submit",
         target: {
           label: "Submit Join Class",
           space: "composition",
@@ -179,7 +248,12 @@ const rawScenes = [
     title: "Enter the class",
     durationInFrames: 147,
     narrationDurationInFrames: 123,
-    narration: "Open the class card to see announcements, assignments, and posts.",
+    captionCues: [{
+      id: "enter-open",
+      startOffsetFrames: 1,
+      endOffsetFrames: 102,
+      text: "Open the class card to see announcements,\nassignments, and posts.",
+    }],
     captureAsset: "captures/student-hub.jpg",
     alternateCaptureAsset: "captures/class-feed.jpg",
     alternateAtFrame: 60,
@@ -198,6 +272,7 @@ const rawScenes = [
         y: 170,
         visible: true,
         click: true,
+        actionCueId: "enter-open",
         target: {
           label: "English 10 Reading Circle class card",
           space: "composition",
@@ -217,7 +292,12 @@ const rawScenes = [
     title: "Open a new post",
     durationInFrames: 99,
     narrationDurationInFrames: 75,
-    narration: "Select Create New Post.",
+    captionCues: [{
+      id: "post-open",
+      startOffsetFrames: 3,
+      endOffsetFrames: 51,
+      text: "Select Create New Post.",
+    }],
     captureAsset: "captures/class-feed.jpg",
     alternateCaptureAsset: "captures/post-composer.jpg",
     alternateAtFrame: 46,
@@ -238,6 +318,7 @@ const rawScenes = [
         y: 135,
         visible: true,
         click: true,
+        actionCueId: "post-open",
         target: {
           label: "Create New Post",
           space: "composition",
@@ -257,46 +338,74 @@ const rawScenes = [
     title: "Write and format",
     durationInFrames: 350,
     narrationDurationInFrames: 326,
-    narration: "Add a clear title and write your response. Select text and choose Bold. Then choose a highlight color. The editor previews exactly what classmates and teachers will see.",
+    captionCues: [
+      {
+        id: "compose-write",
+        startOffsetFrames: 1,
+        endOffsetFrames: 61,
+        text: "Add a clear title and write your response.",
+      },
+      {
+        id: "compose-bold",
+        startOffsetFrames: 83,
+        endOffsetFrames: 127,
+        text: "Select text and choose Bold.",
+      },
+      {
+        id: "compose-highlight",
+        startOffsetFrames: 150,
+        endOffsetFrames: 192,
+        text: "Then choose a highlight color.",
+      },
+      {
+        id: "compose-preview",
+        startOffsetFrames: 213,
+        endOffsetFrames: 305,
+        text: "The editor previews exactly what classmates\nand teachers will see.",
+      },
+    ],
     captureAsset: "captures/post-written.jpg",
     captureTimeline: [
       { frame: 0, asset: "captures/post-written.jpg" },
-      { frame: 210, asset: "captures/post-bold.jpg" },
-      { frame: 285, asset: "captures/post-highlight-palette.jpg" },
-      { frame: 313, asset: "captures/post-formatted.jpg" },
+      { frame: 142, asset: "captures/post-bold.jpg" },
+      { frame: 180, asset: "captures/post-highlight-palette.jpg" },
+      { frame: 213, asset: "captures/post-formatted.jpg" },
     ],
     audioAsset: "audio/compose.mp3",
     camera: [
       { frame: 0, scale: 1.02, x: 0, y: 0 },
-      { frame: 100, scale: 1.16, x: 0, y: -95 },
-      { frame: 160, scale: 1.19, x: 6, y: -70 },
-      { frame: 180, scale: 1.10, x: 0, y: -45 },
+      { frame: 60, scale: 1.16, x: 0, y: -95 },
+      { frame: 85, scale: 1.19, x: 6, y: -70 },
+      { frame: 105, scale: 1.10, x: 0, y: -45 },
+      { frame: 213, scale: 1.10, x: 0, y: -45 },
       { frame: 323, scale: 1.12, x: 0, y: -44 },
       { frame: 349, scale: 1.15, x: 0, y: -42 },
     ],
     cursor: [
       { frame: 35, x: 714, y: 286, visible: true },
-      { frame: 100, x: 642, y: 485, visible: true },
-      { frame: 180, x: 670, y: 265, visible: true },
+      { frame: 60, x: 642, y: 485, visible: true },
+      { frame: 102, x: 670, y: 265, visible: true },
       {
-        frame: 200,
+        frame: 118,
         x: 670,
         y: 265,
         visible: true,
         click: true,
+        actionCueId: "compose-bold",
         target: {
           label: "Bold",
           space: "composition",
           bounds: { left: 659, top: 258, right: 693, bottom: 293 },
         },
       },
-      { frame: 250, x: 625, y: 265, visible: true },
+      { frame: 144, x: 625, y: 265, visible: true },
       {
-        frame: 275,
+        frame: 156,
         x: 625,
         y: 265,
         visible: true,
         click: true,
+        actionCueId: "compose-highlight",
         target: {
           label: "Open Highlight palette",
           space: "composition",
@@ -304,24 +413,25 @@ const rawScenes = [
         },
       },
       {
-        frame: 303,
+        frame: 190,
         x: 673,
         y: 348,
         visible: true,
         click: true,
+        actionCueId: "compose-highlight",
         target: {
           label: "Amber #fef3c7",
           space: "composition",
           bounds: { left: 660, top: 335, right: 690, bottom: 363 },
         },
       },
-      { frame: 335, x: 673, y: 348, visible: false },
+      { frame: 220, x: 673, y: 348, visible: false },
     ],
     callouts: [
-      { id: "clear-title", frame: 12, endFrame: 92, number: 1, label: "Add a clear title", x: 46, y: 104 },
-      { id: "write-response", frame: 72, endFrame: 175, number: 2, label: "Write your response", x: 46, y: 216 },
-      { id: "bold", frame: 165, endFrame: 244, number: 3, label: "Select text → Bold", x: 46, y: 328 },
-      { id: "highlight", frame: 242, endFrame: 342, number: 4, label: "Choose amber Highlight", x: 46, y: 440 },
+      { id: "clear-title", frame: 12, endFrame: 70, number: 1, label: "Add a clear title", x: 46, y: 104 },
+      { id: "write-response", frame: 30, endFrame: 105, number: 2, label: "Write your response", x: 46, y: 216 },
+      { id: "bold", frame: 83, endFrame: 145, number: 3, label: "Select text → Bold", x: 46, y: 328 },
+      { id: "highlight", frame: 148, endFrame: 220, number: 4, label: "Choose amber Highlight", x: 46, y: 440 },
     ],
   },
   {
@@ -329,7 +439,12 @@ const rawScenes = [
     title: "Publish",
     durationInFrames: 113,
     narrationDurationInFrames: 89,
-    narration: "Review your work, then select Publish.",
+    captionCues: [{
+      id: "publish-submit",
+      startOffsetFrames: 1,
+      endOffsetFrames: 68,
+      text: "Review your work, then select Publish.",
+    }],
     captureAsset: "captures/publish-action.jpg",
     captureObjectPosition: "center bottom",
     audioAsset: "audio/publish.mp3",
@@ -343,11 +458,12 @@ const rawScenes = [
       { frame: 12, x: 1080, y: 670, visible: true },
       { frame: 48, x: 915, y: 515, visible: true },
       {
-        frame: 69,
+        frame: 67,
         x: 915,
         y: 515,
         visible: true,
         click: true,
+        actionCueId: "publish-submit",
         target: {
           label: "Publish",
           space: "composition",
@@ -366,7 +482,20 @@ const rawScenes = [
     title: "Verify and finish",
     durationInFrames: 158,
     narrationDurationInFrames: 134,
-    narration: "Your post appears in the class feed with bold and highlighting preserved. You're ready to write on LitBlog.",
+    captionCues: [
+      {
+        id: "verify-format",
+        startOffsetFrames: 1,
+        endOffsetFrames: 70,
+        text: "Your post appears in the class feed with\nbold and highlighting preserved.",
+      },
+      {
+        id: "verify-ready",
+        startOffsetFrames: 86,
+        endOffsetFrames: 119,
+        text: "You're ready to write on LitBlog.",
+      },
+    ],
     captureAsset: "captures/published-post.jpg",
     audioAsset: "audio/verify.mp3",
     camera: [
@@ -389,14 +518,15 @@ let nextStartFrame = 0;
 export const SCENES = Object.freeze(rawScenes.map((scene) => {
   const startFrame = nextStartFrame;
   nextStartFrame += scene.durationInFrames;
+  const captionCues = Object.freeze(scene.captionCues.map((cue) => Object.freeze(cue)));
+  const narration = captionCues
+    .map(({ text }) => text.replace(/\s+/g, " ").trim())
+    .join(" ");
   return Object.freeze({
     ...scene,
     startFrame,
-    caption: Object.freeze({
-      startOffsetFrames: CAPTION_INSET_FRAMES,
-      endOffsetFrames: scene.durationInFrames - CAPTION_INSET_FRAMES,
-      text: scene.narration,
-    }),
+    captionCues,
+    narration,
   });
 }));
 

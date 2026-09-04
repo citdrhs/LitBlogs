@@ -31,6 +31,15 @@ const openPanel = (question) => {
 };
 
 describe("FAQ student guide", () => {
+  it("describes the complete account-to-password-reset guide in its introduction", () => {
+    renderFAQ();
+
+    expect(screen.getByText(
+      "Seven quick guides covering account creation, class participation, publishing, and password recovery.",
+    )).toBeInTheDocument();
+    expect(screen.queryByText(/from your first sign-in to a published post/i)).not.toBeInTheDocument();
+  });
+
   it("renders exactly seven student topics with concise numbered steps", () => {
     renderFAQ();
 
