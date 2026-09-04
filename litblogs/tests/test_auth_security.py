@@ -174,7 +174,6 @@ def test_settings_validation_errors_do_not_echo_secret_values():
         "session_cookie_name",
         "csrf_cookie_name",
         "teacher_invite_hmac_key",
-        "admin_access_code",
         "email_host",
         "email_username",
         "email_password",
@@ -198,7 +197,6 @@ def test_production_requires_provider_and_session_settings(field):
         ("session_cookie_name", "test-session-cookie"),
         ("csrf_cookie_name", "placeholder-csrf-cookie"),
         ("teacher_invite_hmac_key", ""),
-        ("admin_access_code", "test-only-admin-access-code"),
     ],
 )
 def test_production_rejects_placeholder_or_blank_security_settings(field, value):
@@ -219,8 +217,6 @@ def test_production_rejects_placeholder_or_blank_security_settings(field, value)
             "teacher_invite_hmac_key",
             "replace-with-a-distinct-random-key-of-at-least-32-bytes",
         ),
-        ("admin_access_code", "replace-with-admin-access-code"),
-        ("admin_code", "replace-with-admin-code"),
     ],
 )
 def test_production_rejects_every_shipped_security_sentinel(field, sentinel):
@@ -238,8 +234,6 @@ def test_production_rejects_every_shipped_security_sentinel(field, sentinel):
         "microsoft_client_id",
         "microsoft_tenant_id",
         "teacher_invite_hmac_key",
-        "admin_access_code",
-        "admin_code",
     ],
 )
 def test_production_rejects_trivially_short_provider_and_provisioning_values(field):
@@ -779,7 +773,6 @@ def _test_settings_data(**overrides):
         "csrf_cookie_name": "test-litblog-csrf",
         "session_cookie_secure": False,
         "teacher_invite_hmac_key": "test-only-invitation-hmac-key-0123456789",
-        "admin_access_code": "test-only-admin-access-code",
         "local_password_registration_enabled": False,
     }
     data.update(overrides)
@@ -809,8 +802,6 @@ def _production_settings_data():
         "csrf_cookie_name": "__Host-litblog-csrf",
         "session_cookie_secure": True,
         "teacher_invite_hmac_key": secrets.token_urlsafe(48),
-        "admin_access_code": secrets.token_urlsafe(24),
-        "admin_code": secrets.token_urlsafe(24),
         "email_host": "smtp.school.edu",
         "email_username": "litblog-reset",
         "email_password": secrets.token_urlsafe(24),

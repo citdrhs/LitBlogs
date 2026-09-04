@@ -303,8 +303,6 @@ export default async function globalSetup() {
       JWT_AUDIENCE: 'litblogs-e2e-browser',
       ACCESS_TOKEN_EXPIRE_MINUTES: '30',
       RESET_DATABASE_ON_STARTUP: 'false',
-      ADMIN_ACCESS_CODE: randomE2eCredential(24),
-      ADMIN_CODE: randomE2eCredential(24),
       LOCAL_PASSWORD_REGISTRATION_ENABLED: 'true',
       FRONTEND_URL: `http://127.0.0.1:${frontendPort}`,
       BASE_URL: `http://127.0.0.1:${frontendPort}`,

@@ -208,6 +208,32 @@ def test_repository_policy_enforces_combined_auth_email_worker_boundary():
     assert "-m password_reset_job" not in service
 
 
+def test_repository_policy_inventories_and_constrains_empty_install_admin_bootstrap():
+    validator = VALIDATOR_PATH.read_text(encoding="utf-8")
+    source = (BACKEND_ROOT / "bootstrap_admin.py").read_text(encoding="utf-8")
+
+    assert "litblogs/bootstrap_admin.py" in validator
+    for fragment in (
+        'CONFIRMATION_ARGUMENT = "--confirm-empty-install"',
+        "pg_advisory_xact_lock",
+        "LOCK TABLE public.users IN SHARE ROW EXCLUSIVE MODE",
+        "validate_new_password_policy",
+        "verify_runtime_database_identity",
+        "ScriptDirectory",
+        "MigrationContext",
+    ):
+        assert fragment in validator
+        assert fragment in source
+    for forbidden in (
+        "from main import",
+        "import main",
+        "os.getenv",
+        "os.environ",
+    ):
+        assert forbidden in validator
+        assert forbidden not in source
+
+
 def _validate_real_tiptap_lock(policy_validator, tmp_path, package_lock):
     package = json.loads(
         (BACKEND_ROOT / "package.json").read_text(encoding="utf-8")

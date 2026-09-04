@@ -2233,7 +2233,6 @@ def test_operator_docs_enumerate_the_production_environment_contract():
         "CSRF_COOKIE_NAME",
         "SESSION_COOKIE_SECURE",
         "LOCAL_PASSWORD_REGISTRATION_ENABLED",
-        "ADMIN_ACCESS_CODE",
         "TEACHER_INVITE_HMAC_KEY",
         "RESET_DATABASE_ON_STARTUP",
         "API_DOCS_ENABLED",

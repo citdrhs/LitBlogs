@@ -52,6 +52,7 @@ REQUIRED_RELEASE_FILES = (
     "litblogs/alembic.ini",
     "litblogs/auth_security.py",
     "litblogs/base.py",
+    "litblogs/bootstrap_admin.py",
     "litblogs/config.py",
     "litblogs/database.py",
     "litblogs/deployment_check.py",

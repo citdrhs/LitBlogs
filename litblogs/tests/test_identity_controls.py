@@ -71,8 +71,6 @@ def _production_settings_data() -> dict:
         "session_cookie_name": "__Host-litblog-session",
         "csrf_cookie_name": "__Host-litblog-csrf",
         "session_cookie_secure": True,
-        "admin_access_code": secrets.token_urlsafe(24),
-        "admin_code": secrets.token_urlsafe(24),
         "email_host": "smtp.school.edu",
         "email_username": "litblog-reset",
         "email_password": secrets.token_urlsafe(24),

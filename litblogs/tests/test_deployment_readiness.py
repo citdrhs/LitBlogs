@@ -119,8 +119,6 @@ def _production_settings_values(**overrides):
         "csrf_cookie_name": "__Host-litblog-csrf",
         "session_cookie_secure": True,
         "teacher_invite_hmac_key": secrets.token_urlsafe(48),
-        "admin_access_code": secrets.token_urlsafe(24),
-        "admin_code": secrets.token_urlsafe(24),
         "local_password_registration_enabled": False,
         "email_host": "smtp.school.edu",
         "email_username": "litblogs-mailer",
@@ -776,15 +774,16 @@ def test_public_runtime_config_blanks_disabled_providers_and_reports_production_
     }
 
 
-def test_admin_provisioning_secrets_are_server_only_runtime_configuration():
+def test_obsolete_admin_provisioning_codes_are_absent_from_runtime_configuration():
     import main
 
     example = (BACKEND_DIR / ".env.example").read_text(encoding="utf-8")
     response_fields = set(main.PublicRuntimeConfigResponse.model_fields)
 
-    assert "admin_access_code" in Settings.model_fields
-    assert "admin_code" in Settings.model_fields
+    assert {"admin_access_code", "admin_code"}.isdisjoint(Settings.model_fields)
     assert {"admin_access_code", "admin_code"}.isdisjoint(response_fields)
+    assert "ADMIN_ACCESS_CODE=" not in example
+    assert "ADMIN_CODE=" not in example
     assert "VITE_ADMIN_ACCESS_CODE" not in example
     assert "VITE_ADMIN_CODE" not in example
     assert "ALGORITHM=" not in example
@@ -800,6 +799,7 @@ def test_release_admission_requires_every_shipped_runtime_module():
         "litblogs/auth_email_job.py",
         "litblogs/auth_security.py",
         "litblogs/base.py",
+        "litblogs/bootstrap_admin.py",
         "litblogs/email_verification_delivery.py",
         "litblogs/identity_controls.py",
         "litblogs/manage_accounts.py",
@@ -1425,6 +1425,7 @@ def test_release_artifact_uses_a_runtime_allowlist_instead_of_shipping_the_repos
     assert 'test -f "$staging/tree/litblogs/THIRD_PARTY_EDITOR_NOTICES.md"' in release
     assert 'test -f "$staging/tree/litblogs/rich_text_contract.py"' in release
     assert 'test -f "$staging/tree/litblogs/rich_text_security.py"' in release
+    assert 'test -f "$staging/tree/litblogs/bootstrap_admin.py"' in release
     for auth_email_runtime in (
         "litblogs/auth_email_delivery.py",
         "litblogs/auth_email_job.py",

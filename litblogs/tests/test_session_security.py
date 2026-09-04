@@ -148,8 +148,6 @@ def _production_settings() -> Settings:
         csrf_cookie_name="__Host-litblog-csrf",
         session_cookie_secure=True,
         teacher_invite_hmac_key=secrets.token_urlsafe(48),
-        admin_access_code=secrets.token_urlsafe(24),
-        admin_code=secrets.token_urlsafe(24),
         email_host="smtp.school.edu",
         email_username="litblog-reset",
         email_password=secrets.token_urlsafe(24),

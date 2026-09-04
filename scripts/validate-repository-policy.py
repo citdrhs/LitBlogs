@@ -354,6 +354,7 @@ MAINTENANCE_RELEASE_FILES = (
     "deploy/systemd/litblogs-upload-reconciliation.timer",
     "litblogs/auth_email_delivery.py",
     "litblogs/auth_email_job.py",
+    "litblogs/bootstrap_admin.py",
     "litblogs/email_verification_delivery.py",
     "litblogs/password_reset_delivery.py",
     "litblogs/runtime_database_identity.py",
@@ -2516,6 +2517,44 @@ def validate_maintenance_release_contract() -> None:
         )
 
 
+def validate_admin_bootstrap_contract() -> None:
+    deployment_check = read_text("litblogs/deployment_check.py")
+    bootstrap = read_text("litblogs/bootstrap_admin.py")
+    release = read_text(".github/workflows/release.yml")
+
+    expect(
+        '"litblogs/bootstrap_admin.py"' in deployment_check,
+        "release admission must require the administrator bootstrap module",
+    )
+    expect(
+        'test -f "$staging/tree/litblogs/bootstrap_admin.py"' in release,
+        "release packaging must prove the administrator bootstrap module exists",
+    )
+    for fragment in (
+        'CONFIRMATION_ARGUMENT = "--confirm-empty-install"',
+        "pg_advisory_xact_lock",
+        "LOCK TABLE public.users IN SHARE ROW EXCLUSIVE MODE",
+        "validate_new_password_policy",
+        "verify_runtime_database_identity",
+        "ScriptDirectory",
+        "MigrationContext",
+    ):
+        expect(
+            fragment in bootstrap,
+            f"administrator bootstrap must retain guarded behavior: {fragment}",
+        )
+    for forbidden in (
+        "from main import",
+        "import main",
+        "os.getenv",
+        "os.environ",
+    ):
+        expect(
+            forbidden not in bootstrap,
+            f"administrator bootstrap must not contain {forbidden}",
+        )
+
+
 def validate_coupled_recovery_contract() -> None:
     deployment_check = read_text("litblogs/deployment_check.py")
     postgres_common = read_text("deploy/scripts/postgres_common.py")
@@ -2725,6 +2764,7 @@ def main() -> int:
     validate_python_dependency_locks()
     validate_privacy_ignores()
     validate_maintenance_release_contract()
+    validate_admin_bootstrap_contract()
     validate_coupled_recovery_contract()
 
     if failures:

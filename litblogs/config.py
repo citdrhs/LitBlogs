@@ -125,8 +125,6 @@ class Settings(BaseSettings):
     db_lock_timeout_ms: int = Field(default=5_000, ge=500, le=30_000)
 
     teacher_invite_hmac_key: SecretStr | None = None
-    admin_access_code: SecretStr | None = None
-    admin_code: SecretStr | None = None
     local_password_registration_enabled: bool = False
 
     reset_database_on_startup: bool = False
@@ -265,7 +263,6 @@ class Settings(BaseSettings):
             "SESSION_COOKIE_NAME": self.session_cookie_name,
             "CSRF_COOKIE_NAME": self.csrf_cookie_name,
             "TEACHER_INVITE_HMAC_KEY": self.teacher_invite_hmac_key,
-            "ADMIN_ACCESS_CODE": self.admin_access_code,
             "EMAIL_HOST": self.email_host,
             "EMAIL_USERNAME": self.email_username,
             "EMAIL_PASSWORD": self.email_password,
@@ -297,7 +294,6 @@ class Settings(BaseSettings):
             "SESSION_COOKIE_NAME": self.session_cookie_name,
             "CSRF_COOKIE_NAME": self.csrf_cookie_name,
             "TEACHER_INVITE_HMAC_KEY": _reveal_secret(self.teacher_invite_hmac_key),
-            "ADMIN_ACCESS_CODE": _reveal_secret(self.admin_access_code),
             "EMAIL_PASSWORD": _reveal_secret(self.email_password),
         }
         if self.google_oauth_enabled:
@@ -309,8 +305,6 @@ class Settings(BaseSettings):
                     "MICROSOFT_TENANT_ID": self.microsoft_tenant_id,
                 }
             )
-        if self.admin_code is not None:
-            placeholder_checked["ADMIN_CODE"] = _reveal_secret(self.admin_code)
         for name, value in placeholder_checked.items():
             if any(fragment in str(value).lower() for fragment in _PLACEHOLDER_FRAGMENTS):
                 raise ValueError(f"{name} must not be a placeholder in production")
@@ -320,7 +314,6 @@ class Settings(BaseSettings):
                 _reveal_secret(self.teacher_invite_hmac_key),
                 SECRET_KEY_MIN_BYTES,
             ),
-            "ADMIN_ACCESS_CODE": (_reveal_secret(self.admin_access_code), 16),
             "EMAIL_PASSWORD": (_reveal_secret(self.email_password), 16),
         }
         if self.google_oauth_enabled:
@@ -332,8 +325,6 @@ class Settings(BaseSettings):
                     "MICROSOFT_TENANT_ID": (self.microsoft_tenant_id, 8),
                 }
             )
-        if self.admin_code is not None:
-            minimum_lengths["ADMIN_CODE"] = (_reveal_secret(self.admin_code), 16)
         for name, (value, minimum_bytes) in minimum_lengths.items():
             if len(str(value).encode("utf-8")) < minimum_bytes:
                 raise ValueError(f"{name} must contain at least {minimum_bytes} bytes in production")

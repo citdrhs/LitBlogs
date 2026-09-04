@@ -36,6 +36,7 @@ def test_release_admission_requires_external_maintenance_jobs_and_units():
         UPLOAD_RECONCILIATION_TIMER,
         "litblogs/auth_email_delivery.py",
         "litblogs/auth_email_job.py",
+        "litblogs/bootstrap_admin.py",
         "litblogs/email_verification_delivery.py",
         "litblogs/password_reset_job.py",
         "litblogs/upload_reconciliation_job.py",
