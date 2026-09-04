@@ -103,6 +103,43 @@ def test_maintenance_services_are_bounded_and_hardened_oneshots():
         assert "email verification" in unit
 
 
+def test_auth_email_job_policy_and_docs_pin_fair_scheduler_below_unit_timeout():
+    import auth_email_job
+
+    reset_service = _read(PASSWORD_RESET_SERVICE)
+    runtime_limit = int(
+        next(
+            line.split("=", 1)[1]
+            for line in reset_service.splitlines()
+            if line.startswith("RuntimeMaxSec=")
+        )
+    )
+
+    assert auth_email_job.AUTH_EMAIL_JOB_PER_QUEUE_CAP == 25
+    assert auth_email_job.AUTH_EMAIL_JOB_DEADLINE_SECONDS == 240.0
+    assert auth_email_job.AUTH_EMAIL_JOB_DEADLINE_SECONDS < runtime_limit
+
+    validator = _read("scripts/validate-repository-policy.py")
+    for fragment in (
+        "AUTH_EMAIL_JOB_PER_QUEUE_CAP = 25",
+        "AUTH_EMAIL_JOB_DEADLINE_SECONDS = 240.0",
+        "dispatches = (verification_dispatch, reset_dispatch)",
+        "monotonic_clock() >= deadline",
+        "batch_size=1",
+    ):
+        assert fragment in validator
+
+    for document_path in (
+        "deploy/README.md",
+        "docs/operations/production-runbook.md",
+    ):
+        documentation = _read(document_path).lower()
+        assert "verification-first round-robin" in documentation
+        assert "alternating one delivery per queue" in documentation
+        assert "25 deliveries per queue" in documentation
+        assert "240-second soft deadline" in documentation
+
+
 def test_maintenance_services_fail_closed_without_exact_egress_drop_ins():
     reset = _read(PASSWORD_RESET_SERVICE)
     reset_timer = _read(PASSWORD_RESET_TIMER)

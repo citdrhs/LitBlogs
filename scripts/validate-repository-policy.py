@@ -2285,6 +2285,17 @@ def validate_maintenance_release_contract() -> None:
         "import auth_email_delivery" in auth_email_job,
         "authentication-email entry point must import neutral plumbing",
     )
+    for fragment in (
+        "AUTH_EMAIL_JOB_PER_QUEUE_CAP = 25",
+        "AUTH_EMAIL_JOB_DEADLINE_SECONDS = 240.0",
+        "dispatches = (verification_dispatch, reset_dispatch)",
+        "monotonic_clock() >= deadline",
+        "batch_size=1",
+    ):
+        expect(
+            fragment in auth_email_job,
+            f"authentication-email entry point must retain fair scheduling: {fragment}",
+        )
     for domain_delivery in (
         password_reset_delivery,
         email_verification_delivery,
@@ -2461,6 +2472,10 @@ def validate_maintenance_release_contract() -> None:
             "password_reset_delivery.py",
             "minimal worker settings",
             "both queues",
+            "verification-first round-robin",
+            "alternating one delivery per queue",
+            "25 deliveries per queue",
+            "240-second soft deadline",
             "does not import `main`",
             "`litblogs-reset`",
             "`/usr/sbin/nologin`",

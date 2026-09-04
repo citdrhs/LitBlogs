@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
-def test_auth_email_job_uses_one_shared_runtime_and_runs_both_batches_once(
+def test_auth_email_job_uses_one_shared_runtime_and_alternates_single_deliveries(
     monkeypatch,
 ):
     import auth_email_delivery
@@ -45,17 +45,36 @@ def test_auth_email_job_uses_one_shared_runtime_and_runs_both_batches_once(
         "auth_email_settings_from_worker",
         lambda received: calls.append(("smtp", received)) or email_settings,
     )
+    reset_outcomes = iter(
+        (
+            auth_email_delivery.AuthEmailDispatchOutcome.COMPLETED,
+            auth_email_delivery.AuthEmailDispatchOutcome.EMPTY_QUEUE,
+        )
+    )
+    verification_outcomes = iter(
+        (
+            auth_email_delivery.AuthEmailDispatchOutcome.COMPLETED,
+            auth_email_delivery.AuthEmailDispatchOutcome.EMPTY_QUEUE,
+        )
+    )
+
+    def dispatch_reset(**kwargs):
+        calls.append(("reset", kwargs))
+        return next(reset_outcomes)
+
+    def dispatch_verification(**kwargs):
+        calls.append(("verification", kwargs))
+        return next(verification_outcomes)
+
     monkeypatch.setattr(
         password_reset_delivery,
         "dispatch_password_reset_batch_once",
-        lambda **kwargs: calls.append(("reset", kwargs))
-        or auth_email_delivery.AuthEmailDispatchOutcome.COMPLETED,
+        dispatch_reset,
     )
     monkeypatch.setattr(
         email_verification_delivery,
         "dispatch_email_verification_batch_once",
-        lambda **kwargs: calls.append(("verification", kwargs))
-        or auth_email_delivery.AuthEmailDispatchOutcome.EMPTY_QUEUE,
+        dispatch_verification,
     )
 
     assert auth_email_job.run() == 0
@@ -66,54 +85,113 @@ def test_auth_email_job_uses_one_shared_runtime_and_runs_both_batches_once(
         "ready",
         "sessions",
         "smtp",
+        "verification",
         "reset",
         "verification",
+        "reset",
         "dispose",
     ]
-    reset_kwargs = next(
+    dispatch_kwargs = [
         call[1]
         for call in calls
-        if isinstance(call, tuple) and call[0] == "reset"
-    )
-    verification_kwargs = next(
-        call[1]
-        for call in calls
-        if isinstance(call, tuple) and call[0] == "verification"
-    )
-    for kwargs in (reset_kwargs, verification_kwargs):
+        if isinstance(call, tuple)
+        and call[0] in {"reset", "verification"}
+    ]
+    for kwargs in dispatch_kwargs:
         assert kwargs == {
             "session_factory": session_factory,
             "email_settings": email_settings,
             "claim_timeout_seconds": 120,
-            "batch_size": 100,
+            "batch_size": 1,
         }
 
 
-def test_auth_email_job_attempts_verification_after_reset_exception(capsys):
+def test_auth_email_job_round_robin_caps_each_active_queue_at_25():
     import auth_email_delivery
     import auth_email_job
 
     calls = []
 
-    def fail_reset():
-        calls.append("reset")
-        raise RuntimeError("private-reset-provider-and-recipient")
+    assert auth_email_job.run(
+        reset_dispatch=lambda: calls.append("reset")
+        or auth_email_delivery.AuthEmailDispatchOutcome.COMPLETED,
+        verification_dispatch=lambda: calls.append("verification")
+        or auth_email_delivery.AuthEmailDispatchOutcome.COMPLETED,
+        monotonic_clock=lambda: 0.0,
+    ) == 0
+
+    assert auth_email_job.AUTH_EMAIL_JOB_PER_QUEUE_CAP == 25
+    assert calls == ["verification", "reset"] * 25
+
+
+def test_auth_email_job_stops_at_soft_deadline_after_servicing_both_queues():
+    import auth_email_delivery
+    import auth_email_job
+
+    class ManualClock:
+        now = 0.0
+
+        def __call__(self):
+            return self.now
+
+        def advance(self, seconds):
+            self.now += seconds
+
+    clock = ManualClock()
+    calls = []
 
     def run_verification():
         calls.append("verification")
+        clock.advance(100)
         return auth_email_delivery.AuthEmailDispatchOutcome.COMPLETED
 
-    result = auth_email_job.run(
-        reset_dispatch=fail_reset,
+    def run_reset():
+        calls.append("reset")
+        clock.advance(140)
+        return auth_email_delivery.AuthEmailDispatchOutcome.COMPLETED
+
+    assert auth_email_job.run(
+        reset_dispatch=run_reset,
         verification_dispatch=run_verification,
+        monotonic_clock=clock,
+    ) == 0
+
+    assert 0 < auth_email_job.AUTH_EMAIL_JOB_DEADLINE_SECONDS < 300
+    assert calls == ["verification", "reset"]
+
+
+def test_auth_email_job_continues_reset_after_verification_exception(capsys):
+    import auth_email_delivery
+    import auth_email_job
+
+    calls = []
+
+    def fail_verification():
+        calls.append("verification")
+        raise RuntimeError("private-verification-provider-and-recipient")
+
+    reset_outcomes = iter(
+        (
+            auth_email_delivery.AuthEmailDispatchOutcome.COMPLETED,
+            auth_email_delivery.AuthEmailDispatchOutcome.EMPTY_QUEUE,
+        )
+    )
+
+    def run_reset():
+        calls.append("reset")
+        return next(reset_outcomes)
+
+    result = auth_email_job.run(
+        reset_dispatch=run_reset,
+        verification_dispatch=fail_verification,
     )
 
     captured = capsys.readouterr()
     assert result == 1
-    assert calls == ["reset", "verification"]
+    assert calls == ["verification", "reset", "reset"]
     assert captured.out == ""
     assert captured.err.strip() == "auth-email-job: failed"
-    assert "private-reset" not in captured.err
+    assert "private-verification" not in captured.err
 
 
 def test_auth_email_job_aggregates_failed_and_invalid_outcomes_once(capsys):
@@ -129,7 +207,7 @@ def test_auth_email_job_aggregates_failed_and_invalid_outcomes_once(capsys):
 
     captured = capsys.readouterr()
     assert result == 1
-    assert calls == ["reset", "verification"]
+    assert calls == ["verification", "reset"]
     assert captured.out == ""
     assert captured.err.splitlines() == ["auth-email-job: failed"]
 
@@ -140,9 +218,7 @@ def test_auth_email_job_accepts_only_empty_or_completed_outcomes(capsys):
 
     assert auth_email_job.run(
         reset_dispatch=lambda: auth_email_delivery.AuthEmailDispatchOutcome.EMPTY_QUEUE,
-        verification_dispatch=lambda: (
-            auth_email_delivery.AuthEmailDispatchOutcome.COMPLETED
-        ),
+        verification_dispatch=lambda: auth_email_delivery.AuthEmailDispatchOutcome.EMPTY_QUEUE,
     ) == 0
     captured = capsys.readouterr()
     assert captured.out == ""

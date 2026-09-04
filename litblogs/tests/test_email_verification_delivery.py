@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import database
 import models
 
 FIXED_NOW = datetime(2026, 8, 31, 12, 0, 0)
@@ -199,6 +200,82 @@ def test_only_one_concurrent_worker_claims_a_verification(
     assert stored.delivery_claim_digest == (
         email_verification_delivery.email_verification_claim_digest(claims[0][2])
     )
+
+
+@pytest.mark.skipif(
+    database.engine.dialect.name != "postgresql",
+    reason="PostgreSQL verification row-lock integration test",
+)
+def test_postgres_concurrent_claim_stale_reclaim_and_old_claim_cas_loss(
+    client,
+    database_guard,
+    monkeypatch,
+):
+    del client
+    import email_verification_delivery
+
+    database_guard(database.engine)
+    session_factory = database.SessionLocal
+    _user_id, verification_id = _create_verification(
+        session_factory,
+        "postgres-concurrent-reclaim",
+    )
+    monkeypatch.setattr(
+        email_verification_delivery,
+        "_utc_now_naive",
+        lambda: FIXED_NOW,
+    )
+    start = Barrier(2)
+
+    def claim_once():
+        start.wait()
+        return email_verification_delivery.claim_email_verification_delivery(
+            session_factory,
+            claim_timeout_seconds=120,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _index: claim_once(), range(2)))
+
+    claims = [claim for claim in results if claim is not None]
+    assert len(claims) == 1
+    original_claim = claims[0]
+    assert original_claim[0] == verification_id
+
+    with session_factory() as db:
+        stored = db.get(models.EmailVerification, verification_id)
+        stored.delivery_attempted_at = FIXED_NOW - timedelta(seconds=121)
+        db.commit()
+
+    replacement_claim = (
+        email_verification_delivery.claim_email_verification_delivery(
+            session_factory,
+            claim_timeout_seconds=120,
+        )
+    )
+    assert replacement_claim is not None
+    assert replacement_claim[0] == verification_id
+    assert replacement_claim[2] != original_claim[2]
+
+    outcome = (
+        email_verification_delivery.complete_email_verification_delivery_outcome(
+            session_factory,
+            verification_id=verification_id,
+            claim_nonce=original_claim[2],
+            raw_token="old-owner-token-must-not-win",
+            delivered=True,
+        )
+    )
+
+    assert outcome is email_verification_delivery.EmailVerificationCompletionOutcome.CLAIM_LOST
+    stored = _load_verification(session_factory, verification_id)
+    assert stored.delivery_status == email_verification_delivery.EMAIL_VERIFICATION_PROCESSING
+    assert stored.delivery_claim_digest == (
+        email_verification_delivery.email_verification_claim_digest(
+            replacement_claim[2]
+        )
+    )
+    assert stored.token_digest is None
 
 
 def test_fresh_processing_claim_waits_but_stale_120_second_claim_is_recovered(
