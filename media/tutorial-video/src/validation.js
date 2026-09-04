@@ -1,4 +1,6 @@
-const EXPECTED_DURATION_SECONDS = 117;
+import { VIDEO } from "./manifest.js";
+
+const EXPECTED_DURATION_SECONDS = VIDEO.durationInSeconds;
 const EXPECTED_SIZE_LIMIT_BYTES = 20 * 1024 * 1024;
 
 const parseRate = (rate) => {
@@ -16,6 +18,17 @@ export const validateManifest = (scenes) => {
     ids.add(scene.id);
     if (scene.startFrame !== nextStart) issues.push(`scene ${scene.id} does not start contiguously`);
     if (!scene.narration?.trim()) issues.push(`scene ${scene.id} has empty narration`);
+    const narrationFrames = scene.narrationDurationInFrames;
+    const lastRequiredAction = Math.max(
+      0,
+      ...(scene.cursor ?? []).filter(({ click }) => click).map(({ frame }) => frame),
+    );
+    const boundedDuration = Math.max(narrationFrames + 24, lastRequiredAction + 18);
+    if (!Number.isInteger(narrationFrames) || narrationFrames <= 0) {
+      issues.push(`scene ${scene.id} has no measured narration duration`);
+    } else if (scene.durationInFrames !== boundedDuration) {
+      issues.push(`scene ${scene.id} has an unbounded narration or action tail`);
+    }
     if (!scene.caption?.text?.trim()) issues.push(`scene ${scene.id} has empty caption text`);
     if (scene.caption?.startOffsetFrames < 0
       || scene.caption?.endOffsetFrames > scene.durationInFrames
@@ -78,7 +91,9 @@ export const validateManifest = (scenes) => {
     nextStart += scene.durationInFrames;
   }
 
-  if (nextStart !== 3510) issues.push(`manifest totals ${nextStart} frames instead of 3510`);
+  if (nextStart !== VIDEO.durationInFrames) {
+    issues.push(`manifest totals ${nextStart} frames instead of ${VIDEO.durationInFrames}`);
+  }
   const serialized = JSON.stringify(scenes);
   const emails = serialized.match(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g) ?? [];
   if (emails.some((email) => !email.endsWith("@example.com"))) issues.push("manifest contains a non-synthetic email address");
@@ -116,7 +131,10 @@ export const validateProbeData = (probe) => {
 
   const duration = Number(probe?.format?.duration);
   if (!Number.isFinite(duration) || Math.abs(duration - EXPECTED_DURATION_SECONDS) > 0.1) {
-    issues.push(`expected duration within 0.1s of 117, received ${probe?.format?.duration}`);
+    issues.push(
+      `expected duration within 0.1s of ${EXPECTED_DURATION_SECONDS.toFixed(3)}, `
+      + `received ${probe?.format?.duration}`,
+    );
   }
   const size = Number(probe?.format?.size);
   if (!Number.isFinite(size) || size > EXPECTED_SIZE_LIMIT_BYTES) {

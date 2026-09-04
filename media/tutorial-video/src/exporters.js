@@ -10,6 +10,19 @@ const formatClock = (totalSeconds) => {
     : `${minutes}:${pad(remainder)}`;
 };
 
+const manifestDurationSeconds = (video) => Math.floor(video.durationInFrames / video.fps);
+
+export const formatDurationLabel = (video) => formatClock(manifestDurationSeconds(video));
+
+export const formatDurationWords = (video) => {
+  const totalSeconds = manifestDurationSeconds(video);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  const minuteLabel = `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+  const secondLabel = `${seconds} ${seconds === 1 ? "second" : "seconds"}`;
+  return `${minuteLabel} ${secondLabel}`;
+};
+
 export const formatVttTimestamp = (frame, fps) => {
   const totalMilliseconds = Math.round((frame / fps) * 1000);
   const hours = Math.floor(totalMilliseconds / 3_600_000);
@@ -39,7 +52,7 @@ export const manifestToPlainTranscript = (scenes, video) => {
   ].join("\n"));
   return [
     "LitBlog Student Tutorial",
-    `Duration: ${formatClock(video.durationInSeconds)}`,
+    `Duration: ${formatDurationLabel(video)}`,
     "",
     chapters.join("\n\n"),
     "",

@@ -43,3 +43,24 @@ test("keeps the capture runtime-config mock aligned with frontend required field
   assert.match(payload[1], /^\s*google_oauth_enabled:\s*false,/m);
   assert.match(payload[1], /^\s*microsoft_oauth_enabled:\s*false,/m);
 });
+
+test("captures the real verified-email result without persisting or logging its raw token", () => {
+  const captureSource = fs.readFileSync(
+    path.join(mediaRoot, "scripts", "capture.mjs"),
+    "utf8",
+  );
+
+  assert.match(captureSource, /verification-success\.jpg/);
+  assert.match(captureSource, /getByRole\("heading", \{ name: "Email verified" \}\)/);
+  assert.match(
+    captureSource,
+    /getByRole\("region", \{ name: "Email verified" \}\)\.getByRole\("link"/,
+  );
+  assert.match(captureSource, /randomBytes/);
+  assert.match(captureSource, /stdin\.end\(rawVerificationToken\)/);
+  assert.match(captureSource, /path\.join\(process\.env\.E2E_RUN_DIR, "database\.json"\)/);
+  assert.ok(captureSource.includes("toHaveURL(/\\/verify-email$/)"));
+  assert.doesNotMatch(captureSource, /console\.(?:log|error)\([^\n]*rawVerificationToken/);
+  assert.doesNotMatch(captureSource, /writeFileSync\([^\n]*rawVerificationToken/);
+  assert.doesNotMatch(captureSource, /registration-success\.jpg/);
+});

@@ -1,29 +1,29 @@
 LitBlog Student Tutorial
-Duration: 1:57
+Duration: 1:03
 
 [0:00] Welcome to LitBlog
 Welcome to LitBlog. In under two minutes, you'll create an account, join a class, and publish your first post.
 
-[0:05] Sign up
-Choose Sign Up. Enter your name, school email, a strong password, and choose Student. Confirm your password, then select Sign Up.
+[0:05] Sign up and verify
+Choose Sign Up. Enter your name, school email, a strong password, and choose Student. Confirm your password, then select Sign Up. Open the verification email and select Verify Email before you sign in.
 
-[0:28] Register and sign in
-After registration, choose Sign In. Enter the same email and password to open your Student Hub.
+[0:20] Verify and sign in
+After verification, choose Sign In. Enter the same email and password to open your Student Hub.
 
-[0:42] Join a class
+[0:26] Join a class
 Select Join Class. Type the six-character code from your teacher, then choose Join Class again.
 
-[0:58] Enter the class
+[0:34] Enter the class
 Open the class card to see announcements, assignments, and posts.
 
-[1:08] Open a new post
+[0:39] Open a new post
 Select Create New Post.
 
-[1:17] Write and format
+[0:42] Write and format
 Add a clear title and write your response. Select text and choose Bold. Then choose a highlight color. The editor previews exactly what classmates and teachers will see.
 
-[1:42] Publish
+[0:54] Publish
 Review your work, then select Publish.
 
-[1:51] Verify and finish
+[0:57] Verify and finish
 Your post appears in the class feed with bold and highlighting preserved. You're ready to write on LitBlog.

@@ -21,7 +21,7 @@ const GOOD_PROBE = {
     },
   ],
   format: {
-    duration: "117.000000",
+    duration: "63.033333",
     size: "12345678",
   },
 };
@@ -41,7 +41,7 @@ test("reports every material stream and container mismatch", () => {
     color_space: "unknown",
   };
   invalid.streams[1].sample_rate = "44100";
-  invalid.format.duration = "116.5";
+  invalid.format.duration = "62.5";
   invalid.format.size = String(21 * 1024 * 1024);
 
   assert.deepEqual(validation.validateProbeData?.(invalid), [
@@ -51,7 +51,7 @@ test("reports every material stream and container mismatch", () => {
     "expected 30fps video, received 30000/1001",
     "expected BT.709 color metadata, received unknown",
     "expected 48kHz AAC audio, received aac at 44100Hz",
-    "expected duration within 0.1s of 117, received 116.5",
+    "expected duration within 0.1s of 63.033, received 62.5",
     "expected file size at most 20MiB, received 22020096 bytes",
   ]);
 });
@@ -80,11 +80,11 @@ test("recognizes fast-start MP4 box order", () => {
 });
 
 test("bounds exported WebVTT cues to the tutorial duration", () => {
-  const valid = "WEBVTT\n\n1\n00:00:00.200 --> 00:01:56.800\nText\n";
-  const invalid = "WEBVTT\n\n1\n00:01:56.800 --> 00:01:57.200\nText\n";
-  assert.deepEqual(validation.validateVtt?.(valid, 117), []);
-  assert.deepEqual(validation.validateVtt?.(invalid, 117), [
-    "caption cue 1 ends after 117 seconds",
+  const valid = "WEBVTT\n\n1\n00:00:00.200 --> 00:01:02.833\nText\n";
+  const invalid = "WEBVTT\n\n1\n00:01:02.833 --> 00:01:03.200\nText\n";
+  assert.deepEqual(validation.validateVtt?.(valid, 1891 / 30), []);
+  assert.deepEqual(validation.validateVtt?.(invalid, 1891 / 30), [
+    "caption cue 1 ends after 63.03333333333333 seconds",
   ]);
 });
 
