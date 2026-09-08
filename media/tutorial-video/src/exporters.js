@@ -10,6 +10,19 @@ const formatClock = (totalSeconds) => {
     : `${minutes}:${pad(remainder)}`;
 };
 
+const manifestDurationSeconds = (video) => Math.floor(video.durationInFrames / video.fps);
+
+export const formatDurationLabel = (video) => formatClock(manifestDurationSeconds(video));
+
+export const formatDurationWords = (video) => {
+  const totalSeconds = manifestDurationSeconds(video);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  const minuteLabel = `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+  const secondLabel = `${seconds} ${seconds === 1 ? "second" : "seconds"}`;
+  return `${minuteLabel} ${secondLabel}`;
+};
+
 export const formatVttTimestamp = (frame, fps) => {
   const totalMilliseconds = Math.round((frame / fps) * 1000);
   const hours = Math.floor(totalMilliseconds / 3_600_000);
@@ -20,13 +33,16 @@ export const formatVttTimestamp = (frame, fps) => {
 };
 
 export const manifestToVtt = (scenes, video) => {
-  const cues = scenes.map((scene, index) => {
-    const cueStart = scene.startFrame + scene.caption.startOffsetFrames;
-    const cueEnd = scene.startFrame + scene.caption.endOffsetFrames;
+  const cueRecords = scenes.flatMap((scene) => (
+    scene.captionCues.map((cue) => ({ scene, cue }))
+  ));
+  const cues = cueRecords.map(({ scene, cue }, index) => {
+    const cueStart = scene.startFrame + cue.startOffsetFrames;
+    const cueEnd = scene.startFrame + cue.endOffsetFrames;
     return [
       String(index + 1),
       `${formatVttTimestamp(cueStart, video.fps)} --> ${formatVttTimestamp(cueEnd, video.fps)}`,
-      scene.caption.text,
+      cue.text,
     ].join("\n");
   });
   return `WEBVTT\n\n${cues.join("\n\n")}\n`;
@@ -39,7 +55,7 @@ export const manifestToPlainTranscript = (scenes, video) => {
   ].join("\n"));
   return [
     "LitBlog Student Tutorial",
-    `Duration: ${formatClock(video.durationInSeconds)}`,
+    `Duration: ${formatDurationLabel(video)}`,
     "",
     chapters.join("\n\n"),
     "",

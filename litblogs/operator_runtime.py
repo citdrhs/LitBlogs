@@ -16,6 +16,9 @@ MAX_OPERATOR_CONFIG_BYTES = 64 * 1024
 OPERATOR_CONFIG_FD_ENV = "LITBLOG_OPERATOR_CONFIG_FD"
 OPERATOR_RUNTIME_PLATFORM = os.name
 OPERATOR_DATABASE_HOST = "127.0.0.1"
+# The only non-loopback target is the fixed private Compose service. The same
+# exact role, database, port, CA custody and verify-full TLS checks apply to both.
+OPERATOR_DATABASE_HOSTS = frozenset({OPERATOR_DATABASE_HOST, "postgres.internal"})
 OPERATOR_ROOT_CERTIFICATE_PATH = "/etc/litblogs/postgres-root-ca.pem"
 _OPERATOR_DATABASE_ROLES = {
     "invitation": "litblog_invitation_operator",
@@ -87,7 +90,7 @@ class OperatorSettings(BaseModel):
         if any(fragment in lowered_password for fragment in _PLACEHOLDER_FRAGMENTS):
             raise ValueError("operator database password is not strong")
         host = database_url.host or ""
-        if host != OPERATOR_DATABASE_HOST:
+        if host not in OPERATOR_DATABASE_HOSTS:
             raise ValueError("operator database host is invalid")
         if database_url.port != 5_432:
             raise ValueError("operator database port is invalid")
@@ -230,6 +233,7 @@ def require_expected_database_role(
                     FROM pg_catalog.unnest(ARRAY[
                         'public.users',
                         'public.browser_sessions',
+                        'public.email_verifications',
                         'public.password_resets',
                         'public.teacher_invitations',
                         'public.operator_audit_events'

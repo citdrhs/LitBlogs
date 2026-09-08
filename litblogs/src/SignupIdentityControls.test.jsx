@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -35,7 +35,9 @@ let FAQ;
 let SignUp;
 
 beforeAll(async () => {
+  vi.stubEnv("VITE_GOOGLE_OAUTH_ENABLED", "true");
   vi.stubEnv("VITE_GOOGLE_CLIENT_ID", "987654321.apps.googleusercontent.com");
+  vi.stubEnv("VITE_MICROSOFT_OAUTH_ENABLED", "true");
   vi.stubEnv("VITE_MICROSOFT_CLIENT_ID", "2f1c67a1-91e2-46a3-941f-b88e31763e51");
   vi.stubEnv("VITE_MICROSOFT_TENANT_ID", "871bd3e0-2dc0-4a40-9b07-9d03068c2364");
   vi.stubEnv("VITE_LOCAL_PASSWORD_REGISTRATION_ENABLED", "true");
@@ -53,7 +55,7 @@ beforeEach(() => {
   doubles.post.mockResolvedValue({
     status: 202,
     data: {
-      message: "If registration can be completed, sign in with the submitted credentials.",
+      message: "If registration can be completed, verification instructions will be sent.",
     },
   });
   doubles.fetchBrowserSession.mockResolvedValue({ role: "STUDENT" });
@@ -100,7 +102,7 @@ describe("password registration privacy contract", () => {
     expect(screen.getByText(/use your verified school account/i)).toBeInTheDocument();
   });
 
-  it("keeps the browser anonymous after generic acceptance and directs the user to sign in", async () => {
+  it("keeps the browser anonymous and presents an accessible check-email state", async () => {
     renderSignup();
     fillPasswordRegistration();
 
@@ -116,14 +118,41 @@ describe("password registration privacy contract", () => {
       );
     });
     expect(doubles.fetchBrowserSession).not.toHaveBeenCalled();
-    expect(
-      await screen.findByText(/if your registration was accepted/i),
-    ).toBeInTheDocument();
+    const dialog = await screen.findByRole("dialog", { name: "Check your school email" });
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Check your school email" })).toHaveFocus();
+    expect(screen.getByText(/verify your school email before signing in/i)).toBeInTheDocument();
     expect(
       screen
         .getAllByRole("link", { name: "Sign In" })
         .some((link) => link.getAttribute("href") === "/sign-in"),
     ).toBe(true);
+    expect(screen.getByRole("link", { name: /request another verification email/i })).toHaveAttribute(
+      "href",
+      "/verify-email?resend=1",
+    );
+    expect(screen.getByText(/wait at least five minutes/i)).toBeInTheDocument();
+    expect(screen.getByTestId("signup-background")).toHaveAttribute("inert");
+
+    const signInLink = within(dialog).getByRole("link", { name: "Sign In" });
+    const resendLink = within(dialog).getByRole("link", {
+      name: /request another verification email/i,
+    });
+    resendLink.focus();
+    fireEvent.keyDown(dialog, { key: "Tab" });
+    expect(signInLink).toHaveFocus();
+    signInLink.focus();
+    fireEvent.keyDown(dialog, { key: "Tab", shiftKey: true });
+    expect(resendLink).toHaveFocus();
+    expect(screen.getByLabelText("First Name")).toHaveValue("");
+    expect(screen.getByLabelText("Last Name")).toHaveValue("");
+    expect(screen.getByLabelText("Email Address")).toHaveValue("");
+    expect(screen.getByLabelText("Password")).toHaveValue("");
+    expect(screen.getByLabelText("Confirm Password")).toHaveValue("");
+    expect(screen.getByLabelText("Role")).toHaveValue("");
+    expect(JSON.stringify({ ...localStorage, ...sessionStorage })).not.toContain(
+      "Long-Private-Password1!",
+    );
   });
 
   it("uses the one-time teacher invitation field and never the removed shared-code field", async () => {
@@ -148,7 +177,8 @@ describe("password registration privacy contract", () => {
     expect(payload).not.toHaveProperty("access_code");
     expect(payload).not.toHaveProperty("accessCode");
     expect(doubles.fetchBrowserSession).not.toHaveBeenCalled();
-    expect(screen.getByLabelText("Teacher invitation token")).toHaveValue("");
+    expect(screen.queryByLabelText("Teacher invitation token")).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("synthetic-one-time-teacher-invitation");
     expect(screen.getByLabelText("Password")).toHaveValue("");
     expect(screen.getByLabelText("Confirm Password")).toHaveValue("");
   });

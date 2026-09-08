@@ -13,6 +13,7 @@ import yaml
 from yaml.constructor import ConstructorError
 
 ROOT = Path(__file__).resolve().parents[1]
+EXPECTED_ALEMBIC_HEAD = "a82f8f2b1d7c"
 ACTION_PIN = re.compile(
     r"^\s*uses:\s*(?P<action>(?:actions|github)/[^@\s]+)@(?P<sha>[0-9a-f]{40})"
     r"\s+#\s+(?P<version>v(?P<major>\d+)\.\d+\.\d+)\s*$"
@@ -77,8 +78,8 @@ BROWSER_E2E_ARTIFACT_PATH = (
 )
 NODE_MAJOR = "24"
 NODE_ENGINE = "24.x"
-TIPTAP_VERSION = "^3.30.3"
-TIPTAP_LOCK_VERSION = "3.30.3"
+TIPTAP_VERSION = "^3.30.6"
+TIPTAP_LOCK_VERSION = "3.30.6"
 TIPTAP_EDITOR_LICENSE = "MIT"
 TIPTAP_EDITOR_NOTICE_PATH = "litblogs/THIRD_PARTY_EDITOR_NOTICES.md"
 TIPTAP_EDITOR_COPYRIGHT = "Copyright (c) 2025, Tiptap GmbH"
@@ -185,43 +186,43 @@ AUDITED_TIPTAP_LOCK_PACKAGES = frozenset(
     }
 )
 AUDITED_TIPTAP_LOCK_INTEGRITIES = {
-    "@tiptap/core": "sha512-kDD8KY99lBCKntCqTBE9eNR1ul/i/wPFw2METWT+LYZvifljXq2oiX6JaGF1Sk59efe7+sq9IISxOk47YlBiWQ==",
-    "@tiptap/extension-blockquote": "sha512-Dh8yfEqBKTqEdBKZ4Ta3DkTecP0VJxvRNA5b1LCF7gBbe54Lm3A28UuVvK/Sdhh9FJDrIVCQTDS0yHGbi6G9ew==",
-    "@tiptap/extension-bold": "sha512-a4BSAjWRN4mWklRTdDCIaG9R+PqyUxXNYGQ2CLtOhO51Wq6daw2qFTHR+cTqAjaiiUSuDYII86UChb2qQRq8Lg==",
-    "@tiptap/extension-bubble-menu": "sha512-YryCf9fq+9n1XIW6f5weSCD2MbL/LhRQ7jArRToQQ/oNxc422LqYVjijQQTNuk2cZEqE9fdO3Hw27tmwEEs9UQ==",
-    "@tiptap/extension-bullet-list": "sha512-Z/ZqUfrd3Fd8hHpHEPv3XRzqwqVLD4CP67xFMyjy0cqEgnjgvd1iR6QzJsKD79V9zyu0Agu7ab9ZBf4NktpWcw==",
-    "@tiptap/extension-character-count": "sha512-CU4PTrmC3XOlReAWdUZ6JWSVBNU9iKCixNy+FBhWNJBHQaXOoyBJOJ9isqWXARoMM1QOD1JyQtfsHhTs2RiuIw==",
-    "@tiptap/extension-code": "sha512-mOV4Fg+ji6uXmFxTMuug9WK6zk0ksNQepnuvoDR4g4d+tnz2y9iEbgOXFohVxhOXOLDLdNeKdwHxbHQdi5Ivbw==",
-    "@tiptap/extension-code-block": "sha512-xT2cDil/ipy/LklPgv/JqSsXys1mjcqlIPDUetK3llB2DT7XZssYPV3qv278tqRO4pJDbrXk82I6Lh7vLwmIAg==",
-    "@tiptap/extension-color": "sha512-l9ERrkBneVZi7RfFG2M1AQCSqS0LpyL8yzJokbrUgPHDC+TNsdNkM5ZU4CPDXFyLm0QKuPqatSRSDKizbyT6Mg==",
-    "@tiptap/extension-document": "sha512-B9gqrgM1uHjCKr/PSnnSl+bS+YQb5EN/PUW9KWp9nSgmIaqxXws2ufqowS65uTLJLqd7pwF4l5lUrsfhq0EKzw==",
-    "@tiptap/extension-dropcursor": "sha512-xdY66lcQakBLvWbJQHeJy/Td0f10YRXLyFeOFzt9PODsX4nqwJMju9tpqcLIGp0waaztu8PGwZ81oSCdQldIHQ==",
-    "@tiptap/extension-floating-menu": "sha512-4l5Qee1wBk2YBFEFbWHFhUt++6hDY7Yp81BkO3wY6KFToxs+cm9JIm3xr3KF9UJ/vnUpIhBWIbZl3uKf37SJLA==",
-    "@tiptap/extension-font-family": "sha512-AUQB5afkVbdn0p6cVykqecViAMW5n+JMymkEd4e2Lapmilp81lKg76EQfNs7vwim0kExrPN1p9Q1b5/0T0TLvw==",
-    "@tiptap/extension-gapcursor": "sha512-+mwm64+RiArd1G8xSgtaTrvx1X5Lzz6sJ93zTmaiMVNc2N29AN77BVPTJ0e+853+/F6Bec/vOnVkIjTLg/ZBRw==",
-    "@tiptap/extension-hard-break": "sha512-/tX+IFW2C4RJltbwcn8/4zoHwj5YycRNOugb4Ul9Fl1AOJqjNwRx8xc0NpaOjuADhlMYMczEtSaOiDh5ZEOmjg==",
-    "@tiptap/extension-heading": "sha512-y+0u9qdrUAOGNrP52hAEiH1mvr1ZmzmkCBICICiXRH4+QNXpKkiBK3zlbDOPVQj0g0YIg6XIIU0vIaUBDPIaMQ==",
-    "@tiptap/extension-highlight": "sha512-zXDJ25C2uSm+QaO2c7ZEiYrNnoezoZDRWXUr5vlpkedLKLw6sBxxc8hSkBGRuGzLoHQtaTlRAoIYlKd+2GDhKQ==",
-    "@tiptap/extension-horizontal-rule": "sha512-J/ioKlXu5oJ+pPtybFonByx1LusbR0PUd1nkx6XsZqY9wyW6uecZQgAyI8KUWIXqOfhnAW38UTsHMBRdm2XupA==",
-    "@tiptap/extension-image": "sha512-vbKMliRLXkABwnPenPlQDEVp3MFN7Hs+WUh1eliVmYfsBfhEo596ahahv+JVoR9JW6HSM+LVdf2TT19Iqmh0sg==",
-    "@tiptap/extension-italic": "sha512-dVWqJ/kDXdPHRBp4nU7bwi2G+c3oNruIgQHYVRgYlWkwW/opvnlACZLBUgEhihH7ANiSaGW1zLQ7HuUDSL3vog==",
-    "@tiptap/extension-link": "sha512-MAAXfLJNf6ZFiFK3w51yiLKc31HAQWJWNV+nQ1dAdRpa6WiXdjpkcrWTuxmPd/o6Qt+yNv+hoItAVxDPEox8qQ==",
-    "@tiptap/extension-list": "sha512-cCX99WoVb4UyXkamSh0vlXiRFhlZnwk3WXWdnXpR1E9+auxsQewk2Q9NDW1Ra0vwgzer1gkFhlOl9TCVzH2VVg==",
-    "@tiptap/extension-list-item": "sha512-RhSyDlAATvXDTg/1VOw5aFTaewdCm+BAU3EG3eUCw4e5eoZ5pbhPOdOPTtaO45UR4i/AvjQNAZQ9LMDWX5WZFQ==",
-    "@tiptap/extension-list-keymap": "sha512-u6tOpQFnE1pOyvnzI2MvhW/Yw0omAIMlMfkykYx4N4zB1JDi+16OeOuKf3rX6G3V9VUu+qeOIGpSkifkME6H9Q==",
-    "@tiptap/extension-ordered-list": "sha512-lct/FV8vm9Y5kZFcF5TXIM18opi6m7AAkGoChgGP/A7LYalaniX1X6Ja2j13Y22ZdGaOoPTgd8oKRZXP1/miaA==",
-    "@tiptap/extension-paragraph": "sha512-Z9OHCX9b2bDcMDeR3ODCFRAyHT5eNGO4AsDFeAJS/XSitffMyjFHtOkXlyyZ3+pIHxxX6xkUXAwaLMjyATRo1A==",
-    "@tiptap/extension-placeholder": "sha512-B7LwMzeQajQ18FWPGYv2UDh64HSUfXxh/mdIhS6ZQEDJS9NyUD0hPPnwaMQ1w870L/APgJdb2/EGqIkZqjJRSg==",
-    "@tiptap/extension-strike": "sha512-e9BI8Hzei23GjmYysXxL+CHq3fIgOm29BbSUMbYXxT2cJ+TkkgJp7EvHf74gSABNME0gUN+mG0pRR5wTFoOCcg==",
-    "@tiptap/extension-table": "sha512-g9vop64Ky92sBeL51wqMnVPNv9nDOd5X1CZz3B/Y5hDn1MKxf9lo7amkj7f+B2wi4WU9k/hIVCYb4sSRSeCq2A==",
-    "@tiptap/extension-text": "sha512-Jh8ZyI0HLOJOIPZl5a5XRJbTs4pAUakYIWCZ3Hv3lF9ouXW/C0bY67XQU7bv6Rvu8AHzDszhKklnOZ6z1NQPXQ==",
-    "@tiptap/extension-text-align": "sha512-pwIZMn/PYoWZiUXrrD9oomV+Oh/GGhlIpa7Hr2WxdI8k3HZraweHa8S3ygvCUbodo9BWSI4zBs4KM3ic50cwlg==",
-    "@tiptap/extension-text-style": "sha512-aMacIkBwvcSABIXIOK0iCmGfNLICuuIWGiozycFwIJfwv87xwO6xAXfc6Q4/m3RE9Oj1DPqWohXMtc8tOp002w==",
-    "@tiptap/extension-underline": "sha512-TiZ+b524Ee4PNlW+HNmkg3x4btR1K6btJy9pEjMuDf0Rx01UaTBvHpHmABR/DbbcC1CuZiQ3ylJwLL+90PaEoA==",
-    "@tiptap/extensions": "sha512-vig8ZjUL/NFnniEVbYDYj2UOIdkwZVha+9myFZkanShedviE3kl7c4uCY3fMl5EnqgyFIy2TQSKbg/i99xpztA==",
-    "@tiptap/pm": "sha512-VheaqLAFUe+PCYEgHubM96Z1OAiluFhijQ2Cy1Ghiozoxm5OzevSaKhqm8SQ1VGfzZZko59oUjRzOmu8tB8yfA==",
-    "@tiptap/react": "sha512-gyK8UXFQlm2XgXEynNz5SzsxnTKtdBUp/PKeTeqFrk/m7L8p1eV+gcdAK+arTX+slubXRwLUm1lXrAQXRuiaTw==",
-    "@tiptap/starter-kit": "sha512-hj4rAhAoQm+wRk8eLNTyK+wK81+epbuo4O9PvPRv7GJGwYycej+xUN7jGM7Tney7GuTZpHoDCuwLKD2n1oG+pg==",
+    "@tiptap/core": "sha512-M32+WOx1IrPRbPunhG1Xl7ETgUZJGABpGi/y969Uio6rR4tPBnOgFG5xXE3Xw6OQtYUqUE2n9nnnckoObZwBzA==",
+    "@tiptap/extension-blockquote": "sha512-tOBZ1Ol7zWCAlsuHK76cWoMMJyyAhJG+cZn4iFRtmGQZGyZUQMYYlSahgvxbDLFdcuB977nuUNAI2XniEKA6cQ==",
+    "@tiptap/extension-bold": "sha512-vQSqHcnoe5K9f5/XpWH8tBDvrFI3uvEv17qFj28dlNH/DOIMHPSBSFKzrfinuFcDGHHb1B1pTE5Yu0KH2Qomow==",
+    "@tiptap/extension-bubble-menu": "sha512-DhfCF2Hkcp6djGpp8yrX9w1lQAzY7oEhW0ouAmWicSJFUrxfhIjrElg/DxMOdHxYlydFeZTZ5vqybBzI34VzCg==",
+    "@tiptap/extension-bullet-list": "sha512-rVPEN4fZqwDcNrxfxSgPkoK4gPbwVLgwEJWvb9Y3Nhf4SkwrKDvO05QHTa6+DGe5LP3Tl5dC305l5UsmnwfHqg==",
+    "@tiptap/extension-character-count": "sha512-AD67ENodGNCWY2+gG2YYKSl0B3vsN+UQveq/yFVWhg+MyRT5ytut8UVE3fklMMw9pXyoBGY5E55Y30kwu5Jb2A==",
+    "@tiptap/extension-code": "sha512-az8RByq9Aftg+AwrQ2fS08o4SJZ9VIwJNYngwDwAGY8OxM1z/tPVTZRz771XV6V+ngbfh7J9Rv3Gk4MNmNUp0w==",
+    "@tiptap/extension-code-block": "sha512-zsAcDEcVIDxxCh+Em0O1yd252gh3T2WmoezPYQOqVIiZwW8yztebjiKMoagFvLyVKZBtHdkW9cYgb62PrR17Pw==",
+    "@tiptap/extension-color": "sha512-ScYAkRrqkkz/HKonhs6IM7ZoHpL4JcEYFn9BN7OUFCXfGBT4f6bDfZw2Y2xACwTLDZ3fOpqKKPR58KIDRSt0Jg==",
+    "@tiptap/extension-document": "sha512-eaDIPRJNAzc3hpRizrySColkdxXDBtrFhZHRU3TZv2O6HVKmg3LVSSCpJiHSxY6iR8+TC41p4bg8Ql6O20Y9xQ==",
+    "@tiptap/extension-dropcursor": "sha512-GDuhDsUxIIiluLS1RuZ9zoPqHdybqJpuV6VhCGFJuzDmiraYPctj3AbbkX9xYZyukgO6tPN9MQtX26LJuFt7og==",
+    "@tiptap/extension-floating-menu": "sha512-i+xnVadPRFLx7hPVn01UaaSmemC8wPQ64NNFHPD5wOMub006RcZLkmojz4DuAUTBPuArj3i8Sf7ep00Mj2LWbg==",
+    "@tiptap/extension-font-family": "sha512-ZKn1e+tKFFISC6pVOI7Z/6rzIstGhbHEO2YSIm9xMfoiuvYo7yusWZLoAeM4LXFar/IZ6g6B9HFd0riBV+Heng==",
+    "@tiptap/extension-gapcursor": "sha512-QDEip3y0k2W2oMhNc1Yyi1NhD+4Q+BtCjuCRpRld9VH60cuRROIq60KU+VkOoCJ9o6p6djrn6j1g6PZsG69Bxw==",
+    "@tiptap/extension-hard-break": "sha512-8ALo10VWFYLF/9eS3iRZrx3EMbokMhRdJbSgk9+dU+zuh8yGFQnMyf30Wpu3K9DIseHtDZQTI7rjl0o8ayNPZw==",
+    "@tiptap/extension-heading": "sha512-32lPwP8BeLFGQV+U/HrwbK+ItQMiN13LppKnQtUUNl3FwG440qPpnQo7eCEAxTkUg/M+VTjNn/UHnJMsOFPklw==",
+    "@tiptap/extension-highlight": "sha512-nIadG2vSJvU3OiJDCqQodG1XG2nXeH1jYwHzs1FYXH+Z+MS17SR6OTSqTevE7/zI6K0Md0Yki2UX5VJisDQfvw==",
+    "@tiptap/extension-horizontal-rule": "sha512-38SokgorOsmLNWwMHhrkoxIaWd73Setoo4J0slrlqvMItovshqjqYjtSohdUk09Yr+cxxcGUP9m8zxBEyi5ZsA==",
+    "@tiptap/extension-image": "sha512-Y4oWgODXa+Jd/JiWWCxnr7v+1qtK1CzgliLHTk0x/H6RTuzduvL5/zTt0P4+inh7s/vQewliDyg/iagj+gBpXg==",
+    "@tiptap/extension-italic": "sha512-vbltMPEePHWsGhvPH01yfT9GNJNMs2oUwPhqC0z/Brychu/oFe+0FR4RKFBVXnZg8oRfGQEOJ6OjD9jKDAZ0zQ==",
+    "@tiptap/extension-link": "sha512-xyQ5e3oKphCE84ig8bXCJ6I2esMmFvwHJk4/o8uIxQBVT1yOUyG3ZNJG0431SQ2xrUw0bPWY80F9Kla7HFiSgA==",
+    "@tiptap/extension-list": "sha512-vNzXMap27plACDvyeEUlUyB01Rw1IOWn+wABIEuiIyJzVpZ6n5T8ck2nwHXp6lTy5xxGi7MnVq8epOjqCG1g8A==",
+    "@tiptap/extension-list-item": "sha512-a97knOHxLI/QF1nvtn6SIC9abspB7miKXBSXMGQwlt5iqJcwHDyj1neXi2KAruam8i4932uc+zishYeFka9yvA==",
+    "@tiptap/extension-list-keymap": "sha512-FTNFPR+DYDWR48Ak46tvpNzHPQ1exUgxFVUv4grHJq8tdMl1KWYW4DZmcOIe2Tk7kmlDmC14rKmUvFcdKMUgAA==",
+    "@tiptap/extension-ordered-list": "sha512-DWQELBaaCtL9ZRdkeIjgNsz0wZ93SAdPVBpH0pIxOsf/p2JbSBI1ipCVGVysr9SB8ULGsCthZk+cZwZoAOu7qA==",
+    "@tiptap/extension-paragraph": "sha512-l+syX39aTG3BSNmkIXgrawRgSrFmQ/Hlz+5j2+OYXcHFFqj2cnnpZMzZFMynJUFKRLDgldfUs+UMsgelZNDScw==",
+    "@tiptap/extension-placeholder": "sha512-mDW1u45YsTsFexq2EZAKTLPU0koX+FDL5iZGztet7IlNWJx8tKL6jqmeRTlCHV8PfKzZZNza0pNVpT/0DdWycQ==",
+    "@tiptap/extension-strike": "sha512-aRtyDDS88+eT6r3krn94ajLTVccxaukEHWJoDwq0devAqFq9d0ftaYU9aNSSKzG/TAsIObXX/1MKSiJQC+Z/Rw==",
+    "@tiptap/extension-table": "sha512-O3y8ncZ0+2vTLXJ19W8UDg2hR+oV5QMojOGMqMX4dZ+cv55j2q1R3DZODY1D7PtVFFfScd6aWSMcXSn8TtMVmw==",
+    "@tiptap/extension-text": "sha512-N55Mf9Xo3Zl5f7MSlBpxIYWktYIgE7yY3QT9IGrhm6VBSF9bAHToVDOEWCkgTEinerBcWraPFMDl8NMtX7Cdqw==",
+    "@tiptap/extension-text-align": "sha512-Y88BonXKxX6CJu0NRaNGF5v1kd/C0V0GmFVF98AHI4Q5h1E3uekIIuKLTn3WPXvTW2wmYWDYFNk4GUrNHcuUNw==",
+    "@tiptap/extension-text-style": "sha512-33YzqCf58cg57Rgr9GNe0gw4Ne2tes7AamgHDEgNoEy849pYMEI+B4zgdUOGe6OnCSOeKjsyjgaSr/IawXGzqw==",
+    "@tiptap/extension-underline": "sha512-6NyWmSOGzbeiwT6Vita3F/msePEQ2fuuzjSguPU1ebXUG04D3h8rNjoBrrfGt6OrwP/pdIri3VVVP5H1suxxkA==",
+    "@tiptap/extensions": "sha512-8SYpu3E+ZuWhTGWtjcWPtcJmcotrADYBuXIu+bgdZjcuaxRHs+6IpNvdLabl3q46W7+0A11GginPDJNqrMKk2A==",
+    "@tiptap/pm": "sha512-FVzgc+7TMKUreBqFHmyhDSkFUMZPgIzWdeNt4sWLFEzwzdklgKy/+MZClAq9m+bJJU2FKC2+SVmWTatZD6didg==",
+    "@tiptap/react": "sha512-0MhwGYB2JbMnXs2sjjFFOUzA0td7BmWOBIEFW66aw+MhramoGwH3pTfv08BHuS4++CAOthSo3dRQV3ZIaeYNmQ==",
+    "@tiptap/starter-kit": "sha512-qQ+awpHaTNYhYbAAxLavWAo0CJBq43m1088yCxHhsITT1b2gGI0Mp2tTJ4aWtm0GxaJIlERUEvHfZRj/HuOJRg==",
 }
 TIPTAP_STARTER_KIT_LOCK_DEPENDENCIES = frozenset(
     {
@@ -351,8 +352,11 @@ MAINTENANCE_RELEASE_FILES = (
     "deploy/systemd/litblogs-password-reset.timer",
     "deploy/systemd/litblogs-upload-reconciliation.service",
     "deploy/systemd/litblogs-upload-reconciliation.timer",
+    "litblogs/auth_email_delivery.py",
+    "litblogs/auth_email_job.py",
+    "litblogs/bootstrap_admin.py",
+    "litblogs/email_verification_delivery.py",
     "litblogs/password_reset_delivery.py",
-    "litblogs/password_reset_job.py",
     "litblogs/runtime_database_identity.py",
     "litblogs/upload_reconciliation_job.py",
 )
@@ -2233,7 +2237,7 @@ def validate_maintenance_release_contract() -> None:
 
     service_contracts = {
         "deploy/systemd/litblogs-password-reset.service": (
-            "password_reset_job",
+            "auth_email_job",
             "/run/litblogs-maintenance-egress/password-reset.port-policy-ready",
         ),
         (
@@ -2263,32 +2267,77 @@ def validate_maintenance_release_contract() -> None:
     password_reset_unit = read_text(
         "deploy/systemd/litblogs-password-reset.service"
     )
-    password_reset_job = read_text("litblogs/password_reset_job.py")
+    auth_email_job = read_text("litblogs/auth_email_job.py")
+    auth_email_delivery = read_text("litblogs/auth_email_delivery.py")
+    email_verification_delivery = read_text(
+        "litblogs/email_verification_delivery.py"
+    )
     password_reset_delivery = read_text("litblogs/password_reset_delivery.py")
     runtime_database_identity = read_text("litblogs/runtime_database_identity.py")
+    for domain_module in (
+        "import password_reset_delivery",
+        "import email_verification_delivery",
+    ):
+        expect(
+            domain_module in auth_email_job,
+            f"authentication-email entry point must retain {domain_module}",
+        )
     expect(
-        "import password_reset_delivery" in password_reset_job,
-        "password-reset entry point must import the standalone delivery runtime",
+        "import auth_email_delivery" in auth_email_job,
+        "authentication-email entry point must import neutral plumbing",
     )
+    for fragment in (
+        "AUTH_EMAIL_JOB_PER_QUEUE_CAP = 25",
+        "AUTH_EMAIL_JOB_DEADLINE_SECONDS = 240.0",
+        "dispatches = (verification_dispatch, reset_dispatch)",
+        "monotonic_clock() >= deadline",
+        "batch_size=1",
+    ):
+        expect(
+            fragment in auth_email_job,
+            f"authentication-email entry point must retain fair scheduling: {fragment}",
+        )
+    for domain_delivery in (
+        password_reset_delivery,
+        email_verification_delivery,
+    ):
+        expect(
+            "import auth_email_delivery" in domain_delivery,
+            "domain delivery modules must delegate neutral plumbing",
+        )
+    for forbidden_domain in (
+        "password_reset_delivery",
+        "email_verification_delivery",
+    ):
+        expect(
+            forbidden_domain not in auth_email_delivery,
+            "neutral authentication-email plumbing must not import a domain queue",
+        )
     for forbidden in (
         "from main import",
         "import main",
         "import database",
         "from database import",
         "fastapi",
+        "oauth_security",
         "upload_assets",
         "upload_scanner",
     ):
-        expect(
-            forbidden not in password_reset_job.lower(),
-            f"password-reset entry point must not import {forbidden}",
-        )
-        expect(
-            forbidden not in password_reset_delivery.lower(),
-            f"password-reset delivery runtime must not import {forbidden}",
-        )
+        for path, source in (
+            ("litblogs/auth_email_job.py", auth_email_job),
+            ("litblogs/auth_email_delivery.py", auth_email_delivery),
+            ("litblogs/password_reset_delivery.py", password_reset_delivery),
+            (
+                "litblogs/email_verification_delivery.py",
+                email_verification_delivery,
+            ),
+        ):
+            expect(
+                forbidden not in source.lower(),
+                f"{path} must not import {forbidden}",
+            )
     for fragment in (
-        "class PasswordResetWorkerSettings",
+        "class AuthEmailWorkerSettings",
         "database_url:",
         "frontend_url:",
         "email_host:",
@@ -2296,16 +2345,47 @@ def validate_maintenance_release_contract() -> None:
         "email_smtp_timeout_seconds:",
         "password_reset_claim_timeout_seconds:",
         "verify_runtime_database_identity",
+        'EXPECTED_ALEMBIC_HEAD = "a82f8f2b1d7c"',
+        '"application_name": "litblogs-auth-email"',
+        "def send_smtp_message",
+        "def dispatch_auth_email_batch",
+    ):
+        expect(
+            fragment in auth_email_delivery,
+            f"neutral authentication-email runtime must retain {fragment}",
+        )
+    for fragment in (
+        'f"litblogs-email-verification-v1:{raw_token}"',
+        'f"litblogs-email-verification-claim-v1:{claim_nonce}"',
+        "EMAIL_VERIFICATION_LIFETIME = timedelta(hours=24)",
+        "EMAIL_VERIFICATION_RESEND_COOLDOWN = timedelta(minutes=5)",
+        "EMAIL_VERIFICATION_CLAIM_CANDIDATE_LIMIT = 25",
+        'f"{settings.frontend_url}/verify-email#token={raw_token}"',
+    ):
+        expect(
+            fragment in email_verification_delivery,
+            f"email verification delivery must retain {fragment}",
+        )
+    for fragment in (
+        "def password_reset_token_digest",
+        "def password_reset_claim_digest",
+        'f"{settings.frontend_url}/reset-password#token={token}"',
+        "def complete_password_reset_delivery_outcome",
     ):
         expect(
             fragment in password_reset_delivery,
-            f"password-reset delivery runtime must retain {fragment}",
+            f"password-reset compatibility delivery must retain {fragment}",
         )
     expect(
         "def verify_runtime_database_identity" in runtime_database_identity,
         "runtime database identity helper must retain the shared verifier",
     )
     password_reset_lines = set(password_reset_unit.splitlines())
+    for queue_description in ("password reset", "email verification"):
+        expect(
+            queue_description in password_reset_unit.lower(),
+            "authentication-email service description must name both queues",
+        )
     for fragment in (
         "User=litblogs-reset",
         "Group=litblogs-reset",
@@ -2387,8 +2467,16 @@ def validate_maintenance_release_contract() -> None:
             "configured SMTP IP:port",
             "alternate port on every allowed IP",
             "every scanner Unix socket",
+            "auth_email_job.py",
+            "auth_email_delivery.py",
+            "email_verification_delivery.py",
             "password_reset_delivery.py",
             "minimal worker settings",
+            "both queues",
+            "verification-first round-robin",
+            "alternating one delivery per queue",
+            "25 deliveries per queue",
+            "240-second soft deadline",
             "does not import `main`",
             "`litblogs-reset`",
             "`/usr/sbin/nologin`",
@@ -2413,6 +2501,9 @@ def validate_maintenance_release_contract() -> None:
         "release archive must include deploy assets and maintenance entry modules",
     )
     for path in (
+        "litblogs/auth_email_delivery.py",
+        "litblogs/auth_email_job.py",
+        "litblogs/email_verification_delivery.py",
         "litblogs/password_reset_delivery.py",
         "litblogs/rich_text_contract.json",
         "litblogs/rich_text_contract.py",
@@ -2423,6 +2514,44 @@ def validate_maintenance_release_contract() -> None:
         expect(
             f'test -f "$staging/tree/{path}"' in release,
             f"release packaging must prove required runtime file {path}",
+        )
+
+
+def validate_admin_bootstrap_contract() -> None:
+    deployment_check = read_text("litblogs/deployment_check.py")
+    bootstrap = read_text("litblogs/bootstrap_admin.py")
+    release = read_text(".github/workflows/release.yml")
+
+    expect(
+        '"litblogs/bootstrap_admin.py"' in deployment_check,
+        "release admission must require the administrator bootstrap module",
+    )
+    expect(
+        'test -f "$staging/tree/litblogs/bootstrap_admin.py"' in release,
+        "release packaging must prove the administrator bootstrap module exists",
+    )
+    for fragment in (
+        'CONFIRMATION_ARGUMENT = "--confirm-empty-install"',
+        "pg_advisory_xact_lock",
+        "LOCK TABLE public.users IN SHARE ROW EXCLUSIVE MODE",
+        "validate_new_password_policy",
+        "verify_runtime_database_identity",
+        "ScriptDirectory",
+        "MigrationContext",
+    ):
+        expect(
+            fragment in bootstrap,
+            f"administrator bootstrap must retain guarded behavior: {fragment}",
+        )
+    for forbidden in (
+        "from main import",
+        "import main",
+        "os.getenv",
+        "os.environ",
+    ):
+        expect(
+            forbidden not in bootstrap,
+            f"administrator bootstrap must not contain {forbidden}",
         )
 
 
@@ -2481,7 +2610,7 @@ def validate_coupled_recovery_contract() -> None:
     for fragment in (
         '"--manifest"',
         '"--upload-target"',
-        "EXPECTED_ALEMBIC_HEAD = \"f1ad78b2035f\"",
+        f'EXPECTED_ALEMBIC_HEAD = "{EXPECTED_ALEMBIC_HEAD}"',
         "pg_catalog.aclexplode",
         "pg_catalog.pg_auth_members",
         "expected_default_function_acl",
@@ -2635,6 +2764,7 @@ def main() -> int:
     validate_python_dependency_locks()
     validate_privacy_ignores()
     validate_maintenance_release_contract()
+    validate_admin_bootstrap_contract()
     validate_coupled_recovery_contract()
 
     if failures:

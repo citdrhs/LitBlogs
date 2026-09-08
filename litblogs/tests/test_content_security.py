@@ -2,7 +2,7 @@ import asyncio
 import hashlib
 import inspect
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
@@ -77,6 +77,7 @@ def _security_user(db, user_id=42, role=models.UserRole.STUDENT):
         first_name="Content",
         last_name="Security",
         role=role,
+        email_verified_at=datetime.now(timezone.utc),
     )
     db.add(user)
     db.flush()

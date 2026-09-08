@@ -34,6 +34,11 @@ class OAuthVerificationError(ValueError):
     """An external identity assertion failed local trust policy."""
 
 
+def _require_provider_enabled(enabled: object) -> None:
+    if enabled is not True:
+        raise OAuthVerificationError("OAuth provider is disabled")
+
+
 class _BoundedGoogleCertRequest:
     def __init__(
         self,
@@ -116,6 +121,7 @@ def verify_google_id_token(
     settings: Settings,
     verifier: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    _require_provider_enabled(settings.google_oauth_enabled)
     token = _validated_raw_token(raw_token)
     client_id = _required_text(settings.google_client_id)
     allowed_domains = _required_domains(settings.allowed_email_domains)
@@ -166,6 +172,7 @@ def verify_microsoft_id_token(
     settings: Settings,
     jwk_client_factory: Callable[..., jwt.PyJWKClient] | None = None,
 ) -> dict[str, Any]:
+    _require_provider_enabled(settings.microsoft_oauth_enabled)
     token = _validated_raw_token(raw_token)
     client_id = _required_text(settings.microsoft_client_id)
     tenant_id = _validated_tenant_id(settings.microsoft_tenant_id)

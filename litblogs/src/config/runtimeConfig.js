@@ -8,7 +8,11 @@ const PUBLIC_STRING_FIELDS = [
   "microsoft_client_id",
   "microsoft_tenant_id",
 ];
-const PUBLIC_BOOLEAN_FIELDS = ["local_password_registration_enabled"];
+const PUBLIC_BOOLEAN_FIELDS = [
+  "google_oauth_enabled",
+  "microsoft_oauth_enabled",
+  "local_password_registration_enabled",
+];
 const PUBLIC_FIELDS = new Set([...PUBLIC_STRING_FIELDS, ...PUBLIC_BOOLEAN_FIELDS]);
 
 const invalidConfiguration = () => new Error(CONFIGURATION_ERROR);
@@ -38,7 +42,9 @@ const parsePublicRuntimeConfig = (payload) => {
 
   return Object.freeze({
     csrfCookieName,
+    googleOauthEnabled: payload.google_oauth_enabled,
     googleClientId: payload.google_client_id.trim(),
+    microsoftOauthEnabled: payload.microsoft_oauth_enabled,
     microsoftClientId: payload.microsoft_client_id.trim(),
     microsoftTenantId: payload.microsoft_tenant_id.trim(),
     localPasswordRegistrationEnabled: payload.local_password_registration_enabled,

@@ -26,6 +26,7 @@ def main() -> int:
             "-r",
             "litblogs",
             "deploy/scripts",
+            "deploy/container",
             "-x",
             ",".join(EXCLUDED_PATHS),
             "-ll",

@@ -22,7 +22,7 @@ const FAQ_SCREENSHOTS = Object.freeze({
     alt: "Annotated LitBlog sign-in page with the synthetic school email, masked password, and Sign In button.",
     width: 1440,
     height: 900,
-    caption: "Use the same sign-in method you registered with.",
+    caption: "Sign in after verifying your school email.",
   }),
   joinClass: Object.freeze({
     slot: "joinClass",
@@ -53,12 +53,15 @@ const FAQ_ITEMS = Object.freeze([
         after: ".",
       },
       {
-        text: "Choose Student, then use your verified school Google or Microsoft account. If your school enables email registration, you can complete the name, email, and password fields instead.",
+        text: "Choose Student, enter your name and school email, then create and confirm a strong password.",
       },
       {
-        before: "Submit the form, then ",
+        text: "Select Sign Up. Open the verification email and select Verify Email before signing in.",
+      },
+      {
+        before: "After LitBlog confirms Email verified, ",
         link: { to: "/sign-in", label: "sign in" },
-        after: " with the same method you used to register.",
+        after: " with the same school email and password.",
       },
     ],
     screenshot: FAQ_SCREENSHOTS.signUp,
@@ -73,7 +76,10 @@ const FAQ_ITEMS = Object.freeze([
         after: ".",
       },
       {
-        text: "Choose the same Google, Microsoft, or email-and-password method you used when creating your account.",
+        text: "You must verify your school email before signing in. If needed, use Request another verification email on this page.",
+      },
+      {
+        text: "Enter the same school email and password you used to create your account, then select Sign In.",
       },
       {
         before: "After sign-in, open ",
@@ -193,7 +199,7 @@ const FAQ_ITEMS = Object.freeze([
       {
         before: "Return to ",
         link: { to: "/sign-in", label: "Sign In" },
-        after: " and use your new password. If you registered with Google or Microsoft, sign in with that provider instead.",
+        after: " and use your school email and your new password.",
       },
     ],
   },
@@ -226,7 +232,10 @@ const FAQ = ({ darkMode = false, screenshots = {} }) => {
       <header className="faq-guide__header">
         <p className="faq-guide__eyebrow">Frequently asked questions</p>
         <h2 id={headingId}>Student FAQ</h2>
-        <p>Seven quick guides for getting from your first sign-in to a published post.</p>
+        <p>
+          Seven quick guides covering account creation, class participation, publishing,
+          and password recovery.
+        </p>
       </header>
 
       <div className="faq-guide__list">

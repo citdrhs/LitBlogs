@@ -21,7 +21,7 @@ const GOOD_PROBE = {
     },
   ],
   format: {
-    duration: "117.000000",
+    duration: "63.033333",
     size: "12345678",
   },
 };
@@ -41,7 +41,7 @@ test("reports every material stream and container mismatch", () => {
     color_space: "unknown",
   };
   invalid.streams[1].sample_rate = "44100";
-  invalid.format.duration = "116.5";
+  invalid.format.duration = "62.5";
   invalid.format.size = String(21 * 1024 * 1024);
 
   assert.deepEqual(validation.validateProbeData?.(invalid), [
@@ -51,7 +51,7 @@ test("reports every material stream and container mismatch", () => {
     "expected 30fps video, received 30000/1001",
     "expected BT.709 color metadata, received unknown",
     "expected 48kHz AAC audio, received aac at 44100Hz",
-    "expected duration within 0.1s of 117, received 116.5",
+    "expected duration within 0.1s of 63.033, received 62.5",
     "expected file size at most 20MiB, received 22020096 bytes",
   ]);
 });
@@ -80,11 +80,11 @@ test("recognizes fast-start MP4 box order", () => {
 });
 
 test("bounds exported WebVTT cues to the tutorial duration", () => {
-  const valid = "WEBVTT\n\n1\n00:00:00.200 --> 00:01:56.800\nText\n";
-  const invalid = "WEBVTT\n\n1\n00:01:56.800 --> 00:01:57.200\nText\n";
-  assert.deepEqual(validation.validateVtt?.(valid, 117), []);
-  assert.deepEqual(validation.validateVtt?.(invalid, 117), [
-    "caption cue 1 ends after 117 seconds",
+  const valid = "WEBVTT\n\n1\n00:00:00.200 --> 00:01:02.833\nText\n";
+  const invalid = "WEBVTT\n\n1\n00:01:02.833 --> 00:01:03.200\nText\n";
+  assert.deepEqual(validation.validateVtt?.(valid, 1891 / 30), []);
+  assert.deepEqual(validation.validateVtt?.(invalid, 1891 / 30), [
+    "caption cue 1 ends after 63.03333333333333 seconds",
   ]);
 });
 
@@ -99,6 +99,54 @@ test("checks transcript narration parity independent of headings", () => {
   assert.deepEqual(validation.validateTranscriptParity?.(missing, scenes), [
     "transcript is missing narration for scene two",
   ]);
+});
+
+test("reports caption cue layout, timing, narration, and VTT parity drift", () => {
+  const scenes = [{
+    id: "one",
+    startFrame: 0,
+    durationInFrames: 90,
+    narration: "First phrase. Second phrase.",
+    captionCues: [
+      { startOffsetFrames: 1, endOffsetFrames: 30, text: "First phrase." },
+      { startOffsetFrames: 29, endOffsetFrames: 80, text: `${"x".repeat(53)}\nline two\nline three` },
+    ],
+    narrationDurationInFrames: 66,
+    camera: [{ frame: 0, scale: 1, x: 0, y: 0 }],
+    cursor: [{ frame: 0, x: 100, y: 100, visible: false }],
+    callouts: [{ id: "one", frame: 0, endFrame: 10, x: 0, y: 0 }],
+  }];
+  const manifestIssues = validation.validateManifest?.(scenes) ?? [];
+  assert.ok(manifestIssues.includes("scene one has overlapping caption cues"));
+  assert.ok(manifestIssues.includes("scene one caption cue 2 exceeds two lines"));
+  assert.ok(manifestIssues.includes("scene one caption cue 2 has a line wider than 52 characters"));
+  assert.ok(manifestIssues.includes("scene one captions do not match narration"));
+
+  const expectedScenes = [{
+    id: "one",
+    startFrame: 0,
+    captionCues: [{ startOffsetFrames: 1, endOffsetFrames: 30, text: "First phrase." }],
+  }];
+  const driftedVtt = "WEBVTT\n\n1\n00:00:00.033 --> 00:00:01.000\nDifferent phrase.\n";
+  assert.deepEqual(
+    validation.validateVttParity?.(driftedVtt, expectedScenes, { fps: 30 }),
+    ["caption cue 1 text does not match scene one"],
+  );
+});
+
+test("reports clicks that are not linked to their active narration phrase", async () => {
+  const { SCENES } = await import("../src/manifest.js");
+  const missing = structuredClone(SCENES);
+  delete missing[1].cursor.find(({ click }) => click).actionCueId;
+  assert.ok(validation.validateManifest(missing).includes(
+    "scene signup click at frame 264 has no caption cue link",
+  ));
+
+  const late = structuredClone(SCENES);
+  late[1].cursor.find(({ click }) => click).frame = 280;
+  assert.ok(validation.validateManifest(late).includes(
+    "scene signup click at frame 280 is outside caption cue signup-submit",
+  ));
 });
 
 test("parses ffmpeg volumedetect output and requires peak headroom", () => {

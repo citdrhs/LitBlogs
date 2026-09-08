@@ -6,17 +6,34 @@ const exporters = await import("../src/exporters.js").catch(() => ({}));
 
 test("formats frame timestamps as WebVTT wall-clock times", () => {
   assert.equal(exporters.formatVttTimestamp?.(0, 30), "00:00:00.000");
-  assert.equal(exporters.formatVttTimestamp?.(3510, 30), "00:01:57.000");
+  assert.equal(exporters.formatVttTimestamp?.(1891, 30), "00:01:03.033");
 });
 
-test("exports one ordered, bounded caption cue per scene", () => {
+test("derives concise and spoken duration labels from the manifest", () => {
+  assert.equal(exporters.formatDurationLabel?.(manifestModule.VIDEO), "1:03");
+  assert.equal(exporters.formatDurationWords?.(manifestModule.VIDEO), "1 minute 3 seconds");
+});
+
+test("exports ordered, bounded phrase cues from the manifest", () => {
   const vtt = exporters.manifestToVtt?.(manifestModule.SCENES, manifestModule.VIDEO);
   assert.match(vtt ?? "", /^WEBVTT\n\n/);
-  assert.equal((vtt.match(/--> /g) ?? []).length, 9);
-  assert.match(vtt, /00:00:00\.200 --> 00:00:04\.800/);
-  assert.match(vtt, /00:01:51\.200 --> 00:01:56\.800/);
+  assert.equal((vtt.match(/--> /g) ?? []).length, 19);
+  assert.match(vtt, /00:00:00\.033 --> 00:00:00\.633/);
+  assert.match(vtt, /00:00:12\.033 --> 00:00:14\.400/);
+  assert.match(vtt, /00:01:00\.633 --> 00:01:01\.733/);
   assert.match(vtt, /Welcome to LitBlog/);
   assert.match(vtt, /bold and highlighting preserved/);
+});
+
+test("keeps exported cues at two explicit lines or fewer", () => {
+  const vtt = exporters.manifestToVtt?.(manifestModule.SCENES, manifestModule.VIDEO);
+  const cueBlocks = vtt.trim().split(/\n\n/).slice(1);
+
+  for (const block of cueBlocks) {
+    const [, , ...captionLines] = block.split("\n");
+    assert.ok(captionLines.length <= 2, block);
+    assert.ok(captionLines.every((line) => line.length <= 52), block);
+  }
 });
 
 test("exports a readable plain transcript from the same narration", () => {
@@ -24,9 +41,9 @@ test("exports a readable plain transcript from the same narration", () => {
     manifestModule.SCENES,
     manifestModule.VIDEO,
   );
-  assert.match(transcript ?? "", /^LitBlog Student Tutorial\nDuration: 1:57\n\n/);
+  assert.match(transcript ?? "", /^LitBlog Student Tutorial\nDuration: 1:03\n\n/);
   assert.match(transcript, /\[0:05\] Sign up/);
-  assert.match(transcript, /\[1:51\] Verify and finish/);
+  assert.match(transcript, /\[0:57\] Verify and finish/);
   for (const scene of manifestModule.SCENES ?? []) {
     assert.match(transcript, new RegExp(scene.narration.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
@@ -50,7 +67,7 @@ test("exports frontend transcript data without a second handwritten script", () 
     "verify",
   ]);
   assert.equal(transcript?.[1].time, "0:05");
-  assert.equal(transcript?.at(-1).time, "1:51");
+  assert.equal(transcript?.at(-1).time, "0:57");
   assert.equal(transcript?.[6].text, manifestModule.SCENES?.[6].narration);
 });
 

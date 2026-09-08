@@ -145,9 +145,11 @@ reset rows stuck in `PROCESSING` or ending in `FAILED`.
 
 ## Production deployment
 
-Do not deploy a Git branch, a developer checkout, or locally assembled files. Production releases must come from the reviewed, attested artifact produced by the `Build reviewed release artifact` GitHub Actions workflow.
+For standalone Ubuntu deployment, use the reviewed, attested artifact produced by the `Build reviewed release artifact` workflow, not a developer checkout. The alternative CIT Deploy source-build path has its own review, container-verification, hosting, and recovery prerequisites; see its guide before importing the repository.
 
 - [Deployment layout and prerequisites](deploy/README.md)
+- [Fresh Ubuntu 24.04.4 server setup](deploy/FRESH_SERVER_SETUP.md)
+- [CIT Deploy custom Docker setup](deploy/CIT_DEPLOY.md)
 - [Production deployment, migration, backup, restore, rollback, and incident runbook](docs/operations/production-runbook.md)
 
 The deployment design keeps private uploads outside the source tree, runs the API only on loopback behind TLS-terminating Nginx, applies schema changes through Alembic, installs hash-locked dependencies, and uses hardened systemd units. A release remains blocked until the runbook's backup/restore rehearsal, migration checks, legacy federated-identity mapping, security gates, and smoke tests all pass.

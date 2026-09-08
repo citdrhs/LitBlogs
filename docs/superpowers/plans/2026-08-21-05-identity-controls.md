@@ -127,7 +127,7 @@ class TeacherInvitation(Base):
     )
 ```
 
-Replace `teacher_access_code` with `teacher_invite_hmac_key: SecretStr | None`, require at least 32 UTF-8 bytes in production, reject placeholder/low-diversity values, and reject equality with `SECRET_KEY` using `hmac.compare_digest` on bytes. Keep `ADMIN_ACCESS_CODE` unchanged because admin registration is not part of this slice.
+Replace `teacher_access_code` with `teacher_invite_hmac_key: SecretStr | None`, require at least 32 UTF-8 bytes in production, reject placeholder/low-diversity values, and reject equality with `SECRET_KEY` using `hmac.compare_digest` on bytes. Administrator provisioning remained outside this historical slice.
 
 - [ ] **Step 4: Re-run the focused tests and keep them GREEN**
 

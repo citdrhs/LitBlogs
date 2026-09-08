@@ -7,14 +7,20 @@ const GOOGLE_CLIENT_ID_PATTERN =
   /^[A-Za-z0-9][A-Za-z0-9._-]*\.apps\.googleusercontent\.com$/;
 
 const normalized = (value) => (typeof value === "string" ? value.trim() : "");
+const explicitlyEnabled = (value) => value === true || value === "true";
 
 export const buildOAuthProviderConfig = (env = {}) => {
   const googleClientId = normalized(env.VITE_GOOGLE_CLIENT_ID);
   const microsoftClientId = normalized(env.VITE_MICROSOFT_CLIENT_ID);
   const microsoftTenantId = normalized(env.VITE_MICROSOFT_TENANT_ID);
-  const googleEnabled = GOOGLE_CLIENT_ID_PATTERN.test(googleClientId);
+  const googleEnabled = (
+    explicitlyEnabled(env.VITE_GOOGLE_OAUTH_ENABLED)
+    && GOOGLE_CLIENT_ID_PATTERN.test(googleClientId)
+  );
   const microsoftEnabled =
-    UUID_PATTERN.test(microsoftClientId) && UUID_PATTERN.test(microsoftTenantId);
+    explicitlyEnabled(env.VITE_MICROSOFT_OAUTH_ENABLED)
+    && UUID_PATTERN.test(microsoftClientId)
+    && UUID_PATTERN.test(microsoftTenantId);
 
   return {
     google: {
@@ -56,7 +62,9 @@ export const msalConfig = buildMsalConfig(oauthProviderConfig.microsoft);
 
 export const applyPublicOAuthConfig = (runtimeConfig) => {
   const nextProviders = buildOAuthProviderConfig({
+    VITE_GOOGLE_OAUTH_ENABLED: runtimeConfig?.googleOauthEnabled === true,
     VITE_GOOGLE_CLIENT_ID: runtimeConfig?.googleClientId,
+    VITE_MICROSOFT_OAUTH_ENABLED: runtimeConfig?.microsoftOauthEnabled === true,
     VITE_MICROSOFT_CLIENT_ID: runtimeConfig?.microsoftClientId,
     VITE_MICROSOFT_TENANT_ID: runtimeConfig?.microsoftTenantId,
   });

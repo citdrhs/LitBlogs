@@ -13,10 +13,29 @@ import { resolveAppAsset } from './utils/urlUtils';
 import { fetchBrowserSession } from './utils/auth';
 import { localPasswordRegistrationEnabled as configuredLocalPasswordRegistrationEnabled } from './config/registrationConfig';
 
+const MicrosoftSignUpButton = ({ onAuthenticate }) => {
+  const { instance } = useMsal();
+
+  return (
+    <button
+      type="button"
+      onClick={() => onAuthenticate(instance)}
+      className="mt-4 flex items-center gap-2 w-full p-2 text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 rounded-sm transition-all duration-300"
+      style={{ height: '40px' }}
+    >
+      <div className="flex-1 flex items-center" aria-hidden="true">
+        <FaMicrosoft className="text-[#00a4ef] text-xl ml-1" />
+      </div>
+      <div className="flex-[2] text-center pr-20 text-sm">
+        <span>Sign up with Microsoft</span>
+      </div>
+    </button>
+  );
+};
+
 const SignUp = ({
   localPasswordRegistrationEnabled = configuredLocalPasswordRegistrationEnabled,
 }) => {
-  const { instance } = useMsal();
   // State variables for form inputs
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -32,6 +51,8 @@ const SignUp = ({
   const [isLoading, setIsLoading] = useState(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [successData, setSuccessData] = useState(null);
+  const successHeadingRef = useRef(null);
+  const successDialogRef = useRef(null);
 
   // Add this state for password strength
   const [passwordStrength, setPasswordStrength] = useState({
@@ -81,6 +102,37 @@ const SignUp = ({
       document.documentElement.classList.remove("dark");
     }
   }, [darkMode]);
+
+  useEffect(() => {
+    if (showSuccessModal) {
+      successHeadingRef.current?.focus();
+    }
+  }, [showSuccessModal]);
+
+  const containSuccessDialogFocus = (event) => {
+    if (event.key !== "Tab") return;
+
+    const focusable = Array.from(
+      successDialogRef.current?.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])',
+      ) || [],
+    );
+    if (focusable.length === 0) {
+      event.preventDefault();
+      return;
+    }
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const activeElement = document.activeElement;
+    if (event.shiftKey && (activeElement === first || !focusable.includes(activeElement))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
 
   
   // Add this function to your Sign-up.jsx file
@@ -211,11 +263,21 @@ const SignUp = ({
       });
 
       // Password registration deliberately does not create a browser session.
+      setFirstName("");
+      setLastName("");
+      setEmail("");
       setPassword("");
       setConfirmPassword("");
       setTeacherInvitationToken("");
+      setRole("");
+      setPasswordStrength({
+        score: 0,
+        label: "Poor",
+        color: "red-500",
+        percent: 0,
+      });
       setSuccessData({
-        requiresSignIn: true,
+        requiresVerification: true,
       });
       setShowSuccessModal(true);
 
@@ -276,7 +338,7 @@ const SignUp = ({
     setErrorMessage('Google sign up failed. Please try again.');
   };
 
-  const handleMicrosoftSignUp = async () => {
+  const handleMicrosoftSignUp = async (instance) => {
     try {
       // Check if role is selected
       if (!role) {
@@ -323,6 +385,11 @@ const SignUp = ({
 
   return (
     <div className={`min-h-screen flex flex-col transition-all duration-500 ${darkMode ? 'bg-gradient-to-r from-slate-800 to-gray-950 text-gray-200' : 'bg-gradient-to-r from-indigo-100 to-pink-100 text-gray-900'}`}>
+      <div
+        className="contents"
+        data-testid="signup-background"
+        inert={showSuccessModal ? "" : undefined}
+      >
       {/* Navbar */}
       <motion.nav 
         className="navbar z-50 fixed top-2 inset-x-0 flex justify-center"
@@ -623,19 +690,9 @@ const SignUp = ({
             onError={handleGoogleSignUpFailure}
             text="signup_with"
           />}
-          {oauthProviderConfig.microsoft.enabled && <button
-            type="button"
-            onClick={handleMicrosoftSignUp}
-            className="mt-4 flex items-center gap-2 w-full p-2 text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 rounded-sm transition-all duration-300"
-            style={{ height: '40px' }}
-          >
-            <div className="flex-1 flex items-center">
-              <FaMicrosoft className="text-[#00a4ef] text-xl ml-1" />
-            </div>
-            <div className="flex-[2] text-center pr-20 text-sm">
-              <span>Sign up with Microsoft</span>
-            </div>
-          </button>}
+          {oauthProviderConfig.microsoft.enabled && (
+            <MicrosoftSignUpButton onAuthenticate={handleMicrosoftSignUp} />
+          )}
         </div>
 
         <div className="mt-6 text-center">
@@ -666,6 +723,9 @@ const SignUp = ({
         )}
       </AnimatePresence>
 
+      <Footer darkMode={darkMode} />
+      </div>
+
       {/* Success Modal */}
       <AnimatePresence>
         {showSuccessModal && (
@@ -682,14 +742,27 @@ const SignUp = ({
               className={`${
                 darkMode ? 'bg-gray-800 text-white' : 'bg-white text-gray-900'
               } p-8 rounded-lg shadow-xl max-w-md w-full mx-4`}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="registration-success-title"
+              ref={successDialogRef}
+              onKeyDown={containSuccessDialogFocus}
             >
-              <h2 className="text-2xl font-bold mb-4">
-                {successData?.requiresSignIn ? "Registration submitted" : "Registration successful"}
+              <h2
+                id="registration-success-title"
+                ref={successHeadingRef}
+                tabIndex="-1"
+                className="text-2xl font-bold mb-4 focus:outline-none"
+              >
+                {successData?.requiresVerification ? "Check your school email" : "Registration successful"}
               </h2>
-              {successData?.requiresSignIn ? (
+              {successData?.requiresVerification ? (
                 <>
                   <p className="mb-6">
-                    If your registration was accepted, sign in with the credentials you submitted.
+                    If registration can be completed, verification instructions will be sent. Open that link to verify your school email before signing in.
+                  </p>
+                  <p className="mb-6 text-sm">
+                    Delivery may take a few minutes. Check your spam folder, and wait at least five minutes before requesting another email.
                   </p>
                   <Link
                     to="/sign-in"
@@ -698,6 +771,14 @@ const SignUp = ({
                     } transition-colors duration-300`}
                   >
                     Sign In
+                  </Link>
+                  <Link
+                    to="/verify-email?resend=1"
+                    className={`mt-4 block text-center text-sm ${
+                      darkMode ? 'text-cyan-300 hover:text-cyan-200' : 'text-blue-600 hover:text-blue-800'
+                    } underline decoration-1 underline-offset-4 transition-colors`}
+                  >
+                    Request another verification email
                   </Link>
                 </>
               ) : successData?.role === 'STUDENT' ? (
@@ -733,7 +814,6 @@ const SignUp = ({
           </motion.div>
         )}
       </AnimatePresence>
-      <Footer darkMode={darkMode} />
     </div>
   );
 };

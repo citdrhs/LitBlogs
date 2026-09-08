@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -31,7 +32,7 @@ const SYNTHETIC = Object.freeze({
 
 const expectedCaptures = [
   "signup-filled.jpg",
-  "registration-success.jpg",
+  "verification-success.jpg",
   "signin-filled.jpg",
   "student-hub-empty.jpg",
   "join-class-code.jpg",
@@ -68,6 +69,71 @@ const stopChild = async (child) => {
     new Promise((resolve) => child.once("exit", resolve)),
     new Promise((resolve) => setTimeout(resolve, 5_000)),
   ]);
+};
+
+const seedDeliveredVerification = async (python, databaseUrl, email, rawVerificationToken) => {
+  const script = String.raw`
+import hashlib
+import os
+import sys
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import create_engine, text
+
+raw_token = sys.stdin.read()
+if not raw_token:
+    raise RuntimeError("missing verification input")
+now = datetime.now(timezone.utc)
+token_digest = hashlib.sha256(
+    f"litblogs-email-verification-v1:{raw_token}".encode("utf-8")
+).hexdigest()
+engine = create_engine(os.environ["E2E_SEED_DATABASE_URL"], pool_pre_ping=True)
+try:
+    with engine.begin() as connection:
+        result = connection.execute(
+            text(
+                "UPDATE email_verifications AS verification "
+                "SET token_digest = :token_digest, expires_at = :expires_at, "
+                "delivery_status = 'DELIVERED', delivery_attempted_at = :now, "
+                "delivery_claim_digest = NULL "
+                "FROM users AS account "
+                "WHERE verification.user_id = account.id "
+                "AND lower(account.email) = lower(:email) "
+                "AND account.email_verified_at IS NULL "
+                "RETURNING verification.id"
+            ),
+            {
+                "token_digest": token_digest,
+                "expires_at": now + timedelta(hours=24),
+                "now": now,
+                "email": os.environ["E2E_VERIFICATION_EMAIL"],
+            },
+        )
+        if result.rowcount != 1:
+            raise RuntimeError("verification row was not uniquely seeded")
+finally:
+    engine.dispose()
+`;
+
+  await new Promise((resolve, reject) => {
+    const child = spawn(python, ["-c", script], {
+      cwd: appDirectory,
+      env: {
+        ...process.env,
+        E2E_SEED_DATABASE_URL: databaseUrl,
+        E2E_VERIFICATION_EMAIL: email,
+      },
+      shell: false,
+      stdio: ["pipe", "ignore", "ignore"],
+      windowsHide: true,
+    });
+    child.once("error", () => reject(new Error("Disposable verification seeding failed")));
+    child.once("exit", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error("Disposable verification seeding failed"));
+    });
+    child.stdin.end(rawVerificationToken);
+  });
 };
 
 const stabilize = async (page) => {
@@ -111,7 +177,9 @@ const configureContext = async (browser) => {
         headers: { "Cache-Control": "no-store" },
         body: JSON.stringify({
           csrf_cookie_name: "litblogs_e2e_csrf",
+          google_oauth_enabled: false,
           google_client_id: "",
+          microsoft_oauth_enabled: false,
           microsoft_client_id: "",
           microsoft_tenant_id: "",
           local_password_registration_enabled: true,
@@ -285,12 +353,29 @@ try {
   ));
   await page.getByRole("button", { name: "Sign Up", exact: true }).click();
   if ((await registration).status() !== 202) throw new Error("Student registration was not accepted");
-  const registrationHeading = page.getByRole("heading", { name: "Registration submitted" });
+  const registrationHeading = page.getByRole("heading", { name: "Check your school email" });
   await expect(registrationHeading).toBeVisible();
-  await expect(page.getByText(/sign in with the credentials you submitted/i)).toBeVisible();
-  await screenshot(page, "registration-success.jpg");
+  await expect(page.getByText(/verify your school email before signing in/i)).toBeVisible();
 
-  await registrationHeading.locator("xpath=..").getByRole("link", {
+  const databaseMetadata = JSON.parse(
+    fs.readFileSync(path.join(process.env.E2E_RUN_DIR, "database.json"), "utf8"),
+  );
+  let rawVerificationToken = randomBytes(32).toString("base64url");
+  await seedDeliveredVerification(
+    python,
+    databaseMetadata.migrator_url,
+    SYNTHETIC.email,
+    rawVerificationToken,
+  );
+  await page.goto(`/verify-email#token=${encodeURIComponent(rawVerificationToken)}`);
+  rawVerificationToken = "";
+  await expect(page).toHaveURL(/\/verify-email$/);
+  const verificationHeading = page.getByRole("heading", { name: "Email verified" });
+  await expect(verificationHeading).toBeVisible();
+  await expect(page.getByText(/school email is confirmed/i)).toBeVisible();
+  await screenshot(page, "verification-success.jpg");
+
+  await page.getByRole("region", { name: "Email verified" }).getByRole("link", {
     name: "Sign In",
     exact: true,
   }).click();

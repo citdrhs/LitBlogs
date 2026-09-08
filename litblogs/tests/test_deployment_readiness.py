@@ -95,11 +95,11 @@ def test_production_upload_custody_rejects_a_service_owned_ancestor(tmp_path):
     )
 
 
-def _production_settings(**overrides):
+def _production_settings_values(**overrides):
     values = {
         "app_env": "production",
         "database_url": (
-            f"postgresql://litblog_app:{secrets.token_urlsafe(24)}@database.internal/litblog"
+            "postgresql://litblog_app:D8x9vK2sQ7mN4pR6tY1wC3bF5hJ7@database.internal/litblog"
             "?sslmode=verify-full&sslrootcert=/etc/litblogs/postgres-root-ca.pem"
         ),
         "secret_key": "A9!production-only-random-secret-0123456789-uvwxyz-XYZ",
@@ -109,7 +109,9 @@ def _production_settings(**overrides):
         "cors_allowed_origins": ("https://litblogs.school.edu",),
         "allowed_hosts": ("litblogs.school.edu",),
         "allowed_email_domains": ("school.edu",),
+        "google_oauth_enabled": True,
         "google_client_id": "987654321.apps.googleusercontent.com",
+        "microsoft_oauth_enabled": True,
         "microsoft_client_id": "2f1c67a1-91e2-46a3-941f-b88e31763e51",
         "microsoft_tenant_id": "871bd3e0-2dc0-4a40-9b07-9d03068c2364",
         "microsoft_allowed_tenant_ids": ("871bd3e0-2dc0-4a40-9b07-9d03068c2364",),
@@ -117,8 +119,6 @@ def _production_settings(**overrides):
         "csrf_cookie_name": "__Host-litblog-csrf",
         "session_cookie_secure": True,
         "teacher_invite_hmac_key": secrets.token_urlsafe(48),
-        "admin_access_code": secrets.token_urlsafe(24),
-        "admin_code": secrets.token_urlsafe(24),
         "local_password_registration_enabled": False,
         "email_host": "smtp.school.edu",
         "email_username": "litblogs-mailer",
@@ -128,7 +128,134 @@ def _production_settings(**overrides):
         **production_upload_settings(),
     }
     values.update(overrides)
-    return Settings(**values)
+    return values
+
+
+def _production_settings(**overrides):
+    return Settings(**_production_settings_values(**overrides))
+
+
+def _set_production_environment(monkeypatch, **overrides):
+    values = _production_settings_values(**overrides)
+    for field_name in Settings.model_fields:
+        monkeypatch.delenv(field_name.upper(), raising=False)
+    for field_name, value in values.items():
+        environment_name = field_name.upper()
+        if value is None:
+            monkeypatch.delenv(environment_name, raising=False)
+        elif isinstance(value, bool):
+            monkeypatch.setenv(environment_name, "true" if value else "false")
+        elif isinstance(value, tuple):
+            monkeypatch.setenv(environment_name, ",".join(str(item) for item in value))
+        else:
+            monkeypatch.setenv(environment_name, str(value))
+
+
+def test_authentication_provider_flags_default_false(monkeypatch):
+    for field_name in (
+        "LOCAL_PASSWORD_REGISTRATION_ENABLED",
+        "GOOGLE_OAUTH_ENABLED",
+        "MICROSOFT_OAUTH_ENABLED",
+    ):
+        monkeypatch.delenv(field_name, raising=False)
+    settings = Settings(app_env="test")
+
+    assert settings.local_password_registration_enabled is False
+    assert getattr(settings, "google_oauth_enabled", None) is False
+    assert getattr(settings, "microsoft_oauth_enabled", None) is False
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    (
+        "local_password_registration_enabled",
+        "google_oauth_enabled",
+        "microsoft_oauth_enabled",
+    ),
+)
+@pytest.mark.parametrize("value", ("TRUE", "False", "1", " false", 1, 0))
+def test_authentication_provider_flags_reject_ambiguous_values(field_name, value):
+    with pytest.raises(ValidationError, match="literal true or false"):
+        Settings(app_env="test", **{field_name: value})
+
+
+def test_password_only_production_does_not_require_oauth():
+    settings = _production_settings(
+        local_password_registration_enabled="true",
+        google_oauth_enabled="false",
+        microsoft_oauth_enabled="false",
+        google_client_id=None,
+        microsoft_client_id=None,
+        microsoft_tenant_id=None,
+        microsoft_allowed_tenant_ids=(),
+    )
+
+    assert settings.local_password_registration_enabled is True
+    assert settings.google_oauth_enabled is False
+    assert settings.microsoft_oauth_enabled is False
+
+
+def test_disabled_oauth_provider_identifiers_are_not_validated():
+    settings = _production_settings(
+        local_password_registration_enabled=True,
+        google_oauth_enabled=False,
+        microsoft_oauth_enabled=False,
+        google_client_id="not-a-google-client",
+        microsoft_client_id="not-a-uuid",
+        microsoft_tenant_id="common",
+        microsoft_allowed_tenant_ids=("organizations",),
+    )
+
+    assert settings.google_oauth_enabled is False
+    assert settings.microsoft_oauth_enabled is False
+
+
+@pytest.mark.parametrize(
+    ("overrides", "missing_name"),
+    (
+        (
+            {
+                "google_oauth_enabled": True,
+                "google_client_id": None,
+                "microsoft_oauth_enabled": False,
+                "microsoft_client_id": None,
+                "microsoft_tenant_id": None,
+                "microsoft_allowed_tenant_ids": (),
+            },
+            "GOOGLE_CLIENT_ID",
+        ),
+        (
+            {
+                "google_oauth_enabled": False,
+                "google_client_id": None,
+                "microsoft_oauth_enabled": True,
+                "microsoft_client_id": None,
+            },
+            "MICROSOFT_CLIENT_ID",
+        ),
+        (
+            {
+                "google_oauth_enabled": False,
+                "google_client_id": None,
+                "microsoft_oauth_enabled": True,
+                "microsoft_tenant_id": None,
+            },
+            "MICROSOFT_TENANT_ID",
+        ),
+        (
+            {
+                "google_oauth_enabled": False,
+                "google_client_id": None,
+                "microsoft_oauth_enabled": True,
+                "microsoft_allowed_tenant_ids": (),
+            },
+            "MICROSOFT_ALLOWED_TENANT_IDS",
+        ),
+    ),
+)
+def test_enabled_oauth_provider_requires_its_credentials(overrides, missing_name):
+    with pytest.raises(ValidationError, match=missing_name):
+        _production_settings(**overrides)
 
 
 def test_production_upload_root_is_the_exact_deployment_path(monkeypatch):
@@ -597,7 +724,9 @@ def test_public_runtime_config_is_backend_derived_and_contains_no_secrets(client
     assert response.headers["cache-control"] == "no-store"
     assert response.json() == {
         "csrf_cookie_name": "test-litblog-csrf",
+        "google_oauth_enabled": True,
         "google_client_id": "test-google-client-id",
+        "microsoft_oauth_enabled": True,
         "microsoft_client_id": "test-microsoft-client-id",
         "microsoft_tenant_id": "871bd3e0-2dc0-4a40-9b07-9d03068c2364",
         "local_password_registration_enabled": True,
@@ -613,15 +742,49 @@ def test_public_runtime_config_is_backend_derived_and_contains_no_secrets(client
         assert forbidden not in serialized
 
 
-def test_admin_provisioning_secrets_are_server_only_runtime_configuration():
+def test_public_runtime_config_blanks_disabled_providers_and_reports_production_password_registration(
+    client,
+    monkeypatch,
+):
+    import main
+
+    selected_settings = main.settings.model_copy(
+        update={
+            "app_env": "production",
+            "local_password_registration_enabled": True,
+            "google_oauth_enabled": False,
+            "google_client_id": "stale-google-client-id",
+            "microsoft_oauth_enabled": False,
+            "microsoft_client_id": "stale-microsoft-client-id",
+            "microsoft_tenant_id": "stale-microsoft-tenant-id",
+        }
+    )
+    monkeypatch.setattr(main, "settings", selected_settings)
+
+    response = client.get("/api/runtime-config")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "csrf_cookie_name": "test-litblog-csrf",
+        "google_oauth_enabled": False,
+        "google_client_id": "",
+        "microsoft_oauth_enabled": False,
+        "microsoft_client_id": "",
+        "microsoft_tenant_id": "",
+        "local_password_registration_enabled": True,
+    }
+
+
+def test_obsolete_admin_provisioning_codes_are_absent_from_runtime_configuration():
     import main
 
     example = (BACKEND_DIR / ".env.example").read_text(encoding="utf-8")
     response_fields = set(main.PublicRuntimeConfigResponse.model_fields)
 
-    assert "admin_access_code" in Settings.model_fields
-    assert "admin_code" in Settings.model_fields
+    assert {"admin_access_code", "admin_code"}.isdisjoint(Settings.model_fields)
     assert {"admin_access_code", "admin_code"}.isdisjoint(response_fields)
+    assert "ADMIN_ACCESS_CODE=" not in example
+    assert "ADMIN_CODE=" not in example
     assert "VITE_ADMIN_ACCESS_CODE" not in example
     assert "VITE_ADMIN_CODE" not in example
     assert "ALGORITHM=" not in example
@@ -633,8 +796,12 @@ def test_release_admission_requires_every_shipped_runtime_module():
     required = set(deployment_check.REQUIRED_RELEASE_FILES)
     assert {
         "litblogs/access_control.py",
+        "litblogs/auth_email_delivery.py",
+        "litblogs/auth_email_job.py",
         "litblogs/auth_security.py",
         "litblogs/base.py",
+        "litblogs/bootstrap_admin.py",
+        "litblogs/email_verification_delivery.py",
         "litblogs/identity_controls.py",
         "litblogs/manage_accounts.py",
         "litblogs/manage_teacher_invitations.py",
@@ -768,6 +935,18 @@ def test_nginx_content_server_uses_the_complete_distribution_mime_table():
     assert re.search(r"(?m)^\s*types\s*\{", nginx) is None
 
 
+def _ready_deployment_settings(**overrides):
+    values = {
+        "app_env": "production",
+        "database_url": "postgresql://validated",
+        "upload_registry_schema_ready": True,
+        "upload_legacy_import_complete": True,
+        "upload_backup_restore_verified": True,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
 def _write_deployment_release(tmp_path):
     import deployment_check
 
@@ -818,9 +997,7 @@ def test_pretraffic_deployment_check_requires_manifest_assets_and_database(
     )
 
     result = deployment_check.run(
-        app_settings=SimpleNamespace(
-            app_env="production", database_url="postgresql://validated"
-        ),
+        app_settings=_ready_deployment_settings(),
         release_root=release_root,
         database_check=lambda: calls.append("database"),
         migration_drift_check=lambda: calls.append("drift"),
@@ -847,9 +1024,7 @@ def test_deployment_check_rejects_an_invalid_rich_text_contract(tmp_path, capsys
     )
 
     result = deployment_check.run(
-        app_settings=SimpleNamespace(
-            app_env="production", database_url="postgresql://validated"
-        ),
+        app_settings=_ready_deployment_settings(),
         release_root=release_root,
         database_check=lambda: None,
         migration_drift_check=lambda: None,
@@ -868,9 +1043,7 @@ def test_artifact_preflight_does_not_require_database_at_migration_head(tmp_path
 
     calls = []
     result = deployment_check.run(
-        app_settings=SimpleNamespace(
-            app_env="production", database_url="postgresql://validated"
-        ),
+        app_settings=_ready_deployment_settings(),
         release_root=_write_deployment_release(tmp_path),
         database_check=lambda: calls.append("database"),
         migration_drift_check=lambda: calls.append("drift"),
@@ -882,6 +1055,135 @@ def test_artifact_preflight_does_not_require_database_at_migration_head(tmp_path
     assert result == 0
     assert calls == ["ca"]
     assert capsys.readouterr().out.strip() == "deployment-check: ready"
+
+
+def test_preflight_skips_only_postmigration_upload_attestations(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    import deployment_check
+
+    _set_production_environment(
+        monkeypatch,
+        local_password_registration_enabled=True,
+        google_oauth_enabled=False,
+        microsoft_oauth_enabled=False,
+        google_client_id=None,
+        microsoft_client_id=None,
+        microsoft_tenant_id=None,
+        microsoft_allowed_tenant_ids=(),
+        upload_registry_schema_ready=False,
+        upload_legacy_import_complete=False,
+        upload_backup_restore_verified=False,
+    )
+    calls = []
+    result = deployment_check.run(
+        release_root=_write_deployment_release(tmp_path),
+        database_check=lambda: calls.append("database"),
+        migration_drift_check=lambda: calls.append("drift"),
+        ca_custody_check=lambda _database_url: calls.append("ca"),
+        interpreter_version=(3, 13),
+        mode="preflight",
+    )
+
+    assert result == 0
+    assert calls == ["ca"]
+    assert capsys.readouterr().out.strip() == "deployment-check: ready"
+
+    monkeypatch.setenv("SECRET_KEY", "too-short")
+    assert (
+        deployment_check.run(
+            release_root=_write_deployment_release(tmp_path / "invalid"),
+            ca_custody_check=lambda _database_url: None,
+            interpreter_version=(3, 13),
+            mode="preflight",
+        )
+        == 1
+    )
+    assert capsys.readouterr().err.strip() == (
+        "deployment-check: failed code=config_invalid"
+    )
+
+
+@pytest.mark.parametrize(
+    "setting_name",
+    (
+        "upload_registry_schema_ready",
+        "upload_legacy_import_complete",
+        "upload_backup_restore_verified",
+    ),
+)
+def test_postflight_rejects_each_upload_attestation_before_database_checks(
+    tmp_path,
+    capsys,
+    setting_name,
+):
+    import deployment_check
+
+    settings = _production_settings(**{setting_name: False})
+    calls = []
+    result = deployment_check.run(
+        app_settings=settings,
+        release_root=_write_deployment_release(tmp_path),
+        database_check=lambda: calls.append("database"),
+        migration_drift_check=lambda: calls.append("drift"),
+        ca_custody_check=lambda _database_url: calls.append("ca"),
+        interpreter_version=(3, 13),
+        mode="postflight",
+    )
+
+    assert result == 1
+    assert "database" not in calls
+    assert "drift" not in calls
+    assert capsys.readouterr().err.strip() == (
+        "deployment-check: failed code=config_invalid"
+    )
+
+
+@pytest.mark.parametrize(
+    ("setting_name", "error_marker"),
+    (
+        ("upload_registry_schema_ready", "UPLOAD_REGISTRY_SCHEMA_READY"),
+        ("upload_legacy_import_complete", "UPLOAD_LEGACY_IMPORT_COMPLETE"),
+        ("upload_backup_restore_verified", "UPLOAD_BACKUP_RESTORE_VERIFIED"),
+    ),
+)
+def test_normal_settings_load_requires_each_postmigration_upload_attestation(
+    monkeypatch,
+    setting_name,
+    error_marker,
+):
+    _set_production_environment(
+        monkeypatch,
+        **{setting_name: False},
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=f"Missing production readiness attestation: {error_marker}",
+    ):
+        config.load_settings()
+
+
+def test_get_settings_cached_normal_load_requires_runtime_readiness(monkeypatch):
+    _set_production_environment(
+        monkeypatch,
+        upload_backup_restore_verified=False,
+    )
+    config.reset_settings_cache()
+
+    try:
+        with pytest.raises(
+            ValueError,
+            match=(
+                "Missing production readiness attestation: "
+                "UPLOAD_BACKUP_RESTORE_VERIFIED"
+            ),
+        ):
+            config.get_settings()
+    finally:
+        config.reset_settings_cache()
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX ownership and modes required")
@@ -933,9 +1235,7 @@ def test_deployment_check_reports_only_bounded_safe_preflight_codes(
     import deployment_check
 
     arguments = {
-        "app_settings": SimpleNamespace(
-            app_env="production", database_url="postgresql://validated"
-        ),
+        "app_settings": _ready_deployment_settings(),
         "release_root": _write_deployment_release(tmp_path),
         "database_check": lambda: None,
         "migration_drift_check": lambda: None,
@@ -967,9 +1267,7 @@ def test_deployment_check_redacts_database_failures(tmp_path, capsys, failure, e
     import deployment_check
 
     result = deployment_check.run(
-        app_settings=SimpleNamespace(
-            app_env="production", database_url="postgresql://validated"
-        ),
+        app_settings=_ready_deployment_settings(),
         release_root=_write_deployment_release(tmp_path),
         database_check=lambda: (_ for _ in ()).throw(failure),
         migration_drift_check=lambda: None,
@@ -988,9 +1286,7 @@ def test_deployment_check_fails_closed_on_alembic_schema_drift(tmp_path, capsys)
     import deployment_check
 
     result = deployment_check.run(
-        app_settings=SimpleNamespace(
-            app_env="production", database_url="postgresql://validated"
-        ),
+        app_settings=_ready_deployment_settings(),
         release_root=_write_deployment_release(tmp_path),
         database_check=lambda: None,
         migration_drift_check=lambda: (_ for _ in ()).throw(
@@ -1018,9 +1314,7 @@ def test_deployment_check_distinguishes_manifest_and_frontend_contract_failures(
     )
     assert (
         deployment_check.run(
-            app_settings=SimpleNamespace(
-                app_env="production", database_url="postgresql://validated"
-            ),
+            app_settings=_ready_deployment_settings(),
             release_root=release_root,
             database_check=lambda: None,
             migration_drift_check=lambda: None,
@@ -1039,9 +1333,7 @@ def test_deployment_check_distinguishes_manifest_and_frontend_contract_failures(
     )
     assert (
         deployment_check.run(
-            app_settings=SimpleNamespace(
-                app_env="production", database_url="postgresql://validated"
-            ),
+            app_settings=_ready_deployment_settings(),
             release_root=release_root,
             database_check=lambda: None,
             migration_drift_check=lambda: None,
@@ -1134,6 +1426,14 @@ def test_release_artifact_uses_a_runtime_allowlist_instead_of_shipping_the_repos
     assert 'test -f "$staging/tree/litblogs/THIRD_PARTY_EDITOR_NOTICES.md"' in release
     assert 'test -f "$staging/tree/litblogs/rich_text_contract.py"' in release
     assert 'test -f "$staging/tree/litblogs/rich_text_security.py"' in release
+    assert 'test -f "$staging/tree/litblogs/bootstrap_admin.py"' in release
+    for auth_email_runtime in (
+        "litblogs/auth_email_delivery.py",
+        "litblogs/auth_email_job.py",
+        "litblogs/email_verification_delivery.py",
+        "litblogs/password_reset_delivery.py",
+    ):
+        assert f'test -f "$staging/tree/{auth_email_runtime}"' in release
     assert "litblogs/migrations/0001_create_federated_identities.sql" not in release
     assert "litblogs/alembic.ini litblogs/migrations litblogs/requirements" not in release
 
@@ -1500,6 +1800,293 @@ def test_root_readme_routes_operators_to_reviewed_release_runbook():
         "location ^~ /uploads/",
     ):
         assert unsafe_legacy_instruction not in readme
+
+
+def test_fresh_server_guide_is_complete_password_first_and_release_safe():
+    guide_path = ROOT_DIR / "deploy" / "FRESH_SERVER_SETUP.md"
+    setup_script_path = ROOT_DIR / "deploy" / "scripts" / "fresh_server_setup.sh"
+    restore_script_path = (
+        ROOT_DIR / "deploy" / "scripts" / "fresh_restore_rehearsal.sh"
+    )
+    assert guide_path.is_file()
+    assert setup_script_path.is_file()
+    assert restore_script_path.is_file()
+    guide = guide_path.read_text(encoding="utf-8")
+    setup_script = setup_script_path.read_text(encoding="utf-8")
+    restore_script = restore_script_path.read_text(encoding="utf-8")
+    templates = "\n".join(
+        (ROOT_DIR / "deploy" / name).read_text(encoding="utf-8")
+        for name in (
+            "fresh-install.conf.example",
+            "fresh-restore.conf.example",
+            "litblogs.production.env.example",
+            "password-reset.production.env.example",
+            "invitation-operator.example.json",
+        )
+    )
+    operator_bundle = "\n".join((guide, setup_script, restore_script, templates))
+
+    assert re.findall(r"^## ([1-8])\.", guide, flags=re.MULTILINE) == list("12345678")
+    assert len(guide.splitlines()) <= 300
+    assert guide.count("```bash") == 8
+    assert "Quick path" in guide
+    assert "deterministic work is in the reviewed helper" in " ".join(guide.split())
+    assert "docs/operations/production-runbook.md" in guide
+    for phase in (
+        "toolchain",
+        "stage-tests",
+        "postgres",
+        "prepare",
+        "post-restore",
+        "invite-teacher",
+        "activate",
+        "smoke",
+    ):
+        assert f'"$HELPER" {phase}' in guide
+
+    for required in (
+        "Ubuntu 24.04.4 LTS",
+        "Python 3.13.15",
+        "Node.js 24.20.0",
+        "--no-same-owner",
+        "chown -R root:root",
+        "PostgreSQL 17",
+        "Nginx",
+        "ClamAV",
+        "Certbot",
+        "GitHub CLI",
+        "sudo -iu litblogs",
+        "ACME_CONTACT_EMAIL",
+        "--non-interactive --agree-tos --no-eff-email",
+        "TCP `80` and `443`",
+        "loopback-only",
+        "mkdir -p ~/www",
+        "git clone https://github.com/citdrhs/LitBlogs.git",
+        "git switch main",
+        "git pull --ff-only",
+        "ProtectHome=true",
+        "/opt/litblogs/releases",
+        "/etc/litblogs/litblogs.env",
+        "/etc/litblogs/password-reset.env",
+        "/etc/litblogs/postgres-root-ca.pem",
+        "gh run download",
+        "gh workflow run release.yml",
+        "gh run watch \"$RUN_ID\"",
+        "sha256sum --check SHA256SUMS",
+        "gh attestation verify",
+        "PROVENANCE_COUNT",
+        "SBOM_COUNT",
+        "verified_predicates",
+        "python-sbom.cdx.json",
+        "frontend-sbom.cdx.json",
+        "/srv/litblogs-release-quarantine",
+        "CUSTODY-SHA256",
+        "REVIEWED-COMMIT",
+        "REPLACE_WITH_APPROVED_RELEASE_ID",
+        "--source-digest \"$REVIEWED_SHA\"",
+        "--predicate-type https://cyclonedx.org/bom",
+        "sslmode=verify-full",
+        "scram-sha-256",
+        "SCRAM_OK=",
+        "ROTATED-OLD password",
+        "Wrong password was accepted",
+        "litblogs_migrator",
+        "litblogs_runtime",
+        "litblog_identity_owner",
+        "litblog_account_operator",
+        "litblog_invitation_operator",
+        "litblogs_backup",
+        "GRANT litblog_identity_owner TO litblogs_migrator",
+        "REVOKE litblog_identity_owner FROM litblogs_migrator",
+        "UPLOAD_REGISTRY_SCHEMA_READY=false",
+        "UPLOAD_LEGACY_IMPORT_COMPLETE=false",
+        "UPLOAD_BACKUP_RESTORE_VERIFIED=false",
+        "SELECT count(*) FROM public.upload_assets",
+        "! -name objects ! -name .incoming",
+        "backup_postgres.py",
+        "restore_verify_postgres.py",
+        "/run/litblogs-backup.env",
+        "/run/litblogs-restore.env",
+        "bootstrap_admin --confirm-empty-install",
+        "/etc/litblogs/invitation-operator.json",
+        "exec 3</etc/litblogs/invitation-operator.json",
+        "-m manage_teacher_invitations create",
+        "Teachers cannot self-select that role",
+        "litblogs-password-reset.service",
+        "email verification",
+        "exact-port",
+        "release_switch.py",
+        "Range: bytes=0-1",
+        "206",
+        "text/vtt",
+        'test "$MP4_STATUS" = 206',
+        "runtime.headers",
+        "html.headers",
+        "journalctl --quiet",
+        "Port $port is not loopback-only",
+        "GOOGLE_OAUTH_ENABLED=true",
+        "No frontend rebuild",
+        "apt-mark hold gh",
+        "systemctl enable --now nginx",
+        "apt.postgresql.org.sh -y",
+        "host firewall",
+        "CREATE ROLE litblogs_runtime NOLOGIN NOINHERIT",
+        "CREATE ROLE litblogs_restore_dba WITH LOGIN NOINHERIT SUPERUSER",
+        "no route or credential to production, students, teachers, or the internet",
+        "test -z \"$(ip route show default)\"",
+        "/srv/litblogs-restore/staging",
+        "-type f -printf '.\\n' | wc -l",
+        "-exec chown root:root",
+        "-exec chmod 0600",
+        "at least 32 UTF-8 bytes with at least",
+        "RESTORE_MANIFEST=",
+        "RESTORE_UPLOAD_TARGET=",
+        "RESTORE_DATABASE=",
+        "--verify-existing",
+        "cleanup_migration",
+        "cleanup_backup",
+        "cleanup_restore",
+        "15-minute RPO",
+        "off-host",
+        "restore rehearsal",
+    ):
+        assert required in operator_bundle
+
+    assert operator_bundle.index("UPLOAD_BACKUP_RESTORE_VERIFIED=false") < operator_bundle.index(
+        "restore_verify_postgres.py"
+    ) < operator_bundle.index("UPLOAD_BACKUP_RESTORE_VERIFIED=true")
+    assert operator_bundle.index("restore_verify_postgres.py") < operator_bundle.index(
+        "bootstrap_admin --confirm-empty-install"
+    )
+
+    for forbidden in (
+        "/usr/bin/python3.13",
+        "sudo make install",
+        "npm run dev",
+        "npm run preview",
+        "ADMIN_ACCESS_CODE",
+        "ADMIN_CODE",
+        "sslmode=require",
+        "UPLOAD_BACKUP_RESTORE_VERIFIED=true\nUPLOAD_LEGACY_IMPORT_COMPLETE=false",
+        "POSTGRES_OPERATOR_BACKUP_DATABASE_URL",
+        "POSTGRES_OPERATOR_RESTORE_DATABASE_URL",
+        "<accepted-manifest-path>",
+        "<isolated-upload-target>",
+        "<synthetic-database-name>",
+        "/home/litblogs/www/release-download-",
+    ):
+        assert forbidden not in operator_bundle
+
+    assert "staging and tests only" in guide
+    assert "Do not deploy the clone" in guide
+    assert "Do not generate `RELEASE-MANIFEST`" in guide
+    assert "isolated" in guide.lower()
+    assert "self-signed" in guide.lower()
+    assert "localhost:3310" not in guide
+    assert "127.0.0.1:3310" in operator_bundle
+    assert "-name 'litblogs-tutorial.en-*.vtt'" in operator_bundle
+    assert "-name 'litblogs-tutorial-*.vtt'" not in operator_bundle
+    assert Path("litblogs-tutorial.en-DWA6i4tK.vtt").match(
+        "litblogs-tutorial.en-*.vtt"
+    )
+    assert guide.index("gh workflow run release.yml") < guide.index(
+        "gh run watch \"$RUN_ID\""
+    ) < guide.index("gh run download")
+    assert 'test "$PROVENANCE_COUNT" -eq 1' in guide
+    assert 'test "$SBOM_COUNT" -eq 2' in guide
+    assert setup_script.count("trap 'exit 129' HUP") >= 2
+    assert setup_script.count("\\password litblogs_migrator") == 2
+    assert "MIGRATOR_GRANTED" not in operator_bundle
+    post_restore = setup_script.split("phase_post_restore()", 1)[1].split(
+        "phase_invite_teacher()", 1
+    )[0]
+    for gate in (
+        "HOST_FIREWALL_APPROVED",
+        "EGRESS_POLICY_APPROVED",
+        "RESTORE_REHEARSAL_APPROVED",
+        "RECOVERY_POLICY_APPROVED",
+    ):
+        assert f"require_approval {gate}" in post_restore
+    assert post_restore.index("install_units_and_nginx") < post_restore.index(
+        "bootstrap_admin --confirm-empty-install"
+    )
+    smoke_phase = setup_script.split("phase_smoke()", 1)[1].split("usage()", 1)[0]
+    assert "for port in 8000 3310 5432" in smoke_phase
+    assert "validate_password_reset_env" in setup_script
+    assert "Duplicate authentication-worker setting" in setup_script
+    assert "Forbidden authentication-worker setting" in setup_script
+    for allowed_worker_key in (
+        "DATABASE_URL",
+        "DB_POOL_SIZE",
+        "FRONTEND_URL",
+        "EMAIL_HOST",
+        "EMAIL_PASSWORD",
+        "PASSWORD_RESET_CLAIM_TIMEOUT_SECONDS",
+    ):
+        assert allowed_worker_key in setup_script.split(
+            "validate_password_reset_env()", 1
+        )[1].split("run_migration()", 1)[0]
+    assert "GOOGLE_[A-Z0-9_]*" in setup_script
+    assert "MICROSOFT_[A-Z0-9_]*" in setup_script
+    assert "UPLOAD_[A-Z0-9_]*" in setup_script
+    assert "sudo -iu litblogs env REVIEWED_SHA=" in setup_script
+    assert "bash -se <<'LITBLOGS'" in setup_script
+    assert "litblogs/.venv/bin/python -m pytest" in setup_script
+    assert guide.index("gh auth login --hostname github.com") < guide.index(
+        "gh auth status --hostname github.com"
+    ) < guide.index("gh workflow run release.yml")
+    for editor in (
+        "sudoedit /etc/litblogs/fresh-install.conf",
+        "sudoedit /etc/litblogs/litblogs.env",
+        "sudoedit /etc/litblogs/password-reset.env",
+        "sudoedit /run/litblogs-migration.env",
+        "sudoedit /run/litblogs-backup.env",
+    ):
+        assert editor in guide
+    bash_fences = re.findall(r"```bash\n(.*?)\n```", guide, flags=re.DOTALL)
+    for fence in bash_fences:
+        assert all(
+            interactive not in fence
+            for interactive in ("sudoedit", "gh auth login", "read -r -p", "\\password")
+        )
+    assert "gh auth login --hostname github.com --git-protocol https" in guide
+    assert "read -r -p 'Enter REPLACE_WITH_APPROVED_RELEASE_ID:" in guide
+    password_prompt_lines = [
+        line
+        for line in setup_script.splitlines()
+        if "--command '\\password" in line
+    ]
+    assert len(password_prompt_lines) == 10
+    assert all(line.rstrip().endswith("'") for line in password_prompt_lines)
+    assert "TRANSFER PAUSE" in guide
+    assert "restore-prepare" in guide
+    assert "restore-verify" in guide
+    assert "HOST_FIREWALL_APPROVED=false" in templates
+    assert "EGRESS_POLICY_APPROVED=false" in templates
+    assert "RECOVERY_POLICY_APPROVED=false" in templates
+    assert "RESTORE_REHEARSAL_APPROVED=false" in templates
+    assert "ISOLATION_APPROVED=false" in templates
+    assert "REVIEWED_SHA=REPLACE_WITH_REVIEWED_40_CHARACTER_SHA" in templates
+    assert 'grep -Fxq "commit=$REVIEWED_SHA"' in restore_script
+    restore_verify = restore_script.split("phase_restore_verify()", 1)[1].split(
+        "usage()", 1
+    )[0]
+    assert restore_verify.index("stat -Lc '%U:%G:%a'") < restore_verify.index(
+        'install -d -o root -g root -m 0700 "$RESTORE_UPLOAD_TARGET"'
+    ) < restore_verify.index("restore_verify_postgres.py")
+    restore_prepare = restore_script.split("phase_restore_prepare()", 1)[1].split(
+        "create_stand_in_roles()", 1
+    )[0]
+    assert "create_stand_in_roles" in restore_prepare
+    assert "create_stand_in_roles" not in restore_verify
+    assert "test -z \"$(ip route show default)\"" in restore_script
+    assert "apt.postgresql.org.sh -y" in setup_script
+    assert "apt.postgresql.org.sh -y" in restore_script
+    candidate_block = guide.split("never re-select it from the mutable staging checkout", 1)[
+        1
+    ].split("## 5.", 1)[0]
+    assert "/home/litblogs/www" not in candidate_block
+    assert "REVIEWED_SHA=$(sudo sed -n '1p'" in candidate_block
 
 
 def _alembic_config(connection=None):

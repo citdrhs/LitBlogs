@@ -11,6 +11,7 @@ const doubles = vi.hoisted(() => ({
   renderStudent: vi.fn(),
   renderSubmissions: vi.fn(),
   renderTeacher: vi.fn(),
+  renderVerifyEmail: vi.fn(),
 }));
 
 vi.mock("./utils/auth", () => ({
@@ -64,6 +65,13 @@ vi.mock("./AssignmentSubmissions", () => ({
   },
 }));
 
+vi.mock("./VerifyEmail", () => ({
+  default: () => {
+    doubles.renderVerifyEmail();
+    return <p>Public email verification</p>;
+  },
+}));
+
 import App from "./App";
 
 const session = (role) => ({
@@ -86,6 +94,14 @@ beforeEach(() => {
 });
 
 describe("role-aware route shells", () => {
+  it("renders email verification publicly without checking for a browser session", async () => {
+    renderPath("/verify-email");
+
+    expect(await screen.findByText("Public email verification")).toBeInTheDocument();
+    expect(doubles.renderVerifyEmail).toHaveBeenCalledOnce();
+    expect(doubles.fetchBrowserSession).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["STUDENT", "/teacher-dashboard", doubles.renderTeacher],
     ["STUDENT", "/admin-dashboard", doubles.renderAdmin],

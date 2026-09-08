@@ -7,6 +7,8 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
@@ -29,6 +31,7 @@ from postgres_common import (  # noqa: E402
 from restore_verify_postgres import (  # noqa: E402
     EXPECTED_OPERATOR_ROUTINE_CONTRACT,
     IDENTITY_DATA_INTEGRITY_SQL,
+    SCHEMA_INTEGRITY_SQL,
     check_alembic_schema_drift,
 )
 from restore_verify_postgres import (  # noqa: E402
@@ -39,6 +42,79 @@ from upload_snapshot_common import synthetic_upload_custody  # noqa: E402
 CONTAINER_ID = os.environ.get("POSTGRES_OPERATOR_CONTAINER_ID", "")
 BACKUP_DATABASE_URL = os.environ.get("POSTGRES_OPERATOR_BACKUP_DATABASE_URL", "")
 RESTORE_DATABASE_URL = os.environ.get("POSTGRES_OPERATOR_RESTORE_DATABASE_URL", "")
+
+
+def test_postgresql_restore_accepts_exact_reparsed_verification_check(
+    database_guard, monkeypatch
+):
+    database_url = os.environ.get("TEST_DATABASE_URL")
+    if not database_url or make_url(database_url).get_backend_name() != "postgresql":
+        pytest.skip("an explicitly guarded PostgreSQL test database is unavailable")
+
+    from migrations.versions import a82f8f2b1d7c_email_verification as migration
+
+    engine = create_engine(database_url)
+    database_guard(engine)
+    schema = f"litblog_restore_check_{secrets.token_hex(6)}"
+    try:
+        with engine.connect() as connection, connection.begin() as transaction:
+            connection.exec_driver_sql(f'CREATE SCHEMA "{schema}"')
+            connection.exec_driver_sql(f'SET LOCAL search_path TO "{schema}"')
+            connection.exec_driver_sql("CREATE TABLE users (id INTEGER PRIMARY KEY)")
+            monkeypatch.setattr(
+                migration, "op", Operations(MigrationContext.configure(connection))
+            )
+            migration._create_email_verification_table()
+            inventory_sql = SCHEMA_INTEGRITY_SQL.split(
+                "SELECT CASE WHEN COUNT(to_regclass", 1
+            )[0].replace("'public.email_verifications'", f"'{schema}.email_verifications'")
+            inventory_sql += """
+SELECT * FROM (
+    (SELECT * FROM expected_email_verification_checks
+     EXCEPT SELECT * FROM actual_email_verification_checks)
+    UNION ALL
+    (SELECT * FROM actual_email_verification_checks
+     EXCEPT SELECT * FROM expected_email_verification_checks)
+) AS mismatches;
+"""
+
+            assert connection.exec_driver_sql(inventory_sql).all() == []
+            # pg_dump emits this definition; pg_restore reparses it. PostgreSQL
+            # then deparses array-level casts as equivalent per-element casts.
+            definition = connection.execute(
+                text(
+                    "SELECT pg_get_constraintdef(oid, FALSE) FROM pg_constraint "
+                    "WHERE conrelid = to_regclass(:table) "
+                    "AND conname = 'ck_email_verification_delivery_status'"
+                ),
+                {"table": f"{schema}.email_verifications"},
+            ).scalar_one()
+            constraint = "ck_email_verification_delivery_status"
+            connection.exec_driver_sql(
+                f"ALTER TABLE email_verifications DROP CONSTRAINT {constraint}"
+            )
+            connection.exec_driver_sql(
+                f"ALTER TABLE email_verifications ADD CONSTRAINT {constraint} {definition}"
+            )
+            assert connection.exec_driver_sql(inventory_sql).all() == []
+
+            for invalid_definition in (
+                "CHECK (TRUE)",
+                definition + " NOT VALID",
+                definition + " NO INHERIT",
+                definition.replace("'FAILED'", "'UNREVIEWED'"),
+            ):
+                connection.exec_driver_sql(
+                    f"ALTER TABLE email_verifications DROP CONSTRAINT {constraint}"
+                )
+                connection.exec_driver_sql(
+                    f"ALTER TABLE email_verifications ADD CONSTRAINT "
+                    f"{constraint} {invalid_definition}"
+                )
+                assert connection.exec_driver_sql(inventory_sql).all()
+            transaction.rollback()
+    finally:
+        engine.dispose()
 
 
 class PinnedContainerPostgresRunner:

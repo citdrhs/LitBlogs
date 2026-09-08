@@ -6,7 +6,7 @@ export const FAQ_STILLS = Object.freeze({
     captureAsset: "captures/signup-filled.jpg",
     eyebrow: "Student guide 01",
     title: "Create your LitBlog account",
-    description: "Use your school details, choose Student, then submit the completed form.",
+    description: "Use your school details, choose Student, then verify the email LitBlog sends you.",
     callouts: [
       { number: 1, title: "School details", detail: "Enter your name and school email.", x: 1018, y: 226 },
       { number: 2, title: "Strong password", detail: "Confirm the same secure password.", x: 1018, y: 392 },
@@ -17,7 +17,7 @@ export const FAQ_STILLS = Object.freeze({
     captureAsset: "captures/signin-filled.jpg",
     eyebrow: "Student guide 02",
     title: "Sign in with the same credentials",
-    description: "Return to Sign In after registration and use the same school email and password.",
+    description: "After email verification, return to Sign In and use the same school email and password.",
     callouts: [
       { number: 1, title: "Same email", detail: "Use the school email you registered.", x: 1018, y: 252 },
       { number: 2, title: "Same password", detail: "Your password remains masked on screen.", x: 1018, y: 418 },

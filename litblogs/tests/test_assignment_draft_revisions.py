@@ -32,6 +32,7 @@ def assignment_student(client):
             last_name="Student",
             role=models.UserRole.STUDENT,
             is_admin=False,
+            email_verified_at=datetime.now(timezone.utc),
         )
         db.add(student)
         db.flush()

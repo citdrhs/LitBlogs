@@ -47,7 +47,9 @@ let SignIn;
 let SignUp;
 
 beforeAll(async () => {
+  vi.stubEnv("VITE_GOOGLE_OAUTH_ENABLED", "true");
   vi.stubEnv("VITE_GOOGLE_CLIENT_ID", "987654321.apps.googleusercontent.com");
+  vi.stubEnv("VITE_MICROSOFT_OAUTH_ENABLED", "true");
   vi.stubEnv("VITE_MICROSOFT_CLIENT_ID", "2f1c67a1-91e2-46a3-941f-b88e31763e51");
   vi.stubEnv("VITE_MICROSOFT_TENANT_ID", "871bd3e0-2dc0-4a40-9b07-9d03068c2364");
   ({ default: SignIn } = await import("./Sign-in.jsx"));

@@ -11,6 +11,7 @@ import {
   validateManifest,
   validateTranscriptParity,
   validateVtt,
+  validateVttParity,
 } from "../src/validation.js";
 import {
   appDirectory,
@@ -26,6 +27,7 @@ const transcript = manifestToPlainTranscript(SCENES, VIDEO);
 const frontendModule = manifestToFrontendModule(SCENES, VIDEO);
 const accessibilityIssues = [
   ...validateVtt(vtt, VIDEO.durationInSeconds),
+  ...validateVttParity(vtt, SCENES, VIDEO),
   ...validateTranscriptParity(transcript, SCENES),
 ];
 if (accessibilityIssues.length) throw new Error(accessibilityIssues.join("\n"));
