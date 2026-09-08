@@ -168,7 +168,10 @@ def _create_admin(
             )
             try:
                 password_hash = password_hasher(password)
-                verified_at = _utc_naive(now_fn())
+                now = now_fn()
+                if now.tzinfo is None:
+                    raise ValueError("clock returned a naive timestamp")
+                verified_at = now.astimezone(UTC)
             except Exception:
                 raise _BootstrapFailure("creation_failed") from None
             connection.execute(
