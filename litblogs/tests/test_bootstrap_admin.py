@@ -404,12 +404,29 @@ def test_success_creates_only_one_active_verified_admin_with_normalized_identity
         "role": models.UserRole.ADMIN,
         "is_admin": True,
         "disabled_at": None,
-        "email_verified_at": datetime(2026, 9, 4, 16, 30, 45, 123456),
+        "email_verified_at": datetime(2026, 9, 4, 16, 30, 45, 123456, tzinfo=timezone.utc),
     }
+    assert engine.inserts[0]["email_verified_at"].tzinfo is timezone.utc
     all_sql = "\n".join(event[1] for event in engine.events if event[0] == "sql")
     assert "email_verifications" not in all_sql
     assert "browser_sessions" not in all_sql
     assert "password_resets" not in all_sql
+
+
+def test_naive_verification_timestamp_rolls_back_without_creating_admin():
+    bootstrap_admin = import_module("bootstrap_admin")
+
+    result, stdout, stderr, engine = _run_bootstrap(
+        bootstrap_admin,
+        now_fn=lambda: datetime(2026, 9, 4, 12, 0),
+    )
+
+    assert result == 1
+    assert stdout == ""
+    assert stderr == "bootstrap-admin: failed code=creation_failed\n"
+    assert engine.inserts == []
+    assert engine.commits == 0
+    assert engine.rollbacks == 1
 
 
 @pytest.mark.parametrize(
