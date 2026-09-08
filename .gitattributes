@@ -1,2 +1,3 @@
 # Linux deployment helpers must remain executable shell source on Windows too.
 deploy/scripts/*.sh text eol=lf
+deploy/container/*.sh text eol=lf

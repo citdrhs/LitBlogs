@@ -1,0 +1,293 @@
+# Production requires an exclusive HTTPS hostname routed to web:5000 at /.
+# See deploy/CIT_DEPLOY.md. Runtime secrets are never build arguments.
+x-email-environment: &email-environment
+  LITBLOGS_ORIGIN: ${LITBLOGS_ORIGIN:?Set the exclusive HTTPS origin}
+  LITBLOGS_DB_PASSWORD: ${LITBLOGS_DB_PASSWORD:?Set the runtime database password}
+  EMAIL_HOST: ${EMAIL_HOST:?Set the school SMTP host}
+  EMAIL_PORT: ${EMAIL_PORT:-587}
+  EMAIL_USERNAME: ${EMAIL_USERNAME:?Set the SMTP username}
+  EMAIL_PASSWORD: ${EMAIL_PASSWORD:?Set the SMTP password}
+  EMAIL_FROM: ${EMAIL_FROM:?Set the sender address}
+
+x-web-environment: &web-environment
+  <<: *email-environment
+  SECRET_KEY: ${SECRET_KEY:?Set a random signing key}
+  TEACHER_INVITE_HMAC_KEY: ${TEACHER_INVITE_HMAC_KEY:?Set a different random invitation key}
+  ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS:?Set the school email domains}
+  UPLOAD_LEGACY_IMPORT_COMPLETE: ${UPLOAD_LEGACY_IMPORT_COMPLETE:-false}
+  UPLOAD_BACKUP_RESTORE_VERIFIED: ${UPLOAD_BACKUP_RESTORE_VERIFIED:-false}
+  GOOGLE_OAUTH_ENABLED: ${GOOGLE_OAUTH_ENABLED:-false}
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+
+x-app: &app
+  image: litblogs-app:${LITBLOGS_IMAGE_TAG:-local}
+  build:
+    context: .
+    dockerfile: Dockerfile
+  user: "10001:10001"
+  read_only: true
+  init: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: [/tmp:rw,noexec,nosuid,size=256m,mode=1777]
+  restart: unless-stopped
+  stop_grace_period: 30s
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  web:
+    image: nginx:stable-trixie@sha256:d5792f71a9496b833bc08ea834a758c46e2b6a6306c10f4be926f38a656cdc1c
+    user: "101:101"
+    read_only: true
+    restart: unless-stopped
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:rw,noexec,nosuid,size=512m,mode=1777]
+    entrypoint: [nginx, -g, "daemon off;"]
+    command: []
+    ports:
+      - "127.0.0.1:${LITBLOGS_HTTP_PORT:-5000}:5000"
+    networks: [edge]
+    volumes:
+      - ./deploy/container/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --max-time, "5", http://127.0.0.1:5000/container-gateway-health]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  app:
+    <<: *app
+    environment: *web-environment
+    networks: [edge, database, scanning]
+    volumes:
+      - uploads:/var/lib/litblogs/uploads
+      - postgres-ca:/etc/litblogs:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      clamav:
+        condition: service_healthy
+
+  initialize:
+    <<: *app
+    user: "0:0"
+    restart: "no"
+    network_mode: none
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    entrypoint: [python, /opt/litblogs/deploy/container/initialize.py]
+    command: []
+    healthcheck:
+      disable: true
+    volumes:
+      - uploads:/var/lib/litblogs/uploads
+      - postgres-tls:/var/lib/litblogs/postgres-tls
+      - postgres-ca:/etc/litblogs
+
+  postgres:
+    image: postgres:17-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0
+    restart: unless-stopped
+    stop_grace_period: 60s
+    security_opt: [no-new-privileges:true]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: litblogs
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set the database administrator password}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=peer
+      LITBLOGS_DB_PASSWORD: ${LITBLOGS_DB_PASSWORD:?Set the runtime database password}
+      LITBLOGS_MIGRATOR_PASSWORD: ${LITBLOGS_MIGRATOR_PASSWORD:?Set the migration password}
+      LITBLOGS_ACCOUNT_OPERATOR_PASSWORD: ${LITBLOGS_ACCOUNT_OPERATOR_PASSWORD:?Set the account operator password}
+      LITBLOGS_INVITATION_OPERATOR_PASSWORD: ${LITBLOGS_INVITATION_OPERATOR_PASSWORD:?Set the invitation operator password}
+      LITBLOGS_BACKUP_PASSWORD: ${LITBLOGS_BACKUP_PASSWORD:?Set the backup password}
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/var/lib/litblogs/postgres-tls/server.crt
+      - -c
+      - ssl_key_file=/var/lib/litblogs/postgres-tls/server.key
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+      - -c
+      - password_encryption=scram-sha-256
+      - -c
+      - log_statement=none
+      - -c
+      - log_min_error_statement=panic
+      - -c
+      - log_parameter_max_length_on_error=0
+    networks:
+      database:
+        aliases: [postgres.internal]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - postgres-tls:/var/lib/litblogs/postgres-tls:ro
+      - ./deploy/container/postgres-init.sh:/docker-entrypoint-initdb.d/10-litblogs.sh:ro
+      - ./deploy/container/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    depends_on:
+      initialize:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U postgres -d litblogs -h 127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  migrate:
+    <<: *app
+    restart: "no"
+    entrypoint: [python, /opt/litblogs/deploy/container/migrate.py]
+    command: []
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set the database administrator password}
+      LITBLOGS_MIGRATOR_PASSWORD: ${LITBLOGS_MIGRATOR_PASSWORD:?Set the migration password}
+    healthcheck:
+      disable: true
+    networks: [database]
+    volumes:
+      - postgres-ca:/etc/litblogs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  clamav:
+    image: clamav/clamav:stable@sha256:1fdfd24c6f0a0fb60788481487459a6d4eda8a9b448641594e04db8410d34422
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      CLAMAV_NO_MILTERD: "true"
+      CLAMD_STARTUP_TIMEOUT: "1800"
+      CLAMD_CONF_StreamMaxLength: 110M
+      CLAMD_CONF_MaxFileSize: 100M
+      CLAMD_CONF_MaxScanSize: 200M
+    networks: [scanner-updates, scanning]
+    volumes:
+      - clamav-data:/var/lib/clamav
+    healthcheck:
+      test: [CMD, clamdcheck.sh]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+
+  email:
+    <<: *app
+    command: [email]
+    environment: *email-environment
+    networks: [edge, database]
+    volumes:
+      - postgres-ca:/etc/litblogs:ro
+    healthcheck:
+      test: [CMD, python, /opt/litblogs/deploy/container/healthcheck.py, worker]
+      interval: 30s
+      timeout: 5s
+      start_period: 300s
+      retries: 3
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  reconcile:
+    <<: *app
+    command: [reconcile]
+    environment: *web-environment
+    networks: [database, scanning]
+    volumes:
+      - uploads:/var/lib/litblogs/uploads
+      - postgres-ca:/etc/litblogs:ro
+    healthcheck:
+      test: [CMD, python, /opt/litblogs/deploy/container/healthcheck.py, worker]
+      interval: 60s
+      timeout: 5s
+      start_period: 300s
+      retries: 3
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      clamav:
+        condition: service_healthy
+
+  bootstrap-admin:
+    <<: *app
+    profiles: [operators]
+    restart: "no"
+    entrypoint: [python, /opt/litblogs/deploy/container/container_operator.py, bootstrap-admin]
+    command: []
+    environment: *web-environment
+    networks: [database]
+    stdin_open: true
+    tty: true
+    healthcheck:
+      disable: true
+    volumes:
+      - uploads:/var/lib/litblogs/uploads
+      - postgres-ca:/etc/litblogs:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  invitation:
+    <<: *app
+    profiles: [operators]
+    restart: "no"
+    entrypoint: [python, /opt/litblogs/deploy/container/container_operator.py, invitation]
+    command: []
+    environment:
+      LITBLOGS_INVITATION_OPERATOR_PASSWORD: ${LITBLOGS_INVITATION_OPERATOR_PASSWORD:?Set the invitation operator password}
+      TEACHER_INVITE_HMAC_KEY: ${TEACHER_INVITE_HMAC_KEY:?Set the invitation key}
+      ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS:?Set school domains}
+    networks: [database]
+    stdin_open: true
+    tty: true
+    healthcheck:
+      disable: true
+    volumes:
+      - postgres-ca:/etc/litblogs:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  account:
+    <<: *app
+    profiles: [operators]
+    restart: "no"
+    entrypoint: [python, /opt/litblogs/deploy/container/container_operator.py, account]
+    command: []
+    environment:
+      LITBLOGS_ACCOUNT_OPERATOR_PASSWORD: ${LITBLOGS_ACCOUNT_OPERATOR_PASSWORD:?Set the account operator password}
+      TEACHER_INVITE_HMAC_KEY: ${TEACHER_INVITE_HMAC_KEY:?Set the invitation key}
+      ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS:?Set school domains}
+    networks: [database]
+    stdin_open: true
+    tty: true
+    healthcheck:
+      disable: true
+    volumes:
+      - postgres-ca:/etc/litblogs:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-data:
+  uploads:
+  postgres-tls:
+  postgres-ca:
+  clamav-data:
+
+networks:
+  edge:
+  database:
+    internal: true
+  scanning:
+    internal: true
+  scanner-updates:

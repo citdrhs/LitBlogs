@@ -2,6 +2,10 @@
 
 These files are reviewed examples for a school-managed Linux server. Replace the example hostname and certificate paths in a reviewed site-specific copy; do not commit real credentials, student data, private keys, or internal hostnames.
 
+For CIT Deploy's Custom Docker option, use [CIT_DEPLOY.md](CIT_DEPLOY.md). Its
+Compose stack includes the app, gateway, PostgreSQL, scanner, and workers; it
+still requires an exclusive HTTPS hostname, SMTP, and verified backups.
+
 For a new Ubuntu 24.04.4 machine with no LitBlogs data to migrate, start with
 [`FRESH_SERVER_SETUP.md`](FRESH_SERVER_SETUP.md). Its eight short paste stages
 call guarded, release-local helpers while preserving this document's reviewed
