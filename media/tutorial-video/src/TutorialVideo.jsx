@@ -12,6 +12,8 @@ import {
 } from "remotion";
 
 import { SCENES, VIDEO } from "./manifest.js";
+import { clickPulseAtFrame, expandClickHolds } from "./animation.js";
+import { formatDurationLabel, formatDurationWords } from "./exporters.js";
 
 const interpolateTrack = (frame, keyframes, property, fallback = 0) => {
   const usable = keyframes.filter((keyframe) => Number.isFinite(keyframe[property]));
@@ -84,19 +86,13 @@ const BrowserCapture = ({ scene, frame }) => {
 };
 
 const AnimatedCursor = ({ scene, frame }) => {
-  const x = interpolateTrack(frame, scene.cursor, "x");
-  const y = interpolateTrack(frame, scene.cursor, "y");
-  const nearest = [...scene.cursor].reverse().find((keyframe) => keyframe.frame <= frame)
-    ?? scene.cursor[0];
+  const cursorTrack = expandClickHolds(scene.cursor);
+  const x = interpolateTrack(frame, cursorTrack, "x");
+  const y = interpolateTrack(frame, cursorTrack, "y");
+  const nearest = [...cursorTrack].reverse().find((keyframe) => keyframe.frame <= frame)
+    ?? cursorTrack[0];
   if (!nearest.visible) return null;
-  const clickFrame = scene.cursor.find((keyframe) => keyframe.click
-    && Math.abs(frame - keyframe.frame) <= 12)?.frame;
-  const pulse = clickFrame === undefined
-    ? 0
-    : interpolate(Math.abs(frame - clickFrame), [0, 12], [1, 0], {
-      extrapolateLeft: "clamp",
-      extrapolateRight: "clamp",
-    });
+  const pulse = clickPulseAtFrame(frame, scene.cursor);
   return (
     <div className="tutorial-cursor" style={{ transform: `translate(${x}px, ${y}px)` }}>
       <span className="tutorial-cursor__pulse" style={{ opacity: pulse, transform: `scale(${1 + pulse})` }} />
@@ -145,7 +141,7 @@ const BrandedOverlay = ({ scene, frame }) => {
     return (
       <div className="tutorial-intro" style={{ opacity: enter, transform: `translateY(${(1 - enter) * 28}px)` }}>
         <Img src={staticFile("brand/logo.png")} />
-        <p>Student walkthrough · 1 minute 57 seconds</p>
+        <p>Student walkthrough · {formatDurationWords(VIDEO)}</p>
         <h1>Create. Join. Publish.</h1>
       </div>
     );
@@ -168,14 +164,8 @@ const BrandedOverlay = ({ scene, frame }) => {
 
 const TutorialScene = ({ scene, index }) => {
   const frame = useCurrentFrame();
-  const opacity = interpolate(
-    frame,
-    [0, 10, scene.durationInFrames - 10, scene.durationInFrames - 1],
-    [index === 0 ? 1 : 0, 1, 1, index === SCENES.length - 1 ? 1 : 0],
-    { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
-  );
   return (
-    <AbsoluteFill className={`tutorial-scene tutorial-scene--${scene.id}`} style={{ opacity }}>
+    <AbsoluteFill className={`tutorial-scene tutorial-scene--${scene.id}`}>
       <div className="tutorial-grid" />
       <BrowserCapture scene={scene} frame={frame} />
       <header className="tutorial-scene__header">
@@ -230,7 +220,7 @@ export const TutorialPoster = () => (
       <Img src={staticFile("brand/logo.png")} />
       <p>LitBlog student tutorial</p>
       <h1>Create. Join. Publish.</h1>
-      <span>Learn the complete workflow in 1:57</span>
+      <span>Learn the complete workflow in {formatDurationLabel(VIDEO)}</span>
     </div>
   </AbsoluteFill>
 );

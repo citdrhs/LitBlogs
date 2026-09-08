@@ -10,6 +10,10 @@ MAX_RICH_TEXT_LENGTH = 100_000
 MAX_SHORT_TEXT_LENGTH = 10_000
 MAX_DESCRIPTION_LENGTH = 50_000
 MAX_ASSIGNMENT_CONTENT_LENGTH = 1_000_000
+MIN_PASSWORD_CHARACTERS = 15
+PASSWORD_SPECIAL_CHARACTERS = frozenset(
+    "!@#$%^&*()_+-=[]{};':\"\\|,.<>/?"
+)
 
 
 def validate_password_request_bytes(value: str) -> str:
@@ -17,6 +21,25 @@ def validate_password_request_bytes(value: str) -> str:
         raise ValueError(
             f"password must not exceed {MAX_PASSWORD_BYTES} UTF-8 bytes"
         )
+    return value
+
+
+def validate_new_password_policy(value: str) -> str:
+    """Apply the password contract shown by the signup UI."""
+
+    validate_password_request_bytes(value)
+    if len(value) < MIN_PASSWORD_CHARACTERS:
+        raise ValueError(
+            f"password must contain at least {MIN_PASSWORD_CHARACTERS} characters"
+        )
+    if not any(character.isascii() and character.isupper() for character in value):
+        raise ValueError("password must contain at least one uppercase letter")
+    if not any(character.isascii() and character.islower() for character in value):
+        raise ValueError("password must contain at least one lowercase letter")
+    if not any(character.isascii() and character.isdigit() for character in value):
+        raise ValueError("password must contain at least one number")
+    if not any(character in PASSWORD_SPECIAL_CHARACTERS for character in value):
+        raise ValueError("password must contain at least one special character")
     return value
 
 
@@ -101,7 +124,7 @@ class UserCreate(StrictRequest):
     @field_validator("password")
     @classmethod
     def validate_password_size(cls, value: str) -> str:
-        return validate_password_request_bytes(value)
+        return validate_new_password_policy(value)
 
     @field_validator("role")
     @classmethod
@@ -161,10 +184,15 @@ class ChangePasswordRequest(StrictRequest):
     current_password: str = Field(min_length=1, max_length=1_024)
     new_password: str = Field(min_length=15, max_length=1_024)
 
-    @field_validator("current_password", "new_password")
+    @field_validator("current_password")
     @classmethod
-    def validate_password_sizes(cls, value: str) -> str:
+    def validate_current_password_size(cls, value: str) -> str:
         return validate_password_request_bytes(value)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, value: str) -> str:
+        return validate_new_password_policy(value)
 
 
 class UserStatusUpdate(StrictRequest):
@@ -295,7 +323,15 @@ class TeacherCreate(StrictRequest):
     @field_validator("password")
     @classmethod
     def validate_password_size(cls, value: str) -> str:
-        return validate_password_request_bytes(value)
+        return validate_new_password_policy(value)
+
+
+class ResendVerificationRequest(StrictRequest):
+    email: str = Field(min_length=1, max_length=100)
+
+
+class VerifyEmailRequest(StrictRequest):
+    token: str = Field(min_length=1, max_length=128)
 
 class Teacher(TeacherBase):
     model_config = ConfigDict(from_attributes=True)

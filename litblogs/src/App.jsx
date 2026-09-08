@@ -12,6 +12,7 @@ import Settings from "./Settings";
 import AssignmentSubmissions from "./AssignmentSubmissions";
 import ForgotPassword from "./ForgotPassword";
 import ResetPassword from "./ResetPassword";
+import VerifyEmail from "./VerifyEmail";
 import StudentDetails from "./components/StudentDetails";
 import ProtectedRoute from "./components/ProtectedRoute";
 import PrivacyPolicy from './PrivacyPolicy';
@@ -80,6 +81,7 @@ function App() {
         <Route path="/settings" element={<ProtectedRoute><Settings onDarkModeChange={setDarkMode} /></ProtectedRoute>} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/verify-email" element={<VerifyEmail />} />
         <Route path="/privacy-policy" element={<PrivacyPolicy />} />
         <Route path="/terms" element={<TermsOfService />} />
       </Routes>

@@ -1,4 +1,9 @@
 import { capturePasswordResetTokenAtBootstrap } from "./utils/resetToken";
+import {
+  captureEmailVerificationTokenAtBootstrap,
+  clearBootstrappedEmailVerificationToken,
+} from "./utils/verificationToken";
 
 capturePasswordResetTokenAtBootstrap();
-void import("./main.jsx");
+captureEmailVerificationTokenAtBootstrap();
+void import("./main.jsx").catch(clearBootstrappedEmailVerificationToken);

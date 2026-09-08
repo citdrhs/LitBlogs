@@ -31,6 +31,15 @@ const openPanel = (question) => {
 };
 
 describe("FAQ student guide", () => {
+  it("describes the complete account-to-password-reset guide in its introduction", () => {
+    renderFAQ();
+
+    expect(screen.getByText(
+      "Seven quick guides covering account creation, class participation, publishing, and password recovery.",
+    )).toBeInTheDocument();
+    expect(screen.queryByText(/from your first sign-in to a published post/i)).not.toBeInTheDocument();
+  });
+
   it("renders exactly seven student topics with concise numbered steps", () => {
     renderFAQ();
 
@@ -132,8 +141,12 @@ describe("FAQ student guide", () => {
     expect(within(panel).getByRole("link", { name: "Create a student account" }))
       .toHaveAttribute("href", "/sign-up");
     expect(panel).toHaveTextContent(/Choose Student/);
-    expect(panel).toHaveTextContent(/Google or Microsoft account/);
-    expect(panel).toHaveTextContent(/school enables email registration/);
+    expect(panel).toHaveTextContent(/school email/);
+    expect(panel).toHaveTextContent(/strong password/);
+    expect(panel).toHaveTextContent(/Open the verification email/);
+    expect(panel).toHaveTextContent(/Verify Email/);
+    expect(panel).toHaveTextContent(/before signing in/);
+    expect(panel).not.toHaveTextContent(/Google|Microsoft/);
     expect(within(panel).getByRole("link", { name: "sign in" }))
       .toHaveAttribute("href", "/sign-in");
   });
@@ -145,7 +158,9 @@ describe("FAQ student guide", () => {
 
     expect(within(panel).getByRole("link", { name: "LitBlog sign-in page" }))
       .toHaveAttribute("href", "/sign-in");
-    expect(panel).toHaveTextContent(/same Google, Microsoft, or email-and-password method/);
+    expect(panel).toHaveTextContent(/verify your school email before signing in/i);
+    expect(panel).toHaveTextContent(/same school email and password/i);
+    expect(panel).not.toHaveTextContent(/Google|Microsoft/);
     expect(within(panel).getByRole("link", { name: "Student Hub" }))
       .toHaveAttribute("href", "/student-hub");
   });
@@ -227,7 +242,8 @@ describe("FAQ student guide", () => {
     expect(panel).toHaveTextContent(/select Send Reset Instructions/);
     expect(panel).toHaveTextContent(/Open the reset link sent to your email/);
     expect(panel).toHaveTextContent(/choose a new password, confirm it, and select Reset Password/);
-    expect(panel).toHaveTextContent(/Google or Microsoft/);
+    expect(panel).toHaveTextContent(/school email and your new password/);
+    expect(panel).not.toHaveTextContent(/Google|Microsoft/);
   });
 
   it("uses accurate app routes and renders four distinct guided screenshots by default", () => {

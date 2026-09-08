@@ -26,6 +26,7 @@ def main() -> int:
                 "--config",
                 "litblogs/pyproject.toml",
                 "deploy/scripts",
+                "deploy/container",
             ],
             REPOSITORY_ROOT,
         ),

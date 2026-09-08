@@ -4,6 +4,7 @@ import json
 import os
 import secrets
 import stat
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -52,6 +53,7 @@ def main() -> None:
                     last_name="Journey",
                     role=role,
                     is_admin=role == models.UserRole.ADMIN,
+                    email_verified_at=datetime.now(UTC),
                 )
                 db.add(user)
                 users[name] = user

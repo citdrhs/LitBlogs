@@ -103,7 +103,9 @@ class Settings(BaseSettings):
     allowed_email_domains: tuple[str, ...] = ()
     microsoft_allowed_tenant_ids: tuple[str, ...] = ()
 
+    google_oauth_enabled: bool = False
     google_client_id: str | None = None
+    microsoft_oauth_enabled: bool = False
     microsoft_client_id: str | None = None
     microsoft_tenant_id: str | None = None
     oauth_http_timeout_seconds: float = Field(default=5.0, ge=0.5, le=10.0)
@@ -123,8 +125,6 @@ class Settings(BaseSettings):
     db_lock_timeout_ms: int = Field(default=5_000, ge=500, le=30_000)
 
     teacher_invite_hmac_key: SecretStr | None = None
-    admin_access_code: SecretStr | None = None
-    admin_code: SecretStr | None = None
     local_password_registration_enabled: bool = False
 
     reset_database_on_startup: bool = False
@@ -163,18 +163,21 @@ class Settings(BaseSettings):
             raise ValueError(f"APP_ENV must be one of: {allowed}")
         return normalized
 
-    @field_validator("local_password_registration_enabled", mode="before")
+    @field_validator(
+        "local_password_registration_enabled",
+        "google_oauth_enabled",
+        "microsoft_oauth_enabled",
+        mode="before",
+    )
     @classmethod
-    def validate_local_password_registration_flag(cls, value: Any) -> bool:
+    def validate_authentication_flag(cls, value: Any) -> bool:
         if isinstance(value, bool):
             return value
         if value == "true":
             return True
         if value == "false":
             return False
-        raise ValueError(
-            "LOCAL_PASSWORD_REGISTRATION_ENABLED must be literal true or false"
-        )
+        raise ValueError("authentication flags must be literal true or false")
 
     @field_validator("cors_allowed_origins", mode="before")
     @classmethod
@@ -257,14 +260,9 @@ class Settings(BaseSettings):
             "CORS_ALLOWED_ORIGINS": self.cors_allowed_origins,
             "ALLOWED_HOSTS": self.allowed_hosts,
             "ALLOWED_EMAIL_DOMAINS": self.allowed_email_domains,
-            "GOOGLE_CLIENT_ID": self.google_client_id,
-            "MICROSOFT_CLIENT_ID": self.microsoft_client_id,
-            "MICROSOFT_TENANT_ID": self.microsoft_tenant_id,
-            "MICROSOFT_ALLOWED_TENANT_IDS": self.microsoft_allowed_tenant_ids,
             "SESSION_COOKIE_NAME": self.session_cookie_name,
             "CSRF_COOKIE_NAME": self.csrf_cookie_name,
             "TEACHER_INVITE_HMAC_KEY": self.teacher_invite_hmac_key,
-            "ADMIN_ACCESS_CODE": self.admin_access_code,
             "EMAIL_HOST": self.email_host,
             "EMAIL_USERNAME": self.email_username,
             "EMAIL_PASSWORD": self.email_password,
@@ -273,9 +271,29 @@ class Settings(BaseSettings):
             "UPLOAD_SCANNER_HOST": self.upload_scanner_host,
             "UPLOAD_SCANNER_ALLOWED_HOSTS": self.upload_scanner_allowed_hosts,
         }
+        if self.google_oauth_enabled:
+            required["GOOGLE_CLIENT_ID"] = self.google_client_id
+        if self.microsoft_oauth_enabled:
+            required.update(
+                {
+                    "MICROSOFT_CLIENT_ID": self.microsoft_client_id,
+                    "MICROSOFT_TENANT_ID": self.microsoft_tenant_id,
+                    "MICROSOFT_ALLOWED_TENANT_IDS": self.microsoft_allowed_tenant_ids,
+                }
+            )
         missing = [name for name, value in required.items() if not value]
         if missing:
             raise ValueError(f"Missing required production setting: {missing[0]}")
+        if not any(
+            (
+                self.local_password_registration_enabled,
+                self.google_oauth_enabled,
+                self.microsoft_oauth_enabled,
+            )
+        ):
+            raise ValueError(
+                "Production must enable at least one signup method"
+            )
         database_scheme = urlsplit(self.database_url or "").scheme.lower()
         if database_scheme.split("+", 1)[0] != "postgresql":
             raise ValueError("DATABASE_URL must use PostgreSQL in production")
@@ -283,34 +301,40 @@ class Settings(BaseSettings):
         placeholder_checked = {
             "JWT_ISSUER": self.jwt_issuer,
             "JWT_AUDIENCE": self.jwt_audience,
-            "GOOGLE_CLIENT_ID": self.google_client_id,
-            "MICROSOFT_CLIENT_ID": self.microsoft_client_id,
-            "MICROSOFT_TENANT_ID": self.microsoft_tenant_id,
             "SESSION_COOKIE_NAME": self.session_cookie_name,
             "CSRF_COOKIE_NAME": self.csrf_cookie_name,
             "TEACHER_INVITE_HMAC_KEY": _reveal_secret(self.teacher_invite_hmac_key),
-            "ADMIN_ACCESS_CODE": _reveal_secret(self.admin_access_code),
             "EMAIL_PASSWORD": _reveal_secret(self.email_password),
         }
-        if self.admin_code is not None:
-            placeholder_checked["ADMIN_CODE"] = _reveal_secret(self.admin_code)
+        if self.google_oauth_enabled:
+            placeholder_checked["GOOGLE_CLIENT_ID"] = self.google_client_id
+        if self.microsoft_oauth_enabled:
+            placeholder_checked.update(
+                {
+                    "MICROSOFT_CLIENT_ID": self.microsoft_client_id,
+                    "MICROSOFT_TENANT_ID": self.microsoft_tenant_id,
+                }
+            )
         for name, value in placeholder_checked.items():
             if any(fragment in str(value).lower() for fragment in _PLACEHOLDER_FRAGMENTS):
                 raise ValueError(f"{name} must not be a placeholder in production")
 
         minimum_lengths = {
-            "GOOGLE_CLIENT_ID": (self.google_client_id, 8),
-            "MICROSOFT_CLIENT_ID": (self.microsoft_client_id, 8),
-            "MICROSOFT_TENANT_ID": (self.microsoft_tenant_id, 8),
             "TEACHER_INVITE_HMAC_KEY": (
                 _reveal_secret(self.teacher_invite_hmac_key),
                 SECRET_KEY_MIN_BYTES,
             ),
-            "ADMIN_ACCESS_CODE": (_reveal_secret(self.admin_access_code), 16),
             "EMAIL_PASSWORD": (_reveal_secret(self.email_password), 16),
         }
-        if self.admin_code is not None:
-            minimum_lengths["ADMIN_CODE"] = (_reveal_secret(self.admin_code), 16)
+        if self.google_oauth_enabled:
+            minimum_lengths["GOOGLE_CLIENT_ID"] = (self.google_client_id, 8)
+        if self.microsoft_oauth_enabled:
+            minimum_lengths.update(
+                {
+                    "MICROSOFT_CLIENT_ID": (self.microsoft_client_id, 8),
+                    "MICROSOFT_TENANT_ID": (self.microsoft_tenant_id, 8),
+                }
+            )
         for name, (value, minimum_bytes) in minimum_lengths.items():
             if len(str(value).encode("utf-8")) < minimum_bytes:
                 raise ValueError(f"{name} must contain at least {minimum_bytes} bytes in production")
@@ -326,18 +350,33 @@ class Settings(BaseSettings):
         ):
             raise ValueError("TEACHER_INVITE_HMAC_KEY must differ from SECRET_KEY")
 
-        if not _GOOGLE_CLIENT_ID_PATTERN.fullmatch(self.google_client_id or ""):
-            raise ValueError("GOOGLE_CLIENT_ID must be a valid Google OAuth client ID in production")
-        if not _is_uuid(self.microsoft_client_id):
-            raise ValueError("MICROSOFT_CLIENT_ID must be a UUID in production")
-        if not _is_uuid(self.microsoft_tenant_id):
-            raise ValueError("MICROSOFT_TENANT_ID must be a fixed tenant UUID in production")
-        if any(not _is_uuid(tenant_id) for tenant_id in self.microsoft_allowed_tenant_ids):
-            raise ValueError("MICROSOFT_ALLOWED_TENANT_IDS must contain only tenant UUIDs in production")
-        if self.microsoft_tenant_id.lower() not in self.microsoft_allowed_tenant_ids:
+        if self.google_oauth_enabled and not _GOOGLE_CLIENT_ID_PATTERN.fullmatch(
+            self.google_client_id or ""
+        ):
             raise ValueError(
-                "MICROSOFT_ALLOWED_TENANT_IDS must include MICROSOFT_TENANT_ID in production"
+                "GOOGLE_CLIENT_ID must be a valid Google OAuth client ID in production"
             )
+        if self.microsoft_oauth_enabled:
+            if not _is_uuid(self.microsoft_client_id):
+                raise ValueError("MICROSOFT_CLIENT_ID must be a UUID in production")
+            if not _is_uuid(self.microsoft_tenant_id):
+                raise ValueError(
+                    "MICROSOFT_TENANT_ID must be a fixed tenant UUID in production"
+                )
+            if any(
+                not _is_uuid(tenant_id)
+                for tenant_id in self.microsoft_allowed_tenant_ids
+            ):
+                raise ValueError(
+                    "MICROSOFT_ALLOWED_TENANT_IDS must contain only tenant UUIDs in production"
+                )
+            if (
+                (self.microsoft_tenant_id or "").lower()
+                not in self.microsoft_allowed_tenant_ids
+            ):
+                raise ValueError(
+                    "MICROSOFT_ALLOWED_TENANT_IDS must include MICROSOFT_TENANT_ID in production"
+                )
         if any(not _is_email_domain(domain) for domain in self.allowed_email_domains):
             raise ValueError("ALLOWED_EMAIL_DOMAINS must contain valid DNS domains in production")
         if any(not _is_email_domain(host) for host in self.allowed_hosts):
@@ -390,10 +429,6 @@ class Settings(BaseSettings):
             raise ValueError("ALLOWED_HOSTS must include the FRONTEND_URL hostname")
         if not self.password_reset_worker_enabled:
             raise ValueError("PASSWORD_RESET_WORKER_ENABLED must be true in production")
-        if self.local_password_registration_enabled:
-            raise ValueError(
-                "LOCAL_PASSWORD_REGISTRATION_ENABLED must be false in production"
-            )
         if not self.upload_scanner_required:
             raise ValueError("UPLOAD_SCANNER_REQUIRED must be true in production")
         if not _is_canonical_production_upload_root(self.upload_root):
@@ -402,13 +437,21 @@ class Settings(BaseSettings):
             )
         if not _has_valid_upload_root_custody(self.upload_root):
             raise ValueError("UPLOAD_ROOT custody validation failed")
-        if not self.upload_registry_schema_ready:
-            raise ValueError("UPLOAD_REGISTRY_SCHEMA_READY must be explicitly confirmed")
-        if not self.upload_legacy_import_complete:
-            raise ValueError("UPLOAD_LEGACY_IMPORT_COMPLETE must be explicitly confirmed")
-        if not self.upload_backup_restore_verified:
-            raise ValueError("UPLOAD_BACKUP_RESTORE_VERIFIED must be explicitly confirmed")
         return self
+
+
+def require_production_runtime_readiness(settings: Settings) -> Settings:
+    if settings.app_env != "production":
+        return settings
+    required = {
+        "UPLOAD_REGISTRY_SCHEMA_READY": settings.upload_registry_schema_ready,
+        "UPLOAD_LEGACY_IMPORT_COMPLETE": settings.upload_legacy_import_complete,
+        "UPLOAD_BACKUP_RESTORE_VERIFIED": settings.upload_backup_restore_verified,
+    }
+    missing = [name for name, ready in required.items() if not ready]
+    if missing:
+        raise ValueError(f"Missing production readiness attestation: {missing[0]}")
+    return settings
 
 
 def _is_https_url(value: str | None) -> bool:
@@ -662,7 +705,11 @@ def _selected_app_env(base_dir: Path) -> str:
     return normalized
 
 
-def load_settings(*, base_dir: Path | str = BASE_DIR) -> Settings:
+def load_settings(
+    *,
+    base_dir: Path | str = BASE_DIR,
+    enforce_runtime_readiness: bool = True,
+) -> Settings:
     resolved_base_dir = Path(base_dir).resolve()
     app_env = _selected_app_env(resolved_base_dir)
     env_files = tuple(
@@ -673,11 +720,14 @@ def load_settings(*, base_dir: Path | str = BASE_DIR) -> Settings:
         )
         if path.exists()
     )
-    return Settings(
+    settings = Settings(
         app_env=app_env,
         _env_file=env_files or None,
         _env_file_encoding="utf-8",
     )
+    if enforce_runtime_readiness:
+        return require_production_runtime_readiness(settings)
+    return settings
 
 
 @lru_cache(maxsize=1)

@@ -39,6 +39,7 @@ def authorization_scenario(client):
             first_name="Teacher",
             last_name="Alpha",
             role=models.UserRole.TEACHER,
+            email_verified_at=datetime.now(UTC),
         )
         teacher_b_user = models.User(
             username="teacher-b",
@@ -47,6 +48,7 @@ def authorization_scenario(client):
             first_name="Teacher",
             last_name="Beta",
             role=models.UserRole.TEACHER,
+            email_verified_at=datetime.now(UTC),
         )
         student_a = models.User(
             username="student-a",
@@ -55,6 +57,7 @@ def authorization_scenario(client):
             first_name="Student",
             last_name="Alpha",
             role=models.UserRole.STUDENT,
+            email_verified_at=datetime.now(UTC),
         )
         student_b = models.User(
             username="student-b",
@@ -63,6 +66,7 @@ def authorization_scenario(client):
             first_name="Student",
             last_name="Beta",
             role=models.UserRole.STUDENT,
+            email_verified_at=datetime.now(UTC),
         )
         admin = models.User(
             username="administrator",
@@ -72,6 +76,7 @@ def authorization_scenario(client):
             last_name="Admin",
             role=models.UserRole.ADMIN,
             is_admin=True,
+            email_verified_at=datetime.now(UTC),
         )
         db.add_all([teacher_a_user, teacher_b_user, student_a, student_b, admin])
         db.flush()
@@ -1230,7 +1235,7 @@ def test_password_reset_queue_is_concurrency_safe_and_delivers_one_usable_token(
         "/api/auth/reset-password",
         json={
             "token": raw_token,
-            "new_password": "a newly rotated password",
+            "new_password": "A-newly-rotated-password-1!",
         },
     )
     assert reset.status_code == 200
@@ -1256,7 +1261,10 @@ def test_password_reset_token_can_only_be_consumed_once_concurrently(
     main._dispatch_password_reset_emails_once()
     assert len(delivered) == 1
 
-    passwords = ["first concurrent password", "second concurrent password"]
+    passwords = [
+        "First-concurrent-password-1!",
+        "Second-concurrent-password-2!",
+    ]
     password_hash_barrier = threading.Barrier(2)
     real_hash_password = main.hash_password
 

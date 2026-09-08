@@ -307,6 +307,7 @@ def _user(db, user_id: int, role=models.UserRole.STUDENT):
         first_name="Test",
         last_name=str(user_id),
         role=role,
+        email_verified_at=datetime.now(UTC),
     )
     db.add(user)
     db.flush()
@@ -2174,7 +2175,7 @@ def test_production_schema_guard_accepts_the_exact_upload_registry_shape(monkeyp
         ("upload_backup_restore_verified", "UPLOAD_BACKUP_RESTORE_VERIFIED"),
     ),
 )
-def test_production_requires_explicit_upload_deployment_gates(
+def test_production_runtime_readiness_requires_explicit_upload_deployment_gates(
     setting_name,
     error_marker,
 ):
@@ -2185,8 +2186,13 @@ def test_production_requires_explicit_upload_deployment_gates(
         upload_backup_restore_verified=True,
     )
     data[setting_name] = False
-    with pytest.raises(ValidationError, match=error_marker):
-        Settings(**data)
+    settings = Settings(**data)
+
+    with pytest.raises(
+        ValueError,
+        match=f"Missing production readiness attestation: {error_marker}",
+    ):
+        config.require_production_runtime_readiness(settings)
 
 
 def test_upload_asset_semantic_migration_reference_is_explicitly_not_alembic_ready():

@@ -16,21 +16,21 @@ IDENTITY_MIGRATION_PATH = BACKEND_ROOT / "migrations" / "0003_add_identity_contr
 IDENTITY_RUNBOOK_PATH = BACKEND_ROOT / "migrations" / "README-identity-controls.md"
 
 REVIEWED_TIPTAP_RUNTIME_DEPENDENCIES = {
-    "@tiptap/core": "^3.30.3",
-    "@tiptap/extension-character-count": "^3.30.3",
-    "@tiptap/extension-color": "^3.30.3",
-    "@tiptap/extension-font-family": "^3.30.3",
-    "@tiptap/extension-highlight": "^3.30.3",
-    "@tiptap/extension-image": "^3.30.3",
-    "@tiptap/extension-link": "^3.30.3",
-    "@tiptap/extension-placeholder": "^3.30.3",
-    "@tiptap/extension-table": "^3.30.3",
-    "@tiptap/extension-text-align": "^3.30.3",
-    "@tiptap/extension-text-style": "^3.30.3",
-    "@tiptap/extension-underline": "^3.30.3",
-    "@tiptap/pm": "^3.30.3",
-    "@tiptap/react": "^3.30.3",
-    "@tiptap/starter-kit": "^3.30.3",
+    "@tiptap/core": "^3.30.6",
+    "@tiptap/extension-character-count": "^3.30.6",
+    "@tiptap/extension-color": "^3.30.6",
+    "@tiptap/extension-font-family": "^3.30.6",
+    "@tiptap/extension-highlight": "^3.30.6",
+    "@tiptap/extension-image": "^3.30.6",
+    "@tiptap/extension-link": "^3.30.6",
+    "@tiptap/extension-placeholder": "^3.30.6",
+    "@tiptap/extension-table": "^3.30.6",
+    "@tiptap/extension-text-align": "^3.30.6",
+    "@tiptap/extension-text-style": "^3.30.6",
+    "@tiptap/extension-underline": "^3.30.6",
+    "@tiptap/pm": "^3.30.6",
+    "@tiptap/react": "^3.30.6",
+    "@tiptap/starter-kit": "^3.30.6",
 }
 REVIEWED_PROSEMIRROR_PACKAGES = {
     "prosemirror-changeset",
@@ -134,7 +134,7 @@ def _validate_tiptap_policy(
     package.update(package_updates or {})
     locked_packages = {
         f"node_modules/{package_name}": {
-            "version": "3.30.3",
+            "version": "3.30.6",
             "license": "MIT",
         }
         for package_name in REVIEWED_TIPTAP_RUNTIME_DEPENDENCIES
@@ -173,6 +173,65 @@ def _validate_tiptap_policy(
     policy_validator.failures.clear()
     policy_validator.validate_tiptap_editor_policy()
     return policy_validator.failures
+
+
+def test_repository_policy_enforces_combined_auth_email_worker_boundary():
+    validator = VALIDATOR_PATH.read_text(encoding="utf-8")
+    service = (
+        REPOSITORY_ROOT
+        / "deploy"
+        / "systemd"
+        / "litblogs-password-reset.service"
+    ).read_text(encoding="utf-8")
+
+    for runtime_file in (
+        "litblogs/auth_email_delivery.py",
+        "litblogs/auth_email_job.py",
+        "litblogs/email_verification_delivery.py",
+        "litblogs/password_reset_delivery.py",
+    ):
+        assert runtime_file in validator
+    assert '"auth_email_job"' in validator
+    assert '"password_reset_job"' not in validator
+    for forbidden_import in (
+        "from main import",
+        "import main",
+        "import database",
+        "from database import",
+        "fastapi",
+        "oauth_security",
+        "upload_assets",
+        "upload_scanner",
+    ):
+        assert forbidden_import in validator
+    assert "-m auth_email_job" in service
+    assert "-m password_reset_job" not in service
+
+
+def test_repository_policy_inventories_and_constrains_empty_install_admin_bootstrap():
+    validator = VALIDATOR_PATH.read_text(encoding="utf-8")
+    source = (BACKEND_ROOT / "bootstrap_admin.py").read_text(encoding="utf-8")
+
+    assert "litblogs/bootstrap_admin.py" in validator
+    for fragment in (
+        'CONFIRMATION_ARGUMENT = "--confirm-empty-install"',
+        "pg_advisory_xact_lock",
+        "LOCK TABLE public.users IN SHARE ROW EXCLUSIVE MODE",
+        "validate_new_password_policy",
+        "verify_runtime_database_identity",
+        "ScriptDirectory",
+        "MigrationContext",
+    ):
+        assert fragment in validator
+        assert fragment in source
+    for forbidden in (
+        "from main import",
+        "import main",
+        "os.getenv",
+        "os.environ",
+    ):
+        assert forbidden in validator
+        assert forbidden not in source
 
 
 def _validate_real_tiptap_lock(policy_validator, tmp_path, package_lock):
@@ -516,7 +575,7 @@ def test_tiptap_editor_policy_rejects_audited_node_metadata_substitution(
         locked_core["name"] = "innocent-editor-core"
     elif mutation == "resolved":
         locked_core["resolved"] = (
-            "https://registry.npmjs.org/@tiptap/core/-/core-3.30.3-repacked.tgz"
+            "https://registry.npmjs.org/@tiptap/core/-/core-3.30.6-repacked.tgz"
         )
     elif mutation == "integrity":
         locked_core["integrity"] = "sha512-dGVzdC1wbGFjZWhvbGRlcg=="
@@ -551,7 +610,7 @@ def test_tiptap_editor_policy_accepts_matching_explicit_lock_node_name(
     ("metadata", "expected_failure"),
     (
         ({"version": "3.30.1", "license": "MIT"}, "resolve reviewed Tiptap"),
-        ({"version": "3.30.3", "license": "SEE LICENSE"}, "MIT license"),
+        ({"version": "3.30.6", "license": "SEE LICENSE"}, "MIT license"),
     ),
 )
 def test_tiptap_editor_policy_rejects_unreviewed_lock_metadata(
@@ -1312,3 +1371,41 @@ def test_browser_harness_forbids_raw_artifacts_and_proves_runtime_database_acl()
     assert all("cookies: document.cookie" not in source for source in spec_sources)
     for redaction_probe in ("password", "draftCanary", "stdout", "stderr"):
         assert redaction_probe in reporter_test
+
+
+def test_operator_docs_route_fresh_installs_without_weakening_release_admission():
+    root_readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+    deploy_readme = (REPOSITORY_ROOT / "deploy" / "README.md").read_text(
+        encoding="utf-8"
+    )
+    fresh_guide = REPOSITORY_ROOT / "deploy" / "FRESH_SERVER_SETUP.md"
+    setup_script = REPOSITORY_ROOT / "deploy" / "scripts" / "fresh_server_setup.sh"
+    restore_script = (
+        REPOSITORY_ROOT / "deploy" / "scripts" / "fresh_restore_rehearsal.sh"
+    )
+
+    assert fresh_guide.is_file()
+    assert setup_script.is_file()
+    assert restore_script.is_file()
+    assert "deploy/FRESH_SERVER_SETUP.md" in root_readme
+    assert "FRESH_SERVER_SETUP.md" in deploy_readme
+
+    guide = fresh_guide.read_text(encoding="utf-8")
+    bundle = "\n".join(
+        (
+            guide,
+            setup_script.read_text(encoding="utf-8"),
+            restore_script.read_text(encoding="utf-8"),
+        )
+    )
+    assert len(guide.splitlines()) <= 300
+    assert "reviewed, attested" in guide
+    assert "~/www" in guide
+    assert "/opt/litblogs/releases" in guide
+    assert "RELEASE-MANIFEST" in guide
+    assert "Do not generate `RELEASE-MANIFEST`" in guide
+    assert "locally assembled" in guide
+    assert "deployment_check --preflight" in bundle
+    assert "deployment_check" in bundle
+    assert "litblogs-reminders.timer" in bundle
+    assert "PUSH_NOTIFICATIONS_ENABLED=false" in bundle

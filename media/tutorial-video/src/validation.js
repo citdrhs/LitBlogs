@@ -1,4 +1,6 @@
-const EXPECTED_DURATION_SECONDS = 117;
+import { VIDEO } from "./manifest.js";
+
+const EXPECTED_DURATION_SECONDS = VIDEO.durationInSeconds;
 const EXPECTED_SIZE_LIMIT_BYTES = 20 * 1024 * 1024;
 
 const parseRate = (rate) => {
@@ -16,11 +18,54 @@ export const validateManifest = (scenes) => {
     ids.add(scene.id);
     if (scene.startFrame !== nextStart) issues.push(`scene ${scene.id} does not start contiguously`);
     if (!scene.narration?.trim()) issues.push(`scene ${scene.id} has empty narration`);
-    if (!scene.caption?.text?.trim()) issues.push(`scene ${scene.id} has empty caption text`);
-    if (scene.caption?.startOffsetFrames < 0
-      || scene.caption?.endOffsetFrames > scene.durationInFrames
-      || scene.caption?.startOffsetFrames >= scene.caption?.endOffsetFrames) {
-      issues.push(`scene ${scene.id} has an out-of-bounds caption cue`);
+    const narrationFrames = scene.narrationDurationInFrames;
+    const lastRequiredAction = Math.max(
+      0,
+      ...(scene.cursor ?? []).filter(({ click }) => click).map(({ frame }) => frame),
+    );
+    const boundedDuration = Math.max(narrationFrames + 24, lastRequiredAction + 18);
+    if (!Number.isInteger(narrationFrames) || narrationFrames <= 0) {
+      issues.push(`scene ${scene.id} has no measured narration duration`);
+    } else if (scene.durationInFrames !== boundedDuration) {
+      issues.push(`scene ${scene.id} has an unbounded narration or action tail`);
+    }
+    if (!Array.isArray(scene.captionCues) || scene.captionCues.length === 0) {
+      issues.push(`scene ${scene.id} has no caption cues`);
+    } else {
+      let previousCueEnd = -1;
+      const cueIds = new Set();
+      scene.captionCues.forEach((cue, index) => {
+        const cueNumber = index + 1;
+        if (!cue.id?.trim() || cueIds.has(cue.id)) {
+          issues.push(`scene ${scene.id} caption cue ${cueNumber} has no unique id`);
+        }
+        cueIds.add(cue.id);
+        if (!cue.text?.trim()) issues.push(`scene ${scene.id} caption cue ${cueNumber} is empty`);
+        if (cue.startOffsetFrames < 0
+          || cue.endOffsetFrames > scene.durationInFrames
+          || cue.startOffsetFrames >= cue.endOffsetFrames) {
+          issues.push(`scene ${scene.id} caption cue ${cueNumber} is out of bounds`);
+        }
+        if (cue.startOffsetFrames < previousCueEnd) {
+          issues.push(`scene ${scene.id} has overlapping caption cues`);
+        }
+        const lines = String(cue.text ?? "").split("\n");
+        if (lines.length > 2) {
+          issues.push(`scene ${scene.id} caption cue ${cueNumber} exceeds two lines`);
+        }
+        if (lines.some((line) => line.length > 52)) {
+          issues.push(
+            `scene ${scene.id} caption cue ${cueNumber} has a line wider than 52 characters`,
+          );
+        }
+        previousCueEnd = cue.endOffsetFrames;
+      });
+      const captionNarration = scene.captionCues
+        .map(({ text }) => String(text ?? "").replace(/\s+/g, " ").trim())
+        .join(" ");
+      if (captionNarration !== scene.narration) {
+        issues.push(`scene ${scene.id} captions do not match narration`);
+      }
     }
     for (const [name, keyframes] of [
       ["camera", scene.camera],
@@ -45,6 +90,18 @@ export const validateManifest = (scenes) => {
           issues.push(`scene ${scene.id} has an off-canvas ${name} visual`);
         }
         if (name === "cursor" && keyframe.click) {
+          const actionCue = scene.captionCues?.find(({ id }) => id === keyframe.actionCueId);
+          if (!actionCue) {
+            issues.push(
+              `scene ${scene.id} click at frame ${keyframe.frame} has no caption cue link`,
+            );
+          } else if (keyframe.frame < actionCue.startOffsetFrames
+            || keyframe.frame >= actionCue.endOffsetFrames) {
+            issues.push(
+              `scene ${scene.id} click at frame ${keyframe.frame} `
+              + `is outside caption cue ${actionCue.id}`,
+            );
+          }
           const target = keyframe.target;
           const bounds = target?.bounds;
           const hasCompositionTarget = target?.space === "composition"
@@ -78,7 +135,9 @@ export const validateManifest = (scenes) => {
     nextStart += scene.durationInFrames;
   }
 
-  if (nextStart !== 3510) issues.push(`manifest totals ${nextStart} frames instead of 3510`);
+  if (nextStart !== VIDEO.durationInFrames) {
+    issues.push(`manifest totals ${nextStart} frames instead of ${VIDEO.durationInFrames}`);
+  }
   const serialized = JSON.stringify(scenes);
   const emails = serialized.match(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g) ?? [];
   if (emails.some((email) => !email.endsWith("@example.com"))) issues.push("manifest contains a non-synthetic email address");
@@ -116,7 +175,10 @@ export const validateProbeData = (probe) => {
 
   const duration = Number(probe?.format?.duration);
   if (!Number.isFinite(duration) || Math.abs(duration - EXPECTED_DURATION_SECONDS) > 0.1) {
-    issues.push(`expected duration within 0.1s of 117, received ${probe?.format?.duration}`);
+    issues.push(
+      `expected duration within 0.1s of ${EXPECTED_DURATION_SECONDS.toFixed(3)}, `
+      + `received ${probe?.format?.duration}`,
+    );
   }
   const size = Number(probe?.format?.size);
   if (!Number.isFinite(size) || size > EXPECTED_SIZE_LIMIT_BYTES) {
@@ -168,6 +230,47 @@ export const validateVtt = (vtt, durationSeconds) => {
     previousEnd = end;
   }
   if (cueNumber === 0) issues.push("caption file contains no cues");
+  return issues;
+};
+
+const parseVttCues = (vtt) => {
+  const normalized = String(vtt).replace(/\r\n/g, "\n").trim();
+  const blocks = normalized.split(/\n\n+/).slice(1);
+  return blocks.flatMap((block) => {
+    const [identifier, timing, ...textLines] = block.split("\n");
+    const timingMatch = timing?.match(
+      /^(\d{2}:\d{2}:\d{2}\.\d{3}) --> (\d{2}:\d{2}:\d{2}\.\d{3})$/,
+    );
+    if (!identifier || !timingMatch || textLines.length === 0) return [];
+    return [{
+      start: parseVttTimestamp(timingMatch[1]),
+      end: parseVttTimestamp(timingMatch[2]),
+      text: textLines.join("\n"),
+    }];
+  });
+};
+
+export const validateVttParity = (vtt, scenes, video) => {
+  const actual = parseVttCues(vtt);
+  const expected = scenes.flatMap((scene) => scene.captionCues.map((cue) => ({ scene, cue })));
+  const issues = [];
+  if (actual.length !== expected.length) {
+    issues.push(`caption file has ${actual.length} cues; expected ${expected.length}`);
+  }
+  const comparableCount = Math.min(actual.length, expected.length);
+  for (let index = 0; index < comparableCount; index += 1) {
+    const cueNumber = index + 1;
+    const { scene, cue } = expected[index];
+    const expectedStart = (scene.startFrame + cue.startOffsetFrames) / video.fps;
+    const expectedEnd = (scene.startFrame + cue.endOffsetFrames) / video.fps;
+    if (Math.abs(actual[index].start - expectedStart) > 0.0006
+      || Math.abs(actual[index].end - expectedEnd) > 0.0006) {
+      issues.push(`caption cue ${cueNumber} timing does not match scene ${scene.id}`);
+    }
+    if (actual[index].text !== cue.text) {
+      issues.push(`caption cue ${cueNumber} text does not match scene ${scene.id}`);
+    }
+  }
   return issues;
 };
 

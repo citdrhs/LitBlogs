@@ -14,7 +14,7 @@ from typing import Callable
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
-from config import get_settings
+from config import get_settings, load_settings, require_production_runtime_readiness
 
 REQUIRED_PYTHON = (3, 13)
 ALLOWED_MODES = frozenset({"preflight", "postflight"})
@@ -47,12 +47,16 @@ REQUIRED_RELEASE_FILES = (
     "deploy/systemd/litblogs-web.service",
     "docs/operations/production-runbook.md",
     "litblogs/access_control.py",
+    "litblogs/auth_email_delivery.py",
+    "litblogs/auth_email_job.py",
     "litblogs/alembic.ini",
     "litblogs/auth_security.py",
     "litblogs/base.py",
+    "litblogs/bootstrap_admin.py",
     "litblogs/config.py",
     "litblogs/database.py",
     "litblogs/deployment_check.py",
+    "litblogs/email_verification_delivery.py",
     "litblogs/identity_controls.py",
     "litblogs/main.py",
     "litblogs/manage_accounts.py",
@@ -302,9 +306,15 @@ def run(
             raise _DeploymentFailure("config_invalid")
 
         try:
-            selected_settings = app_settings or get_settings()
+            selected_settings = app_settings or (
+                load_settings(enforce_runtime_readiness=False)
+                if mode == "preflight"
+                else get_settings()
+            )
             if selected_settings.app_env != "production":
                 raise ValueError
+            if mode == "postflight":
+                require_production_runtime_readiness(selected_settings)
         except Exception:
             raise _DeploymentFailure("config_invalid") from None
 

@@ -20,6 +20,7 @@ import {
   configureAuthHttpClient,
   purgeLegacyPersistentAuth,
 } from './utils/auth'
+import { clearBootstrappedEmailVerificationToken } from './utils/verificationToken'
 
 // Set base URL for all axios requests
 axios.defaults.baseURL = API_BASE_PATH;
@@ -72,6 +73,7 @@ const renderApplication = (msalInstance) => {
 };
 
 const renderConfigurationFailure = () => {
+  clearBootstrappedEmailVerificationToken();
   const root = document.getElementById('root');
   root.textContent = 'LitBlogs is temporarily unavailable. Please contact your school administrator.';
 };
