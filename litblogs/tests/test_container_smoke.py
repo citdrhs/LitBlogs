@@ -194,6 +194,7 @@ def test_recreation_targets_private_app_while_routes_use_gateway(tmp_path, monke
     assert recreations and recreations[0][-2:] == ["postgres", "app"]
     probes = [command for command in commands if module.RUNTIME_PROBE in command or module.UPLOAD_SENTINEL_PROBE in command]
     assert probes and all(command[command.index("-T") + 1] == "app" for command in probes)
+    assert not any("logs" in command for command in commands)
 
 
 def test_startup_error_is_useful_but_redacts_every_generated_environment_value(capsys):
@@ -284,3 +285,79 @@ def test_service_diagnostics_include_only_whitelisted_health_and_exit_facts(tmp_
     assert "clamav: created health=none exit=0" in diagnostics
     assert "postgres: running" in diagnostics
     assert "untrusted-secret" not in diagnostics
+
+
+@pytest.mark.parametrize("claimed,valid_snapshot", [(False, True), (True, False), (False, False)])
+def test_service_logs_refuse_without_project_ownership_and_redaction_snapshot(claimed, valid_snapshot, capsys):
+    module = smoke_module()
+    calls = []
+    with module.private_environment("litblogs-smoke-0123456789ab", 15000) as path:
+        session = module.SmokeSession(ROOT, "litblogs-smoke-0123456789ab", path, 15000,
+                                      run=lambda *_args, **_kwargs: calls.append(True))
+        session.claimed = claimed
+        if not valid_snapshot:
+            session.diagnostic_redactions = None
+        assert callable(getattr(session, "report_service_logs", None)), "Failure-only service logs are unavailable"
+        session.report_service_logs()
+    assert calls == []
+    output = capsys.readouterr()
+    assert "Service logs suppressed" in output.out + output.err
+
+
+def test_service_logs_are_whitelisted_bounded_and_redacted_on_both_streams(capsys):
+    module = smoke_module()
+    calls = []
+    with module.private_environment("litblogs-smoke-0123456789ab", 15000) as path:
+        secret = next(line.partition("=")[2][1:-1] for line in path.read_text().splitlines()
+                      if line.startswith("LITBLOGS_DB_PASSWORD="))
+
+        def run(command, **parameters):
+            calls.append((command, parameters))
+            return SimpleNamespace(
+                returncode=0,
+                stdout=("\x1b[31m" + secret + "\x1b[0m\n") * 60 + "RuntimeError: application configuration rejected",
+                stderr=(quote(secret, safe="") + "\n") * 60 + "\n::warning::text\n##[warning]legacy\nWorker import failed",
+            )
+
+        session = module.SmokeSession(ROOT, "litblogs-smoke-0123456789ab", path, 15000, run=run)
+        session.claimed = True
+        assert callable(getattr(session, "report_service_logs", None)), "Failure-only service logs are unavailable"
+        session.report_service_logs()
+    assert [command[-1] for command, _parameters in calls][:2] == ["app", "reconcile"]
+    assert len(calls) <= 5
+    for command, parameters in calls:
+        assert command[:2] == ["docker", "compose"]
+        assert "litblogs-smoke-0123456789ab" in command
+        assert command[command.index("logs"):] == ["logs", "--no-color", "--tail", "30", command[-1]]
+        assert command[-1] in {"app", "reconcile", "initialize", "migrate", "postgres"}
+        assert parameters["timeout"] <= 10
+        assert "inspect" not in command and "--follow" not in command
+    output = capsys.readouterr()
+    diagnostics = output.out + output.err
+    assert "RuntimeError: application configuration rejected" in diagnostics
+    assert "Worker import failed" in diagnostics
+    assert secret not in diagnostics and quote(secret, safe="") not in diagnostics
+    assert "[REDACTED]" in diagnostics
+    assert "\x1b" not in diagnostics and "::" not in diagnostics and "##[" not in diagnostics
+    assert len(diagnostics) < 30000
+
+
+@pytest.mark.parametrize("status_output", ['[{"Service":"app","State":"running","Health":"unhealthy","ExitCode":0}]', "not-json"])
+def test_failure_status_collects_logs_before_project_cleanup(status_output):
+    module = smoke_module()
+    commands = []
+
+    def run(command, **_parameters):
+        commands.append(command)
+        output = "linux" if "info" in command else status_output if "ps" in command else ""
+        return SimpleNamespace(returncode=int("up" in command), stdout=output, stderr="")
+
+    with module.private_environment("litblogs-smoke-0123456789ab", 15000) as path:
+        session = module.SmokeSession(ROOT, "litblogs-smoke-0123456789ab", path, 15000, run=run)
+        with pytest.raises(module.SmokeError):
+            module.run_session(session)
+    log_indices = [index for index, command in enumerate(commands) if "logs" in command]
+    assert log_indices, "Startup failure discarded the service exception logs"
+    status_index = next(index for index, command in enumerate(commands) if "ps" in command)
+    cleanup_index = next(index for index, command in enumerate(commands) if "down" in command)
+    assert status_index < min(log_indices) <= max(log_indices) < cleanup_index

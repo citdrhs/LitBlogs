@@ -483,7 +483,14 @@ expected_email_verification_checks(
 actual_email_verification_checks AS (
     SELECT
         constraint_record.conname::text,
-        pg_catalog.pg_get_constraintdef(constraint_record.oid, FALSE),
+        -- Replaying pg_dump's CHECK DDL distributes the array's text cast to
+        -- each element. Normalize only this exact equivalent representation;
+        -- names, values, validation and inheritance must still match exactly.
+        CASE pg_catalog.pg_get_constraintdef(constraint_record.oid, FALSE)
+            WHEN $check$CHECK (((delivery_status)::text = ANY (ARRAY[('PENDING'::character varying)::text, ('PROCESSING'::character varying)::text, ('DELIVERED'::character varying)::text, ('FAILED'::character varying)::text])))$check$
+            THEN $check$CHECK (((delivery_status)::text = ANY ((ARRAY['PENDING'::character varying, 'PROCESSING'::character varying, 'DELIVERED'::character varying, 'FAILED'::character varying])::text[])))$check$
+            ELSE pg_catalog.pg_get_constraintdef(constraint_record.oid, FALSE)
+        END,
         constraint_record.convalidated,
         constraint_record.connoinherit
     FROM pg_catalog.pg_constraint AS constraint_record

@@ -346,7 +346,8 @@ class SmokeSession:
             raise SmokeError("The private upload sentinel was not verified.")
 
     def report_status(self):
-        # Never print docker logs, inspect environments, or expanded Compose config.
+        # State facts are whitelisted; failure logs below require stricter ownership
+        # and redaction gates. Never inspect environments or expanded Compose config.
         try:
             output = self.compose(["ps", "--all", "--format", "json"], stage="sanitized service status")
             records = json.loads(output) if output.startswith("[") else [json.loads(line) for line in output.splitlines()]
@@ -362,6 +363,35 @@ class SmokeSession:
                     print(f"Smoke service {service}: {state} health={health} exit={code}", flush=True)
         except Exception:
             print("Sanitized service status was unavailable.", flush=True)
+        finally:
+            self.report_service_logs()
+
+    def report_service_logs(self):
+        """Failure-only diagnostic tails from this claimed, synthetic fixture."""
+        if not self.claimed or not self.diagnostic_redactions:
+            print("Service logs suppressed: project ownership or private redaction snapshot is unavailable.",
+                  file=sys.stderr, flush=True)
+            return
+        # App and reconciliation exceptions have priority. There is no user-selected
+        # service name, follow mode, all-container query, or unbounded log request.
+        for service in ("app", "reconcile", "initialize", "migrate", "postgres"):
+            try:
+                result = self.run(
+                    ["docker", *self.prefix, "logs", "--no-color", "--tail", "30", service],
+                    cwd=self.root, env=self.environment, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False, timeout=10,
+                )
+                print(f"Smoke service {service} log tail (redacted).", file=sys.stderr, flush=True)
+                for stream, value in (("stdout", result.stdout), ("stderr", result.stderr)):
+                    # Redact/neutralize the whole captured stream before the common
+                    # line/character cap; success and failure streams are both data.
+                    sanitized = _redacted_diagnostic(value, self.diagnostic_redactions)
+                    for line in sanitized.splitlines():
+                        print(f"  {service} {stream}: {line}", file=sys.stderr, flush=True)
+            except subprocess.TimeoutExpired as error:
+                self.report_command_failure(f"{service} log retrieval", error.stdout, error.stderr, "timed out")
+            except Exception:
+                print(f"Sanitized logs were unavailable for service {service}.", file=sys.stderr, flush=True)
 
 
 def run_session(session):

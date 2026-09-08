@@ -1179,6 +1179,14 @@ def test_restore_email_verification_schema_data_and_acl_inventory_is_exact():
         assert fragment in schema_probe
 
     normalized_schema_probe = " ".join(schema_probe.split())
+    assert (
+        "CASE pg_catalog.pg_get_constraintdef(constraint_record.oid, FALSE) "
+        "WHEN $check$CHECK (((delivery_status)::text = ANY (ARRAY["
+        "('PENDING'::character varying)::text, "
+        "('PROCESSING'::character varying)::text, "
+        "('DELIVERED'::character varying)::text, "
+        "('FAILED'::character varying)::text])))$check$ THEN "
+    ) in normalized_schema_probe
     for expected_check in (
         (
             "'ck_email_verification_delivery_status', "

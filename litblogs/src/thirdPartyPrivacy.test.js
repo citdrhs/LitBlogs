@@ -1,26 +1,27 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { extname, join } from "node:path";
+import { mergeAttributes } from "@tiptap/core";
 import { describe, expect, it } from "vitest";
 
 const projectRoot = globalThis.process.cwd();
 const sourceRoot = join(projectRoot, "src");
 
 const REVIEWED_TIPTAP_RUNTIME_DEPENDENCIES = {
-  "@tiptap/core": "^3.30.3",
-  "@tiptap/extension-character-count": "^3.30.3",
-  "@tiptap/extension-color": "^3.30.3",
-  "@tiptap/extension-font-family": "^3.30.3",
-  "@tiptap/extension-highlight": "^3.30.3",
-  "@tiptap/extension-image": "^3.30.3",
-  "@tiptap/extension-link": "^3.30.3",
-  "@tiptap/extension-placeholder": "^3.30.3",
-  "@tiptap/extension-table": "^3.30.3",
-  "@tiptap/extension-text-align": "^3.30.3",
-  "@tiptap/extension-text-style": "^3.30.3",
-  "@tiptap/extension-underline": "^3.30.3",
-  "@tiptap/pm": "^3.30.3",
-  "@tiptap/react": "^3.30.3",
-  "@tiptap/starter-kit": "^3.30.3",
+  "@tiptap/core": "^3.30.6",
+  "@tiptap/extension-character-count": "^3.30.6",
+  "@tiptap/extension-color": "^3.30.6",
+  "@tiptap/extension-font-family": "^3.30.6",
+  "@tiptap/extension-highlight": "^3.30.6",
+  "@tiptap/extension-image": "^3.30.6",
+  "@tiptap/extension-link": "^3.30.6",
+  "@tiptap/extension-placeholder": "^3.30.6",
+  "@tiptap/extension-table": "^3.30.6",
+  "@tiptap/extension-text-align": "^3.30.6",
+  "@tiptap/extension-text-style": "^3.30.6",
+  "@tiptap/extension-underline": "^3.30.6",
+  "@tiptap/pm": "^3.30.6",
+  "@tiptap/react": "^3.30.6",
+  "@tiptap/starter-kit": "^3.30.6",
 };
 
 const readProjectFile = (relativePath) => (
@@ -66,6 +67,16 @@ describe("third-party privacy policy", () => {
     expect(Object.keys(dependencies)).not.toContain("@tinymce/tinymce-react");
     expect(Object.keys(dependencies)).not.toContain("tinymce");
     expect(readProjectFile("package-lock.json")).not.toMatch(/tinymce/i);
+  });
+
+  it("does not inherit attacker-controlled DOM attributes when merging Tiptap attributes", () => {
+    const attributes = Object.create(null);
+    attributes.__proto__ = { "data-audit-canary": "inherited" };
+
+    const merged = mergeAttributes({ class: "editor-content" }, attributes);
+
+    expect(merged["data-audit-canary"]).toBeUndefined();
+    expect(merged.class).toBe("editor-content");
   });
 
   it("keeps runtime source free of Tiny Cloud, Google Fonts, and Unsplash origins", () => {
