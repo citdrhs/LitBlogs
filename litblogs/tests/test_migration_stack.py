@@ -7,7 +7,9 @@ import runpy
 import subprocess
 import sys
 from contextlib import contextmanager
+from itertools import product
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import sqlalchemy as sa
@@ -408,6 +410,61 @@ def test_final_acl_publishes_the_exact_pre_upgrade_role_contract():
         "litblogs_migrator",
         "litblog_identity_owner",
     )
+
+
+def _email_verification_downgrade_probe(monkeypatch, membership):
+    migration = importlib.import_module("migrations.versions.a82f8f2b1d7c_email_verification")
+    events = []
+
+    def query(statement, parameters=None):
+        sql = str(statement)
+        events.append(("query", sql))
+        if "FROM password_resets" in sql:
+            return SimpleNamespace(scalar_one=lambda: False)
+        if "pg_auth_members" in sql:
+            assert parameters == {
+                "owner_role": "litblog_identity_owner",
+                "migrator_role": "litblogs_migrator",
+            }
+            return SimpleNamespace(one_or_none=lambda: membership)
+        if "FROM pg_roles" in sql:
+            return SimpleNamespace(scalar_one=lambda: True)
+        raise AssertionError(f"Unexpected migration query: {sql}")
+
+    bind = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"), execute=query)
+    monkeypatch.setattr(migration.op, "get_bind", lambda: bind)
+    monkeypatch.setattr(migration.op, "execute", lambda statement: events.append(("ddl", str(statement))))
+    for operation in ("drop_index", "drop_table", "drop_column"):
+        monkeypatch.setattr(
+            migration.op, operation,
+            lambda *args, _operation=operation, **kwargs: events.append(("ddl", _operation)),
+        )
+    return migration, events
+
+
+@pytest.mark.parametrize(
+    "membership",
+    [None, *(options for options in product((False, True), repeat=3) if options != (False, True, True))],
+)
+def test_email_verification_downgrade_rejects_unreviewed_membership_before_ddl(monkeypatch, membership):
+    migration, events = _email_verification_downgrade_probe(monkeypatch, membership)
+
+    with pytest.raises(RuntimeError, match="ACL downgrade requires exact temporary membership"):
+        migration.downgrade()
+
+    assert not any(kind == "ddl" for kind, _ in events)
+
+
+def test_email_verification_downgrade_verifies_membership_before_replacing_operator_function(monkeypatch):
+    migration, events = _email_verification_downgrade_probe(monkeypatch, (False, True, True))
+
+    migration.downgrade()
+
+    membership_checks = [index for index, (kind, sql) in enumerate(events) if kind == "query" and "pg_auth_members" in sql]
+    first_ddl = next(index for index, (kind, _) in enumerate(events) if kind == "ddl")
+    assert len(membership_checks) == 1
+    assert membership_checks[0] < first_ddl
+    assert "CREATE OR REPLACE FUNCTION public.operator_set_account_status" in events[first_ddl][1]
 
 
 def test_identity_draft_and_upload_revisions_preserve_security_invariants():

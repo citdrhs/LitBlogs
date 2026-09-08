@@ -29,7 +29,7 @@ x-app: &app
   init: true
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
-  tmpfs: [/tmp:rw,noexec,nosuid,size=256m,mode=1777]
+  tmpfs: ["/tmp:rw,noexec,nosuid,size=256m,mode=1777"]
   restart: unless-stopped
   stop_grace_period: 30s
   logging:
@@ -46,7 +46,7 @@ services:
     restart: unless-stopped
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    tmpfs: [/tmp:rw,noexec,nosuid,size=512m,mode=1777]
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=512m,mode=1777"]
     entrypoint: [nginx, -g, "daemon off;"]
     command: []
     ports:

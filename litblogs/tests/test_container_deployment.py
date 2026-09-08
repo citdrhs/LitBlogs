@@ -155,6 +155,18 @@ def test_operator_profiles_do_not_leak_privileged_credentials_to_web():
     assert services["bootstrap-admin"]["profiles"] == ["operators"]
 
 
+def test_tmpfs_options_remain_one_absolute_mount_per_service():
+    import yaml
+
+    services = yaml.safe_load((ROOT / "docker-compose.yml").read_text())["services"]
+    for name, service in services.items():
+        if "tmpfs" not in service:
+            continue
+        size = "512m" if name == "web" else "256m"
+        # Unquoted commas in a YAML flow list become separate relative mounts.
+        assert service["tmpfs"] == [f"/tmp:rw,noexec,nosuid,size={size},mode=1777"], name
+
+
 def test_build_context_excludes_secrets_and_local_data():
     ignore = (ROOT / ".dockerignore").read_text().splitlines()
     for pattern in ("**/.env", "**/.env.*", "**/*.env", "**/.venv", "**/node_modules", "**/*.sqlite*", "**/*.db-*", ".git", "media"):

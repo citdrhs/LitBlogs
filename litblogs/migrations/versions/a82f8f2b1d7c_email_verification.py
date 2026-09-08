@@ -13,6 +13,9 @@ from migrations.sqlite_contract import (
     has_any_named_schema_object,
     table_contract_matches,
 )
+from migrations.versions.f1ad78b2035f_exact_runtime_acl import (
+    _assert_acl_downgrade_membership,
+)
 
 revision: str = "a82f8f2b1d7c"
 down_revision: str | Sequence[str] | None = "f1ad78b2035f"
@@ -533,6 +536,8 @@ def upgrade() -> None:
 def downgrade() -> None:
     _assert_password_reset_downgrade_is_safe()
     if _is_postgresql():
+        if _role_exists(IDENTITY_OWNER_ROLE):
+            _assert_acl_downgrade_membership()
         op.execute(sa.text(PREVIOUS_OPERATOR_SET_ACCOUNT_STATUS_SQL))
         _grant_operator_acl()
 

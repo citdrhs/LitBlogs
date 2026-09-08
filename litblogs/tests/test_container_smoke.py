@@ -1,11 +1,13 @@
 """Safe orchestration checks; real Docker lifecycle is exercised separately in CI."""
 
 import importlib.util
+import json
 import os
 import stat
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import quote, quote_plus
 
 import pytest
 
@@ -71,7 +73,9 @@ def test_child_failures_hide_secret_output_and_inherited_compose_overrides(monke
     assert str(ROOT / "docker-compose.yml") in command
     assert parameters["stdout"] == subprocess.PIPE
     assert parameters["stderr"] == subprocess.PIPE
-    assert secret not in capsys.readouterr().out
+    output = capsys.readouterr()
+    assert secret not in output.out + output.err
+    assert "private redaction snapshot was unavailable" in output.err
 
 
 def test_cleanup_refuses_unclaimed_resources(tmp_path):
@@ -190,3 +194,93 @@ def test_recreation_targets_private_app_while_routes_use_gateway(tmp_path, monke
     assert recreations and recreations[0][-2:] == ["postgres", "app"]
     probes = [command for command in commands if module.RUNTIME_PROBE in command or module.UPLOAD_SENTINEL_PROBE in command]
     assert probes and all(command[command.index("-T") + 1] == "app" for command in probes)
+
+
+def test_startup_error_is_useful_but_redacts_every_generated_environment_value(capsys):
+    module = smoke_module()
+    with module.private_environment("litblogs-smoke-0123456789ab", 15000) as path:
+        values = [line.partition("=")[2][1:-1] for line in path.read_text().splitlines()]
+        disclosed = []
+        for value in values:
+            disclosed.extend((value, quote(value, safe=""), quote_plus(value, safe="")))
+        error = "invalid mount config for type tmpfs: invalid mount path 'noexec': mount path must be absolute"
+
+        def run(_command, **_parameters):
+            return SimpleNamespace(returncode=1, stdout="\n".join(disclosed), stderr=error + "\n" + "\n".join(disclosed))
+
+        session = module.SmokeSession(ROOT, "litblogs-smoke-0123456789ab", path, 15000, run=run)
+        with pytest.raises(module.SmokeError):
+            session.compose(["up", "--detach", "--build"], stage="service startup")
+    output = capsys.readouterr()
+    diagnostics = output.out + output.err
+    assert "invalid mount config for type tmpfs" in diagnostics
+    assert "mount path must be absolute" in diagnostics
+    assert "exit=1" in diagnostics
+    assert "[REDACTED]" in diagnostics
+    for value in disclosed:
+        assert value not in diagnostics
+
+
+def test_diagnostic_redaction_precedes_truncation_and_strips_terminal_control_sequences(capsys):
+    module = smoke_module()
+    with module.private_environment("litblogs-smoke-0123456789ab", 15000) as path:
+        values = [line.partition("=")[2][1:-1] for line in path.read_text().splitlines()]
+        secret = next(value for value in values if ":@/%?#" in value)
+        lower_percent_encoding = quote(secret, safe="").replace("%3A", "%3a").replace("%2F", "%2f")
+        split_by_ansi = secret[:20] + "\x1b[31m" + secret[20:] + "\x1b[0m"
+        error = "noise" * 4000 + "\n" + "\n".join([split_by_ansi, lower_percent_encoding] * 40)
+        error += "\r\x00\n::warning::untrusted workflow text\n##[warning]legacy\nfailed to export image: already exists"
+        session = module.SmokeSession(ROOT, "litblogs-smoke-0123456789ab", path, 15000,
+                                      run=lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout=error, stderr=error))
+        with pytest.raises(module.SmokeError):
+            session.compose(["up", "--detach", "--build"], stage="service startup")
+    output = capsys.readouterr()
+    diagnostics = output.out + output.err
+    assert "failed to export image: already exists" in diagnostics
+    assert secret not in diagnostics and secret[:20] not in diagnostics
+    assert lower_percent_encoding not in diagnostics
+    assert len(diagnostics) < 7000
+    assert "\x1b" not in diagnostics and "\r" not in diagnostics and "\x00" not in diagnostics
+    assert "::" not in diagnostics
+    assert "##[" not in diagnostics
+
+
+def test_timeout_diagnostics_redact_captured_bytes_without_printing_command_arguments(capsys):
+    module = smoke_module()
+    with module.private_environment("litblogs-smoke-0123456789ab", 15000) as path:
+        secret = next(line.partition("=")[2][1:-1] for line in path.read_text().splitlines()
+                      if line.startswith("POSTGRES_PASSWORD="))
+
+        def run(_command, **_parameters):
+            raise subprocess.TimeoutExpired(["docker", "unsafe-command-metadata"], 10,
+                                            output=secret.encode(), stderr=b"context deadline exceeded")
+
+        session = module.SmokeSession(ROOT, "litblogs-smoke-0123456789ab", path, 15000, run=run)
+        with pytest.raises(module.SmokeError):
+            session.compose(["up", "--detach"], stage="service startup")
+    output = capsys.readouterr()
+    diagnostics = output.out + output.err
+    assert "timed out" in diagnostics
+    assert "context deadline exceeded" in diagnostics
+    assert secret not in diagnostics
+    assert "unsafe-command-metadata" not in diagnostics
+
+
+def test_service_diagnostics_include_only_whitelisted_health_and_exit_facts(tmp_path, capsys):
+    module = smoke_module()
+    records = [
+        {"Service": "app", "State": "exited", "Health": "unhealthy", "ExitCode": 137,
+         "Command": "untrusted-secret-command", "Status": "untrusted-secret-status"},
+        {"Service": "clamav", "State": "created", "Health": "", "ExitCode": 0},
+        {"Service": "postgres", "State": "running", "Health": "untrusted-secret-health",
+         "ExitCode": "untrusted-secret-exit"},
+        {"Service": "untrusted-secret-service", "State": "running", "Health": "healthy", "ExitCode": 0},
+    ]
+    session = module.SmokeSession(ROOT, "litblogs-smoke-0123456789ab", tmp_path / "environment", 15000,
+                                  run=lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=json.dumps(records), stderr=""))
+    session.report_status()
+    diagnostics = capsys.readouterr().out
+    assert "app: exited health=unhealthy exit=137" in diagnostics
+    assert "clamav: created health=none exit=0" in diagnostics
+    assert "postgres: running" in diagnostics
+    assert "untrusted-secret" not in diagnostics

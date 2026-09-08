@@ -19,6 +19,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import quote, quote_plus
 
 HOST = "litblogs-smoke.school.edu"
 PROJECT_PATTERN = re.compile(r"litblogs-smoke-[0-9a-f]{12}")
@@ -93,6 +94,72 @@ class SmokeError(RuntimeError):
     """Only constant, operator-safe messages may cross the CLI boundary."""
 
 
+def _diagnostic_redactions(path):
+    """Read only the private fixture format; an incomplete snapshot disables diagnostics."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+            metadata = os.fstat(handle.fileno())
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                return None
+            if os.name == "posix" and (
+                stat.S_IMODE(metadata.st_mode) != 0o600 or metadata.st_uid != os.geteuid()
+            ):
+                return None
+            contents = handle.read(32769)
+        if len(contents) > 32768:
+            return None
+        values = {}
+        for line in contents.splitlines():
+            match = re.fullmatch(r"([A-Z][A-Z0-9_]*)='([^\r\n]*)'", line)
+            if match is None or match[1] in values:
+                return None
+            values[match[1]] = match[2]
+        required = {
+            "POSTGRES_PASSWORD", "LITBLOGS_DB_PASSWORD", "LITBLOGS_MIGRATOR_PASSWORD",
+            "LITBLOGS_ACCOUNT_OPERATOR_PASSWORD", "LITBLOGS_INVITATION_OPERATOR_PASSWORD",
+            "LITBLOGS_BACKUP_PASSWORD", "SECRET_KEY", "TEACHER_INVITE_HMAC_KEY", "EMAIL_PASSWORD", "EMAIL_USERNAME",
+        }
+        if not required.issubset(values) or any(not values[key] for key in required):
+            return None
+        variants = set()
+        for value in values.values():
+            if value:
+                variants.update((value, quote(value, safe=""), quote_plus(value, safe=""), json.dumps(value)[1:-1]))
+        # Normalize percent escapes without changing the case of actual secret characters.
+        return sorted({re.sub(r"%[0-9a-fA-F]{2}", lambda match: match[0].upper(), value)
+                       for value in variants}, key=len, reverse=True)
+    except (OSError, UnicodeError, ValueError):
+        return None
+
+
+def _redacted_diagnostic(value, redactions):
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    if not isinstance(value, str) or not value:
+        return ""
+    # Strip terminal controls before matching: escape sequences must not split a secret.
+    value = re.sub(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))", "", value)
+    value = "".join(character for character in value if character in "\n\t" or character.isprintable())
+    value = re.sub(r"%[0-9a-fA-F]{2}", lambda match: match[0].upper(), value)
+    for secret in redactions:
+        value = value.replace(secret, "[REDACTED]")
+    # Defensive masking for any URL user-info not represented in the fixture file.
+    value = re.sub(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@]+@", r"\1[REDACTED]@", value)
+    # GitHub's legacy workflow parser accepts markers anywhere in a line. Break
+    # both marker formats, including colon runs longer than two.
+    value = re.sub(r":(?=:)", ": ", value).replace("##[", "# #[")
+    # Redact the whole captured value BEFORE truncation so a boundary cannot reveal
+    # a password fragment. Preserve both the initial error and the final cause.
+    lines = value.splitlines()
+    if len(lines) > 20:
+        lines = [*lines[:5], "[... diagnostic lines truncated ...]", *lines[-15:]]
+    value = "\n".join(lines)
+    if len(value) > 2000:
+        value = value[:800] + "\n[... diagnostic text truncated ...]\n" + value[-1100:]
+    return value
+
+
 @contextmanager
 def private_environment(project, port):
     if not PROJECT_PATTERN.fullmatch(project) or not 1024 <= port <= 65535:
@@ -158,6 +225,7 @@ class SmokeSession:
         self.image = f"litblogs-app:{project}"
         self.port = port
         self.claimed = False
+        self.diagnostic_redactions = _diagnostic_redactions(env_file)
         self.run = subprocess.run if run is None else run
         self.prefix = [
             "compose", "--project-name", project, "--env-file", str(env_file),
@@ -174,11 +242,27 @@ class SmokeSession:
                 input=input_text, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, check=False, timeout=timeout,
             )
+        except subprocess.TimeoutExpired as error:
+            self.report_command_failure(stage, error.stdout, error.stderr, "timed out")
+            raise SmokeError(f"Container smoke command timed out during {stage}; safe diagnostics were reported.") from None
         except Exception:
             raise SmokeError(f"Container smoke command failed during {stage}; diagnostics were suppressed.") from None
         if result.returncode:
-            raise SmokeError(f"Container smoke command failed during {stage}; diagnostics were suppressed.")
+            code = result.returncode if type(result.returncode) is int and -255 <= result.returncode <= 255 else "unknown"
+            self.report_command_failure(stage, result.stdout, result.stderr, f"exit={code}")
+            raise SmokeError(f"Container smoke command failed during {stage}; safe diagnostics were reported.")
         return result.stdout.strip()
+
+    def report_command_failure(self, stage, stdout, stderr, status):
+        print(f"Smoke Docker failure during {stage} ({status}).", file=sys.stderr, flush=True)
+        if self.diagnostic_redactions is None:
+            print("Docker details suppressed: the private redaction snapshot was unavailable.", file=sys.stderr, flush=True)
+            return
+        for stream, value in (("stderr", stderr), ("stdout", stdout)):
+            sanitized = _redacted_diagnostic(value, self.diagnostic_redactions)
+            for line in sanitized.splitlines():
+                # Workflow-command markers were neutralized before this prefix.
+                print(f"  docker {stream}: {line}", file=sys.stderr, flush=True)
 
     def compose(self, arguments, *, stage, timeout=180, input_text=None):
         return self.docker([*self.prefix, *arguments], stage=stage, timeout=timeout, input_text=input_text)
@@ -271,7 +355,11 @@ class SmokeSession:
                 if service in {"web", "app", "postgres", "initialize", "migrate", "clamav", "email", "reconcile"} and state in {
                     "running", "exited", "created", "restarting", "dead", "paused", "removing"
                 }:
-                    print(f"Smoke service {service}: {state}", flush=True)
+                    health = record.get("Health")
+                    health = health if health in {"healthy", "unhealthy", "starting"} else "none" if health == "" else "unknown"
+                    code = record.get("ExitCode")
+                    code = code if type(code) is int and 0 <= code <= 255 else "unknown"
+                    print(f"Smoke service {service}: {state} health={health} exit={code}", flush=True)
         except Exception:
             print("Sanitized service status was unavailable.", flush=True)
 
