@@ -308,6 +308,18 @@ def test_local_password_registration_supports_password_only_production():
     assert settings.microsoft_allowed_tenant_ids == ()
 
 
+def test_production_requires_at_least_one_enabled_signup_method():
+    production_data = _production_settings_data()
+    production_data.update(
+        local_password_registration_enabled=False,
+        google_oauth_enabled=False,
+        microsoft_oauth_enabled=False,
+    )
+
+    with pytest.raises(ValidationError, match="at least one signup method"):
+        Settings(**production_data)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -794,7 +806,9 @@ def _production_settings_data():
         "cors_allowed_origins": ("https://litblogs.school.edu",),
         "allowed_hosts": ("litblogs.school.edu",),
         "google_client_id": "987654321.apps.googleusercontent.com",
+        "google_oauth_enabled": True,
         "microsoft_client_id": "2f1c67a1-91e2-46a3-941f-b88e31763e51",
+        "microsoft_oauth_enabled": True,
         "microsoft_tenant_id": "871bd3e0-2dc0-4a40-9b07-9d03068c2364",
         "microsoft_allowed_tenant_ids": ("871bd3e0-2dc0-4a40-9b07-9d03068c2364",),
         "allowed_email_domains": ("school.edu",),

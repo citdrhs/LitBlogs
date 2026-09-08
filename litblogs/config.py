@@ -284,6 +284,16 @@ class Settings(BaseSettings):
         missing = [name for name, value in required.items() if not value]
         if missing:
             raise ValueError(f"Missing required production setting: {missing[0]}")
+        if not any(
+            (
+                self.local_password_registration_enabled,
+                self.google_oauth_enabled,
+                self.microsoft_oauth_enabled,
+            )
+        ):
+            raise ValueError(
+                "Production must enable at least one signup method"
+            )
         database_scheme = urlsplit(self.database_url or "").scheme.lower()
         if database_scheme.split("+", 1)[0] != "postgresql":
             raise ValueError("DATABASE_URL must use PostgreSQL in production")
