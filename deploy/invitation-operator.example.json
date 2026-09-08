@@ -1,0 +1,6 @@
+{
+  "purpose": "invitation",
+  "database_url": "postgresql+psycopg2://litblog_invitation_operator:<percent-encoded-managed-password>@127.0.0.1:5432/litblogs?sslmode=verify-full&sslrootcert=/etc/litblogs/postgres-root-ca.pem",
+  "teacher_invite_hmac_key": "<same-managed-value-as-TEACHER_INVITE_HMAC_KEY>",
+  "allowed_email_domains": ["<your-school-email-domain>"]
+}

@@ -1371,3 +1371,41 @@ def test_browser_harness_forbids_raw_artifacts_and_proves_runtime_database_acl()
     assert all("cookies: document.cookie" not in source for source in spec_sources)
     for redaction_probe in ("password", "draftCanary", "stdout", "stderr"):
         assert redaction_probe in reporter_test
+
+
+def test_operator_docs_route_fresh_installs_without_weakening_release_admission():
+    root_readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+    deploy_readme = (REPOSITORY_ROOT / "deploy" / "README.md").read_text(
+        encoding="utf-8"
+    )
+    fresh_guide = REPOSITORY_ROOT / "deploy" / "FRESH_SERVER_SETUP.md"
+    setup_script = REPOSITORY_ROOT / "deploy" / "scripts" / "fresh_server_setup.sh"
+    restore_script = (
+        REPOSITORY_ROOT / "deploy" / "scripts" / "fresh_restore_rehearsal.sh"
+    )
+
+    assert fresh_guide.is_file()
+    assert setup_script.is_file()
+    assert restore_script.is_file()
+    assert "deploy/FRESH_SERVER_SETUP.md" in root_readme
+    assert "FRESH_SERVER_SETUP.md" in deploy_readme
+
+    guide = fresh_guide.read_text(encoding="utf-8")
+    bundle = "\n".join(
+        (
+            guide,
+            setup_script.read_text(encoding="utf-8"),
+            restore_script.read_text(encoding="utf-8"),
+        )
+    )
+    assert len(guide.splitlines()) <= 300
+    assert "reviewed, attested" in guide
+    assert "~/www" in guide
+    assert "/opt/litblogs/releases" in guide
+    assert "RELEASE-MANIFEST" in guide
+    assert "Do not generate `RELEASE-MANIFEST`" in guide
+    assert "locally assembled" in guide
+    assert "deployment_check --preflight" in bundle
+    assert "deployment_check" in bundle
+    assert "litblogs-reminders.timer" in bundle
+    assert "PUSH_NOTIFICATIONS_ENABLED=false" in bundle

@@ -2,6 +2,11 @@
 
 These files are reviewed examples for a school-managed Linux server. Replace the example hostname and certificate paths in a reviewed site-specific copy; do not commit real credentials, student data, private keys, or internal hostnames.
 
+For a new Ubuntu 24.04.4 machine with no LitBlogs data to migrate, start with
+[`FRESH_SERVER_SETUP.md`](FRESH_SERVER_SETUP.md). Its eight short paste stages
+call guarded, release-local helpers while preserving this document's reviewed
+release, database, backup, restore, and least-privilege gates.
+
 ## Least privilege layout
 
 - `/opt/litblogs/releases/litblogs-<commit-prefix>`: immutable root-owned release trees, mode `0755` or stricter; application users cannot write here.

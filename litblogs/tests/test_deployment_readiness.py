@@ -197,6 +197,7 @@ def test_password_only_production_does_not_require_oauth():
 
 def test_disabled_oauth_provider_identifiers_are_not_validated():
     settings = _production_settings(
+        local_password_registration_enabled=True,
         google_oauth_enabled=False,
         microsoft_oauth_enabled=False,
         google_client_id="not-a-google-client",
@@ -1799,6 +1800,293 @@ def test_root_readme_routes_operators_to_reviewed_release_runbook():
         "location ^~ /uploads/",
     ):
         assert unsafe_legacy_instruction not in readme
+
+
+def test_fresh_server_guide_is_complete_password_first_and_release_safe():
+    guide_path = ROOT_DIR / "deploy" / "FRESH_SERVER_SETUP.md"
+    setup_script_path = ROOT_DIR / "deploy" / "scripts" / "fresh_server_setup.sh"
+    restore_script_path = (
+        ROOT_DIR / "deploy" / "scripts" / "fresh_restore_rehearsal.sh"
+    )
+    assert guide_path.is_file()
+    assert setup_script_path.is_file()
+    assert restore_script_path.is_file()
+    guide = guide_path.read_text(encoding="utf-8")
+    setup_script = setup_script_path.read_text(encoding="utf-8")
+    restore_script = restore_script_path.read_text(encoding="utf-8")
+    templates = "\n".join(
+        (ROOT_DIR / "deploy" / name).read_text(encoding="utf-8")
+        for name in (
+            "fresh-install.conf.example",
+            "fresh-restore.conf.example",
+            "litblogs.production.env.example",
+            "password-reset.production.env.example",
+            "invitation-operator.example.json",
+        )
+    )
+    operator_bundle = "\n".join((guide, setup_script, restore_script, templates))
+
+    assert re.findall(r"^## ([1-8])\.", guide, flags=re.MULTILINE) == list("12345678")
+    assert len(guide.splitlines()) <= 300
+    assert guide.count("```bash") == 8
+    assert "Quick path" in guide
+    assert "deterministic work is in the reviewed helper" in " ".join(guide.split())
+    assert "docs/operations/production-runbook.md" in guide
+    for phase in (
+        "toolchain",
+        "stage-tests",
+        "postgres",
+        "prepare",
+        "post-restore",
+        "invite-teacher",
+        "activate",
+        "smoke",
+    ):
+        assert f'"$HELPER" {phase}' in guide
+
+    for required in (
+        "Ubuntu 24.04.4 LTS",
+        "Python 3.13.15",
+        "Node.js 24.20.0",
+        "--no-same-owner",
+        "chown -R root:root",
+        "PostgreSQL 17",
+        "Nginx",
+        "ClamAV",
+        "Certbot",
+        "GitHub CLI",
+        "sudo -iu litblogs",
+        "ACME_CONTACT_EMAIL",
+        "--non-interactive --agree-tos --no-eff-email",
+        "TCP `80` and `443`",
+        "loopback-only",
+        "mkdir -p ~/www",
+        "git clone https://github.com/citdrhs/LitBlogs.git",
+        "git switch main",
+        "git pull --ff-only",
+        "ProtectHome=true",
+        "/opt/litblogs/releases",
+        "/etc/litblogs/litblogs.env",
+        "/etc/litblogs/password-reset.env",
+        "/etc/litblogs/postgres-root-ca.pem",
+        "gh run download",
+        "gh workflow run release.yml",
+        "gh run watch \"$RUN_ID\"",
+        "sha256sum --check SHA256SUMS",
+        "gh attestation verify",
+        "PROVENANCE_COUNT",
+        "SBOM_COUNT",
+        "verified_predicates",
+        "python-sbom.cdx.json",
+        "frontend-sbom.cdx.json",
+        "/srv/litblogs-release-quarantine",
+        "CUSTODY-SHA256",
+        "REVIEWED-COMMIT",
+        "REPLACE_WITH_APPROVED_RELEASE_ID",
+        "--source-digest \"$REVIEWED_SHA\"",
+        "--predicate-type https://cyclonedx.org/bom",
+        "sslmode=verify-full",
+        "scram-sha-256",
+        "SCRAM_OK=",
+        "ROTATED-OLD password",
+        "Wrong password was accepted",
+        "litblogs_migrator",
+        "litblogs_runtime",
+        "litblog_identity_owner",
+        "litblog_account_operator",
+        "litblog_invitation_operator",
+        "litblogs_backup",
+        "GRANT litblog_identity_owner TO litblogs_migrator",
+        "REVOKE litblog_identity_owner FROM litblogs_migrator",
+        "UPLOAD_REGISTRY_SCHEMA_READY=false",
+        "UPLOAD_LEGACY_IMPORT_COMPLETE=false",
+        "UPLOAD_BACKUP_RESTORE_VERIFIED=false",
+        "SELECT count(*) FROM public.upload_assets",
+        "! -name objects ! -name .incoming",
+        "backup_postgres.py",
+        "restore_verify_postgres.py",
+        "/run/litblogs-backup.env",
+        "/run/litblogs-restore.env",
+        "bootstrap_admin --confirm-empty-install",
+        "/etc/litblogs/invitation-operator.json",
+        "exec 3</etc/litblogs/invitation-operator.json",
+        "-m manage_teacher_invitations create",
+        "Teachers cannot self-select that role",
+        "litblogs-password-reset.service",
+        "email verification",
+        "exact-port",
+        "release_switch.py",
+        "Range: bytes=0-1",
+        "206",
+        "text/vtt",
+        'test "$MP4_STATUS" = 206',
+        "runtime.headers",
+        "html.headers",
+        "journalctl --quiet",
+        "Port $port is not loopback-only",
+        "GOOGLE_OAUTH_ENABLED=true",
+        "No frontend rebuild",
+        "apt-mark hold gh",
+        "systemctl enable --now nginx",
+        "apt.postgresql.org.sh -y",
+        "host firewall",
+        "CREATE ROLE litblogs_runtime NOLOGIN NOINHERIT",
+        "CREATE ROLE litblogs_restore_dba WITH LOGIN NOINHERIT SUPERUSER",
+        "no route or credential to production, students, teachers, or the internet",
+        "test -z \"$(ip route show default)\"",
+        "/srv/litblogs-restore/staging",
+        "-type f -printf '.\\n' | wc -l",
+        "-exec chown root:root",
+        "-exec chmod 0600",
+        "at least 32 UTF-8 bytes with at least",
+        "RESTORE_MANIFEST=",
+        "RESTORE_UPLOAD_TARGET=",
+        "RESTORE_DATABASE=",
+        "--verify-existing",
+        "cleanup_migration",
+        "cleanup_backup",
+        "cleanup_restore",
+        "15-minute RPO",
+        "off-host",
+        "restore rehearsal",
+    ):
+        assert required in operator_bundle
+
+    assert operator_bundle.index("UPLOAD_BACKUP_RESTORE_VERIFIED=false") < operator_bundle.index(
+        "restore_verify_postgres.py"
+    ) < operator_bundle.index("UPLOAD_BACKUP_RESTORE_VERIFIED=true")
+    assert operator_bundle.index("restore_verify_postgres.py") < operator_bundle.index(
+        "bootstrap_admin --confirm-empty-install"
+    )
+
+    for forbidden in (
+        "/usr/bin/python3.13",
+        "sudo make install",
+        "npm run dev",
+        "npm run preview",
+        "ADMIN_ACCESS_CODE",
+        "ADMIN_CODE",
+        "sslmode=require",
+        "UPLOAD_BACKUP_RESTORE_VERIFIED=true\nUPLOAD_LEGACY_IMPORT_COMPLETE=false",
+        "POSTGRES_OPERATOR_BACKUP_DATABASE_URL",
+        "POSTGRES_OPERATOR_RESTORE_DATABASE_URL",
+        "<accepted-manifest-path>",
+        "<isolated-upload-target>",
+        "<synthetic-database-name>",
+        "/home/litblogs/www/release-download-",
+    ):
+        assert forbidden not in operator_bundle
+
+    assert "staging and tests only" in guide
+    assert "Do not deploy the clone" in guide
+    assert "Do not generate `RELEASE-MANIFEST`" in guide
+    assert "isolated" in guide.lower()
+    assert "self-signed" in guide.lower()
+    assert "localhost:3310" not in guide
+    assert "127.0.0.1:3310" in operator_bundle
+    assert "-name 'litblogs-tutorial.en-*.vtt'" in operator_bundle
+    assert "-name 'litblogs-tutorial-*.vtt'" not in operator_bundle
+    assert Path("litblogs-tutorial.en-DWA6i4tK.vtt").match(
+        "litblogs-tutorial.en-*.vtt"
+    )
+    assert guide.index("gh workflow run release.yml") < guide.index(
+        "gh run watch \"$RUN_ID\""
+    ) < guide.index("gh run download")
+    assert 'test "$PROVENANCE_COUNT" -eq 1' in guide
+    assert 'test "$SBOM_COUNT" -eq 2' in guide
+    assert setup_script.count("trap 'exit 129' HUP") >= 2
+    assert setup_script.count("\\password litblogs_migrator") == 2
+    assert "MIGRATOR_GRANTED" not in operator_bundle
+    post_restore = setup_script.split("phase_post_restore()", 1)[1].split(
+        "phase_invite_teacher()", 1
+    )[0]
+    for gate in (
+        "HOST_FIREWALL_APPROVED",
+        "EGRESS_POLICY_APPROVED",
+        "RESTORE_REHEARSAL_APPROVED",
+        "RECOVERY_POLICY_APPROVED",
+    ):
+        assert f"require_approval {gate}" in post_restore
+    assert post_restore.index("install_units_and_nginx") < post_restore.index(
+        "bootstrap_admin --confirm-empty-install"
+    )
+    smoke_phase = setup_script.split("phase_smoke()", 1)[1].split("usage()", 1)[0]
+    assert "for port in 8000 3310 5432" in smoke_phase
+    assert "validate_password_reset_env" in setup_script
+    assert "Duplicate authentication-worker setting" in setup_script
+    assert "Forbidden authentication-worker setting" in setup_script
+    for allowed_worker_key in (
+        "DATABASE_URL",
+        "DB_POOL_SIZE",
+        "FRONTEND_URL",
+        "EMAIL_HOST",
+        "EMAIL_PASSWORD",
+        "PASSWORD_RESET_CLAIM_TIMEOUT_SECONDS",
+    ):
+        assert allowed_worker_key in setup_script.split(
+            "validate_password_reset_env()", 1
+        )[1].split("run_migration()", 1)[0]
+    assert "GOOGLE_[A-Z0-9_]*" in setup_script
+    assert "MICROSOFT_[A-Z0-9_]*" in setup_script
+    assert "UPLOAD_[A-Z0-9_]*" in setup_script
+    assert "sudo -iu litblogs env REVIEWED_SHA=" in setup_script
+    assert "bash -se <<'LITBLOGS'" in setup_script
+    assert "litblogs/.venv/bin/python -m pytest" in setup_script
+    assert guide.index("gh auth login --hostname github.com") < guide.index(
+        "gh auth status --hostname github.com"
+    ) < guide.index("gh workflow run release.yml")
+    for editor in (
+        "sudoedit /etc/litblogs/fresh-install.conf",
+        "sudoedit /etc/litblogs/litblogs.env",
+        "sudoedit /etc/litblogs/password-reset.env",
+        "sudoedit /run/litblogs-migration.env",
+        "sudoedit /run/litblogs-backup.env",
+    ):
+        assert editor in guide
+    bash_fences = re.findall(r"```bash\n(.*?)\n```", guide, flags=re.DOTALL)
+    for fence in bash_fences:
+        assert all(
+            interactive not in fence
+            for interactive in ("sudoedit", "gh auth login", "read -r -p", "\\password")
+        )
+    assert "gh auth login --hostname github.com --git-protocol https" in guide
+    assert "read -r -p 'Enter REPLACE_WITH_APPROVED_RELEASE_ID:" in guide
+    password_prompt_lines = [
+        line
+        for line in setup_script.splitlines()
+        if "--command '\\password" in line
+    ]
+    assert len(password_prompt_lines) == 10
+    assert all(line.rstrip().endswith("'") for line in password_prompt_lines)
+    assert "TRANSFER PAUSE" in guide
+    assert "restore-prepare" in guide
+    assert "restore-verify" in guide
+    assert "HOST_FIREWALL_APPROVED=false" in templates
+    assert "EGRESS_POLICY_APPROVED=false" in templates
+    assert "RECOVERY_POLICY_APPROVED=false" in templates
+    assert "RESTORE_REHEARSAL_APPROVED=false" in templates
+    assert "ISOLATION_APPROVED=false" in templates
+    assert "REVIEWED_SHA=REPLACE_WITH_REVIEWED_40_CHARACTER_SHA" in templates
+    assert 'grep -Fxq "commit=$REVIEWED_SHA"' in restore_script
+    restore_verify = restore_script.split("phase_restore_verify()", 1)[1].split(
+        "usage()", 1
+    )[0]
+    assert restore_verify.index("stat -Lc '%U:%G:%a'") < restore_verify.index(
+        'install -d -o root -g root -m 0700 "$RESTORE_UPLOAD_TARGET"'
+    ) < restore_verify.index("restore_verify_postgres.py")
+    restore_prepare = restore_script.split("phase_restore_prepare()", 1)[1].split(
+        "create_stand_in_roles()", 1
+    )[0]
+    assert "create_stand_in_roles" in restore_prepare
+    assert "create_stand_in_roles" not in restore_verify
+    assert "test -z \"$(ip route show default)\"" in restore_script
+    assert "apt.postgresql.org.sh -y" in setup_script
+    assert "apt.postgresql.org.sh -y" in restore_script
+    candidate_block = guide.split("never re-select it from the mutable staging checkout", 1)[
+        1
+    ].split("## 5.", 1)[0]
+    assert "/home/litblogs/www" not in candidate_block
+    assert "REVIEWED_SHA=$(sudo sed -n '1p'" in candidate_block
 
 
 def _alembic_config(connection=None):
