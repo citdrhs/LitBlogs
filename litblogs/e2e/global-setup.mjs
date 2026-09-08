@@ -58,6 +58,21 @@ const findPython = () => {
   return candidates.find(commandWorks) || null;
 };
 
+const resolvePython = (command) => {
+  if (!command) return null;
+  const result = spawnSync(
+    command,
+    ['-c', 'import os, sys; print(os.path.abspath(sys.executable))'],
+    {
+      encoding: 'utf8',
+      shell: false,
+      windowsHide: true,
+    },
+  );
+  const executable = String(result.stdout || '').trim();
+  return result.status === 0 && executable ? executable : null;
+};
+
 const findPostgresBin = () => {
   const candidates = [
     process.env.E2E_POSTGRES_BIN,
@@ -146,7 +161,7 @@ export default async function globalSetup() {
   if (!fs.existsSync(chromium.executablePath())) {
     return skipLocallyOrFail('Chromium is unavailable; run `npx playwright install chromium`');
   }
-  const python = findPython();
+  const python = resolvePython(findPython());
   if (!python) {
     return skipLocallyOrFail('Python with the backend dependencies is unavailable');
   }
@@ -179,7 +194,10 @@ export default async function globalSetup() {
 
   process.env.E2E_RUN_DIR = runDirectory;
   process.env.E2E_CREDENTIALS_FILE = credentialsFile;
+  process.env.E2E_DATABASE_METADATA_FILE = databaseMetadataFile;
   process.env.E2E_FAILURE_REDACTIONS_FILE = failureRedactionsFile;
+  process.env.E2E_FRONTEND_ORIGIN = `http://127.0.0.1:${frontendPort}`;
+  process.env.E2E_PYTHON = python;
   process.env.E2E_CSRF_COOKIE_NAME = 'litblogs_e2e_csrf';
 
   const databaseName = `litblog_test_e2e_${crypto.randomBytes(8).toString('hex')}`;
@@ -309,10 +327,12 @@ export default async function globalSetup() {
       CORS_ALLOWED_ORIGINS: `http://127.0.0.1:${frontendPort}`,
       ALLOWED_HOSTS: '127.0.0.1,localhost',
       ALLOWED_EMAIL_DOMAINS: 'example.com',
-      GOOGLE_CLIENT_ID: 'e2e-google-client-id',
-      MICROSOFT_CLIENT_ID: 'e2e-microsoft-client-id',
-      MICROSOFT_TENANT_ID: '871bd3e0-2dc0-4a40-9b07-9d03068c2364',
-      MICROSOFT_ALLOWED_TENANT_IDS: '871bd3e0-2dc0-4a40-9b07-9d03068c2364',
+      GOOGLE_OAUTH_ENABLED: 'false',
+      GOOGLE_CLIENT_ID: '',
+      MICROSOFT_OAUTH_ENABLED: 'false',
+      MICROSOFT_CLIENT_ID: '',
+      MICROSOFT_TENANT_ID: '',
+      MICROSOFT_ALLOWED_TENANT_IDS: '',
       SESSION_COOKIE_NAME: 'litblogs_e2e_session',
       CSRF_COOKIE_NAME: 'litblogs_e2e_csrf',
       SESSION_COOKIE_SECURE: 'false',

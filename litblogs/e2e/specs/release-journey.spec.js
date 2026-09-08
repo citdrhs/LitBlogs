@@ -6,6 +6,26 @@ test.describe.configure({ mode: 'serial', retries: 0 });
 
 const state = {};
 
+const REMOVABLE_PDF = Object.freeze({
+  name: 'removable-journey.pdf',
+  mimeType: 'application/pdf',
+  buffer: Buffer.from(
+    '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n'
+      + '2 0 obj<</Type/Pages/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n',
+    'utf8',
+  ),
+});
+
+const REMOVABLE_VIDEO = Object.freeze({
+  name: 'removable-journey.mp4',
+  mimeType: 'video/mp4',
+  buffer: Buffer.concat([
+    Buffer.from([0x00, 0x00, 0x00, 0x18]),
+    Buffer.from('ftypisom', 'ascii'),
+    Buffer.from('synthetic-e2e-video', 'ascii'),
+  ]),
+});
+
 const responseJson = async (response, status = 200) => {
   expect(response.status()).toBe(status);
   return response.json();
@@ -39,15 +59,195 @@ const joinClassThroughUi = async (session, className, accessCode) => {
   await expect(page).toHaveURL(new RegExp(`/class-feed/${state.classroom.id}$`));
 };
 
-test('login uses runtime config, HttpOnly sessions, CSRF, and role guards', async ({ journey }) => {
+test('login uses runtime config, HttpOnly sessions, CSRF, and role guards', async ({ journey }, testInfo) => {
+  const checkpoint = (description) => testInfo.annotations.push({ type: 'checkpoint', description });
   const anonymous = await journey.openAnonymous();
   const runtimeResponse = await anonymous.api('/runtime-config');
   const runtimeConfig = await responseJson(runtimeResponse);
   expect(runtimeResponse.headers()['cache-control']).toBe('no-store');
   expect(runtimeConfig).toMatchObject({
     csrf_cookie_name: 'litblogs_e2e_csrf',
+    google_oauth_enabled: false,
+    google_client_id: '',
     local_password_registration_enabled: true,
+    microsoft_oauth_enabled: false,
+    microsoft_client_id: '',
+    microsoft_tenant_id: '',
   });
+  checkpoint('password-only-runtime-ready');
+
+  const registrationEmail = `browser-registration-${journey.credentials.run_id}@example.com`;
+  const registrationPassword = `Browser-${journey.credentials.run_id}-Verified-Aa9!`;
+  journey.redact(registrationEmail, registrationPassword);
+  await anonymous.page.goto('/sign-up');
+  await expect(anonymous.page.getByRole('heading', { name: 'Sign Up', exact: true })).toBeVisible();
+  await expect(anonymous.page.getByText('or continue with', { exact: true })).toHaveCount(0);
+  await expect(anonymous.page.getByRole('button', { name: /Microsoft/i })).toHaveCount(0);
+  await expect(anonymous.page.locator('iframe[src*="accounts.google.com"]')).toHaveCount(0);
+  await anonymous.page.getByPlaceholder('Enter your first name').fill('Browser');
+  await anonymous.page.getByPlaceholder('Enter your last name').fill('Journey');
+  await anonymous.page.getByPlaceholder('Enter your email').fill(registrationEmail);
+  await anonymous.page.getByPlaceholder('Enter your password').fill(registrationPassword);
+  await anonymous.page.getByPlaceholder('Confirm your password').fill(registrationPassword);
+  await anonymous.page.getByLabel('Role').selectOption('STUDENT');
+  const registered = waitForApiResponse(anonymous.page, 'POST', '/api/auth/register');
+  await anonymous.page.getByRole('button', { name: 'Sign Up', exact: true }).click();
+  expect(await responseJson(await registered, 202)).toEqual({
+    message: 'If registration can be completed, verification instructions will be sent.',
+  });
+  const registrationDialog = anonymous.page.getByRole('dialog', {
+    name: 'Check your school email',
+  });
+  await expect(registrationDialog).toBeVisible();
+  checkpoint('registration-accepted-without-session');
+  expect((await anonymous.api('/auth/session')).status()).toBe(401);
+
+  const preVerificationApiLogin = await anonymous.api('/auth/login', {
+    method: 'POST',
+    data: { email: registrationEmail, password: registrationPassword },
+  });
+  expect(await responseJson(preVerificationApiLogin, 401)).toEqual({
+    detail: 'Invalid email or password',
+  });
+  expect(preVerificationApiLogin.headers()).not.toHaveProperty('set-cookie');
+  checkpoint('unverified-api-login-rejected');
+
+  await registrationDialog.getByRole('link', { name: 'Sign In', exact: true }).click();
+  await expect(anonymous.page).toHaveURL(/\/sign-in$/);
+  await expect(anonymous.page.getByRole('heading', { name: 'Sign In', exact: true }))
+    .toBeVisible();
+  await expect(anonymous.page.getByText('or continue with', { exact: true })).toHaveCount(0);
+  await expect(anonymous.page.getByRole('button', { name: /Microsoft/i })).toHaveCount(0);
+  await expect(anonymous.page.locator('iframe[src*="accounts.google.com"]')).toHaveCount(0);
+  await anonymous.page.getByPlaceholder('Enter your email').fill(registrationEmail);
+  await anonymous.page.getByPlaceholder('Enter your password').fill(registrationPassword);
+  const preVerificationUiLogin = waitForApiResponse(
+    anonymous.page,
+    'POST',
+    '/api/auth/login',
+  );
+  await anonymous.page.getByRole('button', { name: 'Sign In', exact: true }).click();
+  const rejectedUiLogin = await preVerificationUiLogin;
+  const rejectedUiBody = await rejectedUiLogin.json();
+  expect(rejectedUiLogin.status()).toBe(401);
+  expect(rejectedUiBody).toEqual({
+    detail: 'Invalid email or password',
+  });
+  expect(rejectedUiLogin.headers()).not.toHaveProperty('set-cookie');
+  await expect(anonymous.page.getByText('Invalid email or password', { exact: true }))
+    .toBeVisible();
+  const unauthenticatedState = await anonymous.page.evaluate(() => ({
+    cookieNames: document.cookie
+      .split(';')
+      .map((part) => part.trim().split('=', 1)[0])
+      .filter(Boolean),
+    localToken: localStorage.getItem('token'),
+    localUser: localStorage.getItem('user_info'),
+    sessionToken: sessionStorage.getItem('token'),
+    sessionUser: sessionStorage.getItem('user_info'),
+  }));
+  expect(unauthenticatedState).toEqual({
+    cookieNames: [],
+    localToken: null,
+    localUser: null,
+    sessionToken: null,
+    sessionUser: null,
+  });
+  expect(await anonymous.context.cookies()).toEqual([]);
+  checkpoint('unverified-login-rejected');
+
+  const verificationToken = await journey.captureVerificationEmail(registrationEmail);
+  journey.redact(verificationToken, `#token=${verificationToken}`);
+  checkpoint('verification-delivery-captured');
+  await anonymous.page.addInitScript(() => {
+    const fragmentExisted = new URLSearchParams(
+      window.location.hash.startsWith('#') ? window.location.hash.slice(1) : '',
+    ).has('token');
+    const originalReplaceState = window.history.replaceState.bind(window.history);
+    window.__verificationBootstrapAudit = {
+      fragmentExisted,
+      removalOmittedFragment: false,
+      rootWasEmpty: false,
+    };
+    window.history.replaceState = (stateValue, unused, url) => {
+      const destination = String(url || '');
+      if (fragmentExisted && !destination.includes('token=')) {
+        window.__verificationBootstrapAudit.removalOmittedFragment = !destination.includes('#');
+        window.__verificationBootstrapAudit.rootWasEmpty = !document
+          .getElementById('root')
+          ?.hasChildNodes();
+      }
+      return originalReplaceState(stateValue, unused, url);
+    };
+  });
+  const verified = waitForApiResponse(anonymous.page, 'POST', '/api/auth/verify-email');
+  await anonymous.page.goto(`/verify-email#token=${verificationToken}`);
+  expect(await responseJson(await verified)).toEqual({ message: 'Email verified successfully' });
+  await expect(anonymous.page.getByRole('heading', { name: 'Email verified', exact: true }))
+    .toBeVisible();
+  await expect(anonymous.page).toHaveURL(/\/verify-email$/);
+  expect(await anonymous.page.evaluate(() => ({
+    audit: window.__verificationBootstrapAudit,
+    hash: window.location.hash,
+  }))).toEqual({
+    audit: {
+      fragmentExisted: true,
+      removalOmittedFragment: true,
+      rootWasEmpty: true,
+    },
+    hash: '',
+  });
+  expect((await anonymous.api('/auth/session')).status()).toBe(401);
+  expect(await anonymous.context.cookies()).toEqual([]);
+  checkpoint('verification-completed-with-clean-url');
+
+  await anonymous.page.getByRole('main')
+    .getByRole('link', { name: 'Sign In', exact: true })
+    .click();
+  await expect(anonymous.page.getByRole('heading', { name: 'Sign In', exact: true }))
+    .toBeVisible();
+  await anonymous.page.getByPlaceholder('Enter your email').fill(registrationEmail);
+  await anonymous.page.getByPlaceholder('Enter your password').fill(registrationPassword);
+  const signedIn = waitForApiResponse(anonymous.page, 'POST', '/api/auth/login');
+  await anonymous.page.getByRole('button', { name: 'Sign In', exact: true }).click();
+  const signedInResponse = await signedIn;
+  const registeredSession = await responseJson(signedInResponse);
+  expect(registeredSession.role).toBe('STUDENT');
+  await expect(anonymous.page).toHaveURL(/\/student-hub$/);
+  await expect(anonymous.page.getByRole('heading', { name: 'My Classes' })).toBeVisible();
+  const registeredCookies = await anonymous.context.cookies();
+  const registeredSessionCookie = registeredCookies.find(
+    ({ name }) => name === 'litblogs_e2e_session',
+  );
+  const registeredCsrfCookie = registeredCookies.find(
+    ({ name }) => name === 'litblogs_e2e_csrf',
+  );
+  expect(registeredSessionCookie && {
+    httpOnly: registeredSessionCookie.httpOnly,
+    sameSite: registeredSessionCookie.sameSite,
+    secure: registeredSessionCookie.secure,
+  }).toEqual({ httpOnly: true, sameSite: 'Strict', secure: false });
+  expect(registeredCsrfCookie && {
+    httpOnly: registeredCsrfCookie.httpOnly,
+    sameSite: registeredCsrfCookie.sameSite,
+    secure: registeredCsrfCookie.secure,
+  }).toEqual({ httpOnly: false, sameSite: 'Strict', secure: false });
+  const registeredBrowserState = await anonymous.page.evaluate(() => ({
+    cookieNames: document.cookie
+      .split(';')
+      .map((part) => part.trim().split('=', 1)[0])
+      .filter(Boolean),
+    localToken: localStorage.getItem('token'),
+    sessionToken: sessionStorage.getItem('token'),
+    sessionRole: JSON.parse(sessionStorage.getItem('user_info') || '{}').role,
+  }));
+  expect(registeredBrowserState).toEqual({
+    cookieNames: ['litblogs_e2e_csrf'],
+    localToken: null,
+    sessionToken: null,
+    sessionRole: 'STUDENT',
+  });
+  checkpoint('verified-student-session-ready');
 
   const undefinedClassRequests = [];
   anonymous.page.on('request', (request) => {
@@ -442,6 +642,107 @@ test('pending uploads bind to a class post without escaping class ACLs', async (
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZC6wAAAAASUVORK5CYII=',
     'base64',
   );
+
+  await owner.page.goto(`/class-feed/${state.classroom.id}`);
+  await owner.page.getByRole('button', { name: 'Create New Post', exact: true }).click();
+  const composer = owner.page.getByRole('dialog', { name: 'Create post' });
+  const editor = composer.getByRole('textbox', { name: 'Post content' });
+  const toolbar = composer.getByRole('toolbar', { name: 'Rich text formatting' });
+  const removalPostTitle = `Removed Attachments ${journey.credentials.run_id}`;
+  const removalPostBody = 'This published post contains no attachments.';
+  await expect(composer).toBeVisible();
+  await expect(editor.locator('[data-node-kind="attachment"]')).toHaveCount(0);
+  await expect(editor.locator('[data-node-kind="image"]')).toHaveCount(0);
+  await expect(editor.locator('[data-node-kind="video"]')).toHaveCount(0);
+  await composer.getByPlaceholder('Enter a descriptive title for your post')
+    .fill(removalPostTitle);
+
+  const pdfChooserPromise = owner.page.waitForEvent('filechooser');
+  await toolbar.getByRole('button', { name: 'Insert PDF attachment' }).click();
+  const pdfChooser = await pdfChooserPromise;
+  const removablePdfUploaded = waitForApiResponse(owner.page, 'POST', '/api/upload/file');
+  await pdfChooser.setFiles(REMOVABLE_PDF);
+  const removablePdfAsset = await responseJson(await removablePdfUploaded);
+  const removablePdf = editor.locator('[data-node-kind="attachment"]');
+  await expect(removablePdf).toBeVisible();
+  await removablePdf.click();
+  await editor.getByRole('button', { name: 'Remove PDF from post' }).click();
+  await expect(removablePdf).toHaveCount(0);
+
+  await toolbar.getByRole('button', { name: 'Insert image' }).click();
+  const imageDialog = composer.getByRole('dialog', { name: 'Insert image' });
+  await expect(imageDialog).toBeVisible();
+  const imageChooserPromise = owner.page.waitForEvent('filechooser');
+  await imageDialog.getByRole('button', { name: 'Upload from computer' }).click();
+  const imageChooser = await imageChooserPromise;
+  const removableImageUploaded = waitForApiResponse(owner.page, 'POST', '/api/upload/image');
+  await imageChooser.setFiles({
+    name: 'removable-journey.png',
+    mimeType: 'image/png',
+    buffer: png,
+  });
+  const removableImageAsset = await responseJson(await removableImageUploaded);
+  const removableImage = editor.locator('[data-node-kind="image"]');
+  await expect(removableImage).toBeVisible();
+  await removableImage.locator('img').click();
+  await editor.getByRole('button', { name: 'Remove image from post' }).click();
+  await expect(removableImage).toHaveCount(0);
+
+  const videoChooserPromise = owner.page.waitForEvent('filechooser');
+  await toolbar.getByRole('button', { name: 'Insert video' }).click();
+  const videoChooser = await videoChooserPromise;
+  const removableVideoUploaded = waitForApiResponse(owner.page, 'POST', '/api/upload/video');
+  await videoChooser.setFiles(REMOVABLE_VIDEO);
+  const removableVideoAsset = await responseJson(await removableVideoUploaded);
+  const removableVideo = editor.locator('[data-node-kind="video"]');
+  await expect(removableVideo).toBeVisible();
+  await removableVideo.click();
+  await editor.getByRole('button', { name: 'Remove video from post' }).click();
+  await expect(removableVideo).toHaveCount(0);
+  await expect(editor.locator('[data-node-kind]')).toHaveCount(0);
+
+  await editor.fill(removalPostBody);
+  const removalPublishedResponse = waitForApiResponse(
+    owner.page,
+    'POST',
+    `/api/classes/${state.classroom.id}/posts`,
+  );
+  await composer.getByRole('button', { name: 'Publish', exact: true }).click();
+  const rawRemovalPublishedResponse = await removalPublishedResponse;
+  const removalRequest = rawRemovalPublishedResponse.request().postDataJSON();
+  const removalPost = await responseJson(rawRemovalPublishedResponse);
+  await expect(composer).toHaveCount(0);
+  expect(removalRequest).not.toHaveProperty('media');
+  expect(removalRequest).not.toHaveProperty('files');
+  expect(removalRequest.content).toContain(removalPostBody);
+  expect(removalPost.content).toContain(removalPostBody);
+  for (const asset of [removablePdfAsset, removableImageAsset, removableVideoAsset]) {
+    expect(JSON.stringify(removalRequest)).not.toContain(asset.url);
+    expect(removalPost.content).not.toContain(asset.url);
+  }
+  expect(removalPost.content).not.toMatch(/file-attachment|<img|<video|<source/i);
+
+  await classmate.page.goto(`/class-feed/${state.classroom.id}`);
+  await expect(classmate.page.getByRole('heading', {
+    name: removalPostTitle,
+    exact: true,
+  })).toBeVisible();
+  const classmateRemovalPreview = classmate.page.getByTestId(
+    `class-feed-post-preview-${removalPost.id}`,
+  );
+  await expect(classmateRemovalPreview).toContainText(removalPostBody);
+  await expect(classmateRemovalPreview.locator('img, video, .file-attachment')).toHaveCount(0);
+
+  const teacher = await journey.openRole('teacher');
+  await teacher.page.goto('/teacher-dashboard');
+  await teacher.page.getByRole('button', { name: 'Classes', exact: true }).click();
+  await teacher.page.getByRole('heading', { name: state.className, exact: true }).click();
+  await teacher.page.getByRole('button', { name: 'Blogs', exact: true }).click();
+  const teacherRemovalPreview = teacher.page.getByTestId(
+    `class-details-post-preview-${removalPost.id}`,
+  );
+  await expect(teacherRemovalPreview).toContainText(removalPostBody);
+  await expect(teacherRemovalPreview.locator('img, video, .file-attachment')).toHaveCount(0);
 
   const uploaded = await owner.api('/upload/image', {
     method: 'POST',

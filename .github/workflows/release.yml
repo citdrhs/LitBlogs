@@ -60,7 +60,7 @@ jobs:
       - name: Verify browser harness safety
         working-directory: litblogs
         run: |
-          python -m pytest -q e2e/support/test_database.py
+          python -m pytest -q e2e/support/test_database.py e2e/support/test_capture_verification.py
           node --test e2e/support/availability.test.mjs
           node --test e2e/support/sanitized-reporter.test.mjs
       - name: Install Chromium with system dependencies
