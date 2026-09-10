@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for passing LitBlogs main updates every two minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=2min
+RandomizedDelaySec=15
+Unit=litblogs-cit-update.service
+
+[Install]
+WantedBy=timers.target

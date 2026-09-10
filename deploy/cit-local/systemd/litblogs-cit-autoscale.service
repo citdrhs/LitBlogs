@@ -1,0 +1,15 @@
+[Unit]
+Description=Bound LitBlogs app replicas to local load
+Requires=docker.service
+After=docker.service litblogs-cit.service
+PartOf=litblogs-cit.service
+ConditionPathExists=!/home/litblogs/.local/state/cit-deploy/update-blocked.json
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecCondition=/usr/bin/systemctl --quiet is-active litblogs-cit.service
+ExecStart=/usr/bin/python3 /home/litblogs/.local/state/cit-deploy/autoscale.py --once
+TimeoutStartSec=360
+Nice=10

@@ -1,0 +1,10 @@
+[Unit]
+Description=Sample LitBlogs app capacity each minute
+
+[Timer]
+OnBootSec=6min
+OnUnitInactiveSec=60s
+Unit=litblogs-cit-autoscale.service
+
+[Install]
+WantedBy=timers.target
