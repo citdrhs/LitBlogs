@@ -70,6 +70,7 @@ class GatewayRuntimeTests(unittest.TestCase):
             raise AssertionError("Test gateway must bind only to loopback")
         cls.port = int(binding.rsplit(":", 1)[1])
         cls.context = ssl.create_default_context(cafile=str(cls.directory / "cert.pem"))
+        cls.context.minimum_version = ssl.TLSVersion.TLSv1_2
         cls.wait_for_replicas({"replica-1"})
 
     @classmethod

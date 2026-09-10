@@ -28,8 +28,14 @@ REQUIRED_CHECKS = frozenset(
         "Dependency audit",
         "SAST",
         "Fresh container startup and persistence",
+        "CodeQL analysis (python)",
+        "CodeQL analysis (javascript-typescript)",
     }
 )
+PRESENT_CHECK_APPS = {
+    "CodeQL": "github-advanced-security",
+    "CIT local deployment controls": "github-actions",
+}
 CLEAN_ENV = {
     "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
     "HOME": "/root",
@@ -150,19 +156,26 @@ def sync_directory(path):
 def checks_pass(checks, sha):
     newest = {}
     for item in checks:
-        if (
-            item.get("head_sha") != sha
-            or item.get("app", {}).get("slug") != "github-actions"
-        ):
+        if item.get("head_sha") != sha:
             continue
         name = item.get("name")
+        producer = (item.get("app") or {}).get("slug")
+        if name in PRESENT_CHECK_APPS:
+            if producer != PRESENT_CHECK_APPS[name]:
+                return False
+        elif name not in REQUIRED_CHECKS or producer != "github-actions":
+            continue
         if name not in newest or item.get("id", 0) > newest[name].get("id", 0):
             newest[name] = item
+    # The separate CodeQL alert gate is not emitted for every main revision.
+    # If it or the newer CIT workflow is present, a failure/pending result must
+    # not be hidden by successful required analysis jobs or an older attempt.
+    admitted_checks = REQUIRED_CHECKS | (PRESENT_CHECK_APPS.keys() & newest.keys())
     return all(
         name in newest
         and newest[name].get("status") == "completed"
         and newest[name].get("conclusion") == "success"
-        for name in REQUIRED_CHECKS
+        for name in admitted_checks
     )
 
 
@@ -568,9 +581,13 @@ def main():
             raise ValueError("Candidate source path is invalid")
         candidate_git = ["git", "-c", "core.hooksPath=/dev/null", "-C", str(source)]
         if (
-            run([*candidate_git, "rev-parse", "HEAD"], umask=0o022).stdout.decode().strip()
+            run([*candidate_git, "rev-parse", "HEAD"], umask=0o022)
+            .stdout.decode()
+            .strip()
             != candidate
-            or run([*candidate_git, "status", "--porcelain=v1"], umask=0o022).stdout.strip()
+            or run(
+                [*candidate_git, "status", "--porcelain=v1"], umask=0o022
+            ).stdout.strip()
         ):
             raise ValueError("Candidate worktree must be clean and pinned")
         after = json.loads(

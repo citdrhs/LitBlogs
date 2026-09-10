@@ -105,7 +105,9 @@ Docker restart.
 
 `litblogs-cit-update.timer` checks GitHub main approximately every two minutes.
 Public read access suffices; no organization-wide GitHub key or inbound webhook
-is needed. A new commit must have all nine required CI/container checks passing.
+is needed. A new commit must have all eleven required CI/container checks passing,
+including both CodeQL analysis jobs; any present CodeQL alert check or CIT local
+deployment controls check must also have completed successfully for that commit.
 The updater builds it separately, records a failure latch, pauses application
 writers for a consistent encrypted backup, applies newly added Alembic revisions,
 and starts the new application image. **The PostgreSQL container is not restarted

@@ -19,14 +19,20 @@
 - [x] Implement and rehearse the update sequence against the currently admitted SHA, including encrypted backup, app replacement and unchanged PostgreSQL container/start time. Verify the real GitHub polling path; future new-commit deployment remains automatic after required CI passes.
 - [x] Verify one-to-three-to-one healthy app replicas and local HTTPS routing; install bounded CPU-based autoscaling with a shared operation lock.
 - [x] Install/enable the main systemd service and three timers; run startup, update, autoscale and backup services successfully. Preserve existing containers on boot. Backups are retained without deletion; disk retention and off-host scheduling are documented. Administrator provisioning is complete, with credentials kept privately outside Git.
-- [ ] Review deployment changes, rerun relevant checks, publish the authorized deployment changes when verified, and retain exact remote deployment evidence.
+- [x] Review deployment changes, rerun relevant checks, publish the authorized deployment changes as PR #62, and retain exact remote deployment evidence.
 
 No broad cleanup, shared host configuration changes, global Docker operations, database resets, unrelated repository edits, or automatic schema downgrades are permitted. Failure recovery preserves database/uploads and the previous application image.
 
-Validation: all 61 deployment-control tests pass on Linux, including the six real
+Validation: the deployment-control suite passes on Linux, including the six real
 HAProxy runtime tests and the Git permission regression; Ruff passes. Existing
 focused application tests passed (121 passed, 19 platform-dependent skips).
 Current application GitHub CI, browser journeys and container persistence checks
 were verified successful. Actual CIT backup, isolated restore, application
 replacement, scaling, admin authentication and service/timer evidence is retained
 privately in the deployment state directory and copied off-host.
+
+Publication checks identified a TLS-version warning in the disposable gateway
+test and a newly reported js-yaml development-dependency advisory. The test now
+states its TLS 1.2 minimum explicitly, and only the affected lockfile entry moves
+from 4.3.1 to 4.3.2. CI admission also requires both CodeQL analysis jobs and honors
+any present CodeQL alert or CIT control check for the exact candidate commit.

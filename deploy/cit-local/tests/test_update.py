@@ -60,20 +60,32 @@ def config():
 
 class UpdateTests(unittest.TestCase):
     def test_git_subprocess_keeps_public_source_readable_and_disables_hooks(self):
-        with patch.object(update.subprocess, "run", return_value=types.SimpleNamespace(stdout=b"fixture\n")) as command:
-            self.assertEqual(update.git("fetch", "--quiet", "origin", "main"), "fixture")
+        with patch.object(
+            update.subprocess,
+            "run",
+            return_value=types.SimpleNamespace(stdout=b"fixture\n"),
+        ) as command:
+            self.assertEqual(
+                update.git("fetch", "--quiet", "origin", "main"), "fixture"
+            )
         arguments = command.call_args.args[0]
         self.assertIn("core.hooksPath=/dev/null", arguments)
         self.assertIn(f"safe.directory={update.REPO}", arguments)
         self.assertEqual(command.call_args.kwargs.get("umask"), 0o022)
         self.assertEqual(command.call_args.kwargs["env"], update.CLEAN_ENV)
 
-    @unittest.skipUnless(os.name == "posix" and shutil.which("git"), "Requires local Linux Git")
+    @unittest.skipUnless(
+        os.name == "posix" and shutil.which("git"), "Requires local Linux Git"
+    )
     def test_git_head_rewrite_remains_readable_under_private_parent_umask(self):
         with tempfile.TemporaryDirectory(prefix="litblogs-git-mode-test-") as temporary:
             repository = Path(temporary)
-            subprocess.run(["git", "init", "--quiet", str(repository)], check=True,
-                           capture_output=True, timeout=30)
+            subprocess.run(
+                ["git", "init", "--quiet", str(repository)],
+                check=True,
+                capture_output=True,
+                timeout=30,
+            )
             head = repository / ".git" / "HEAD"
             previous_mask = os.umask(0o077)
             try:
@@ -90,8 +102,12 @@ class UpdateTests(unittest.TestCase):
                 update.fetch_checks("../unexpected-target")
             request.assert_not_called()
 
-    def test_requires_all_nine_latest_successful_checks_on_exact_commit(self):
-        self.assertEqual(len(update.REQUIRED_CHECKS), 9)
+    def test_requires_all_eleven_latest_successful_checks_on_exact_commit(self):
+        self.assertEqual(len(update.REQUIRED_CHECKS), 11)
+        self.assertTrue(
+            {"CodeQL analysis (python)", "CodeQL analysis (javascript-typescript)"}
+            <= update.REQUIRED_CHECKS
+        )
         checks = [
             {
                 "id": index,
@@ -116,6 +132,110 @@ class UpdateTests(unittest.TestCase):
                 checks + [{**checks[0], "id": 100, "status": "in_progress"}], SHA
             )
         )
+
+    def passing_checks(self):
+        return [
+            {
+                "id": index,
+                "name": name,
+                "head_sha": SHA,
+                "app": {"slug": "github-actions"},
+                "status": "completed",
+                "conclusion": "success",
+            }
+            for index, name in enumerate(update.REQUIRED_CHECKS, 1)
+        ]
+
+    def test_present_codeql_alert_failure_blocks_successful_analysis_jobs(self):
+        checks = self.passing_checks()
+        alert = {
+            "id": 100,
+            "name": "CodeQL",
+            "head_sha": SHA,
+            "app": {"slug": "github-advanced-security", "id": 57789},
+            "status": "completed",
+            "conclusion": "failure",
+        }
+        self.assertFalse(update.checks_pass([*checks, alert], SHA))
+        self.assertTrue(update.checks_pass([*checks, {**alert, "head_sha": NEXT}], SHA))
+        self.assertTrue(update.checks_pass(checks, SHA))
+
+    def test_latest_exact_commit_codeql_alert_must_complete_successfully(self):
+        checks = self.passing_checks()
+        failed = {
+            "id": 100,
+            "name": "CodeQL",
+            "head_sha": SHA,
+            "app": {"slug": "github-advanced-security"},
+            "status": "completed",
+            "conclusion": "failure",
+        }
+        succeeded = {**failed, "id": 101, "conclusion": "success"}
+        self.assertTrue(update.checks_pass([*checks, succeeded, failed], SHA))
+        for status, conclusion in (
+            ("queued", None),
+            ("in_progress", None),
+            ("completed", "failure"),
+            ("completed", "neutral"),
+            ("completed", "cancelled"),
+            ("completed", "skipped"),
+        ):
+            latest = {
+                **succeeded,
+                "id": 102,
+                "status": status,
+                "conclusion": conclusion,
+            }
+            self.assertFalse(update.checks_pass([*checks, latest, succeeded], SHA))
+
+    def test_present_cit_controls_must_pass_and_cannot_be_spoofed(self):
+        checks = self.passing_checks()
+        control = {
+            "id": 100,
+            "name": "CIT local deployment controls",
+            "head_sha": SHA,
+            "app": {"slug": "github-actions"},
+            "status": "completed",
+            "conclusion": "failure",
+        }
+        self.assertFalse(update.checks_pass([*checks, control], SHA))
+        self.assertTrue(
+            update.checks_pass([*checks, {**control, "head_sha": NEXT}], SHA)
+        )
+        self.assertTrue(
+            update.checks_pass(
+                [*checks, control, {**control, "id": 101, "conclusion": "success"}], SHA
+            )
+        )
+        for name, slug in (
+            ("CodeQL", "github-actions"),
+            (control["name"], "another-app"),
+        ):
+            self.assertFalse(
+                update.checks_pass(
+                    [
+                        *checks,
+                        {
+                            **control,
+                            "name": name,
+                            "app": {"slug": slug},
+                            "conclusion": "success",
+                        },
+                    ],
+                    SHA,
+                )
+            )
+
+    def test_required_analysis_jobs_cannot_be_replaced_by_another_app(self):
+        checks = self.passing_checks()
+        for language in ("python", "javascript-typescript"):
+            changed = [
+                {**item, "app": {"slug": "another-app"}}
+                if item["name"] == f"CodeQL analysis ({language})"
+                else item
+                for item in checks
+            ]
+            self.assertFalse(update.checks_pass(changed, SHA))
 
     def test_rejects_host_bind_mounts_and_unapproved_repository_mounts(self):
         for source in (
