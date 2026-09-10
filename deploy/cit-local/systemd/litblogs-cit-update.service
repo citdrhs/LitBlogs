@@ -1,0 +1,18 @@
+[Unit]
+Description=Deploy passing LitBlogs main revisions locally on CIT
+Requires=docker.service
+After=docker.service litblogs-cit.service network-online.target
+PartOf=litblogs-cit.service
+ConditionPathExists=!/home/litblogs/.local/state/cit-deploy/update-blocked.json
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecCondition=/usr/bin/systemctl --quiet is-active litblogs-cit.service
+ExecStart=/usr/bin/python3 /home/litblogs/.local/state/cit-deploy/update.py
+TimeoutStartSec=7200
+KillSignal=SIGINT
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

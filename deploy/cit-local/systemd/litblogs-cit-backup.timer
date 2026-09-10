@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly encrypted LitBlogs recovery copy
+
+[Timer]
+OnCalendar=*-*-* 07:15:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+Unit=litblogs-cit-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,20 @@
+[Unit]
+Description=LitBlogs local CIT application stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/home/litblogs/.local/state/cit-deploy/.env
+ConditionPathExists=!/home/litblogs/.local/state/cit-deploy/update-blocked.json
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 /home/litblogs/.local/state/cit-deploy/service.py start
+ExecStop=/usr/bin/python3 /home/litblogs/.local/state/cit-deploy/service.py stop
+TimeoutStartSec=1100
+TimeoutStopSec=180
+
+[Install]
+WantedBy=multi-user.target

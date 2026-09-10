@@ -1,0 +1,33 @@
+name: CIT deployment controls
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cit-operations-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  operations:
+    name: CIT local deployment controls
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - name: Pull the pinned disposable gateway image
+        run: docker pull haproxy:3.2-alpine@sha256:6343ce34a132a5dceaa24767d739df2bd519f8f7c1079ae39e4821334e8eb42e
+      - name: Verify deployment logic and actual isolated gateway
+        env:
+          LITBLOGS_TEST_HAPROXY_RUNTIME: '1'
+        run: python -m unittest discover -s deploy/cit-local/tests -v

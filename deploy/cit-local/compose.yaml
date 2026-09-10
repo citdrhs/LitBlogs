@@ -1,0 +1,110 @@
+# Use from the repository root with docker-compose.yml first. Compose >= 2.24.4
+# is required for !override: a normal merge would retain the original gateway.
+# State and secrets live outside the checkout. Never run this overlay alone.
+x-local-logging: &local-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-local-job-limits: &local-job-limits
+  cpus: 0.5
+  mem_limit: 512m
+  memswap_limit: 512m
+  pids_limit: 128
+  logging: *local-logging
+
+services:
+  web: !override
+    image: haproxy:3.2-alpine@sha256:6343ce34a132a5dceaa24767d739df2bd519f8f7c1079ae39e4821334e8eb42e
+    user: "99:99"
+    read_only: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=16m,mode=1777"]
+    entrypoint: [haproxy, -W, -db, -f, /usr/local/etc/haproxy/haproxy.cfg]
+    command: []
+    cpus: 0.5
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 64
+    logging: *local-logging
+    ports:
+      - "127.0.0.1:18443:5443"
+    networks: [edge]
+    volumes:
+      - type: bind
+        source: ${LITBLOGS_STATE_DIR:?Set the private LitBlogs state directory}/haproxy.cfg
+        target: /usr/local/etc/haproxy/haproxy.cfg
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${LITBLOGS_STATE_DIR:?Set the private LitBlogs state directory}/https/haproxy.pem
+        target: /usr/local/etc/haproxy/haproxy.pem
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      # The self-signed local certificate is checked by external readiness using
+      # --cacert; this container probe checks the actual TLS listener + backend.
+      test: [CMD, wget, -q, -O, /dev/null, -T, "5", --no-check-certificate, "--header=Host: litblogs.cit.internal:18443", "https://127.0.0.1:5443/api/health/ready"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  app:
+    cpus: 1.0
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
+    logging: *local-logging
+    environment:
+      LITBLOGS_ORIGIN: https://litblogs.cit.internal:18443
+
+  postgres:
+    cpus: 2.0
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 256
+    logging: *local-logging
+
+  clamav:
+    cpus: 2.0
+    mem_limit: 4g
+    memswap_limit: 4g
+    pids_limit: 256
+    logging: *local-logging
+
+  email:
+    <<: *local-job-limits
+    environment:
+      LITBLOGS_ORIGIN: https://litblogs.cit.internal:18443
+
+  reconcile:
+    <<: *local-job-limits
+    environment:
+      LITBLOGS_ORIGIN: https://litblogs.cit.internal:18443
+
+  initialize:
+    <<: *local-job-limits
+
+  migrate:
+    <<: *local-job-limits
+
+  bootstrap-admin:
+    <<: *local-job-limits
+    environment:
+      LITBLOGS_ORIGIN: https://litblogs.cit.internal:18443
+
+  invitation:
+    <<: *local-job-limits
+
+  account:
+    <<: *local-job-limits
