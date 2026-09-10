@@ -69,8 +69,6 @@ class GatewayRuntimeTests(unittest.TestCase):
         if not binding.startswith("127.0.0.1:"):
             raise AssertionError("Test gateway must bind only to loopback")
         cls.port = int(binding.rsplit(":", 1)[1])
-        cls.context = ssl.create_default_context(cafile=str(cls.directory / "cert.pem"))
-        cls.context.minimum_version = ssl.TLSVersion.TLSv1_2
         cls.wait_for_replicas({"replica-1"})
 
     @classmethod
@@ -107,8 +105,10 @@ class GatewayRuntimeTests(unittest.TestCase):
     def request(cls, *, path="/api/health/ready", headers=None, method="GET", body=None):
         # Connect to the fixed test port but verify TLS using the actual name;
         # no machine DNS or hosts-file change is made.
-        connection = http.client.HTTPSConnection("127.0.0.1", cls.port, timeout=5, context=cls.context)
-        connection.sock = cls.context.wrap_socket(socket.create_connection(("127.0.0.1", cls.port), timeout=5), server_hostname="litblogs.cit.internal")
+        context = ssl.create_default_context(cafile=str(cls.directory / "cert.pem"))
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        connection = http.client.HTTPSConnection("127.0.0.1", cls.port, timeout=5, context=context)
+        connection.sock = context.wrap_socket(socket.create_connection(("127.0.0.1", cls.port), timeout=5), server_hostname="litblogs.cit.internal")
         try:
             request_headers = {"Host": "litblogs.cit.internal:18443"}
             request_headers.update(headers or {})
