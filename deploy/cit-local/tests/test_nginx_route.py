@@ -87,7 +87,12 @@ class NginxTransactionTests(unittest.TestCase):
         patcher = patch.object(route, 'fsync_directory', lambda path: self.events.append('fsync:directory'), create=True)
         patcher.start()
         self.addCleanup(patcher.stop)
-        route.stage()
+        try:
+            route.stage()
+        except OSError as error:
+            if os.name == 'nt' and getattr(error, 'winerror', None) == 1314:
+                self.skipTest('requires Windows symbolic-link privilege; full suite runs on Ubuntu')
+            raise
         self.candidate = (self.state / 'default.candidate').read_bytes()
         self.events.clear()
 
