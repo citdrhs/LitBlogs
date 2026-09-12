@@ -208,6 +208,7 @@ def test_auth_email_worker_env_allowlist_serves_both_queues_without_web_secrets(
         "db_connect_timeout_seconds",
         "db_statement_timeout_ms",
         "db_lock_timeout_ms",
+        "app_base_path",
         "frontend_url",
         "email_host",
         "email_port",
