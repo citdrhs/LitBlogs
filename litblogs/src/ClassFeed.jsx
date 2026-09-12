@@ -1,3 +1,4 @@
+import { storageKey } from "./utils/browserStorage";
 import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
@@ -98,7 +99,7 @@ const MediaPreview = ({ media, files, onRemove }) => {
         {media.map((item, index) => (
           <div key={index} className="relative group">
             <img 
-              src={item.url} 
+              src={mediaPath(item.url)}
               alt={item.alt} 
               className="h-32 w-32 object-cover rounded-lg"
             />
@@ -154,7 +155,7 @@ const ClassFeed = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [darkMode] = useState(() => {
-    return JSON.parse(localStorage.getItem('darkMode')) ?? false;
+    return JSON.parse(localStorage.getItem(storageKey('darkMode'))) ?? false;
   });
   const [showNewPostForm, setShowNewPostForm] = useState(false);
   const [postTitle, setPostTitle] = useState("");
@@ -268,7 +269,7 @@ const ClassFeed = () => {
   // Move all useEffect hooks together
   useEffect(() => {
     // Load user info
-    const storedUserInfo = sessionStorage.getItem('user_info');
+    const storedUserInfo = sessionStorage.getItem(storageKey('user_info'));
     if (storedUserInfo) {
       setUserInfo(JSON.parse(storedUserInfo));
     }
@@ -615,7 +616,7 @@ const ClassFeed = () => {
     } else {
       document.documentElement.classList.remove("dark");
     }
-    localStorage.setItem('darkMode', JSON.stringify(darkMode));
+    localStorage.setItem(storageKey('darkMode'), JSON.stringify(darkMode));
   }, [darkMode]);
 
   useEffect(() => {
@@ -657,14 +658,14 @@ const ClassFeed = () => {
       }
 
       const reminderKey = `assignment-reminder:${studentId}:${assignment.id}`;
-      if (localStorage.getItem(reminderKey)) {
+      if (localStorage.getItem(storageKey(reminderKey))) {
         return;
       }
 
       toast(`Reminder: ${assignment.title} is due within 24 hours.`, {
         icon: '⏰',
       });
-      localStorage.setItem(reminderKey, new Date().toISOString());
+      localStorage.setItem(storageKey(reminderKey), new Date().toISOString());
     });
   }, [assignments, isStudent, userInfo?.id, userInfo?.userId, userSettings.assignmentReminders, userSettings.emailNotifications]);
 

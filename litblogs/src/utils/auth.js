@@ -1,10 +1,11 @@
 import axios from "axios";
 import { requestPrivateDraftMemoryClear } from "./privateDraftMemory.js";
+import { storageKey } from "./browserStorage.js";
 
-const USER_INFO_KEY = "user_info";
-const CLASS_INFO_KEY = "class_info";
-const LEGACY_AUTH_KEYS = ["token", USER_INFO_KEY, CLASS_INFO_KEY];
-const DRAFT_PREFIXES = ["assignmentDraft:", "postDraft:"];
+const USER_INFO_KEY = storageKey("user_info");
+const CLASS_INFO_KEY = storageKey("class_info");
+const LEGACY_AUTH_KEYS = [storageKey("token"), USER_INFO_KEY, CLASS_INFO_KEY];
+const DRAFT_PREFIXES = ["assignmentDraft:", "postDraft:"].map(storageKey);
 const UNSAFE_METHODS = new Set(["post", "put", "patch", "delete"]);
 
 const storageKeys = (storage) => Array.from(
@@ -42,7 +43,7 @@ export const clearStoredAuth = () => {
 export const purgeLegacyPersistentAuth = () => {
   clearStorageKeys(localStorage);
   clearDraftKeys(sessionStorage);
-  sessionStorage.removeItem("token");
+  sessionStorage.removeItem(storageKey("token"));
 };
 
 export const getStoredSessionMetadata = () => {
@@ -71,10 +72,10 @@ export const persistSessionMetadata = (payload = {}) => {
   };
 
   sessionStorage.setItem(USER_INFO_KEY, JSON.stringify(metadata));
-  localStorage.removeItem("token");
+  localStorage.removeItem(storageKey("token"));
   localStorage.removeItem(USER_INFO_KEY);
   localStorage.removeItem(CLASS_INFO_KEY);
-  sessionStorage.removeItem("token");
+  sessionStorage.removeItem(storageKey("token"));
   return metadata;
 };
 

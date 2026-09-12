@@ -1,3 +1,4 @@
+import { storageKey } from "./utils/browserStorage";
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
@@ -9,7 +10,7 @@ import { getStoredSessionMetadata, logoutBrowserSession } from './utils/auth';
 const AdminDashboard = () => {
   const navigate = useNavigate();
   const [darkMode] = useState(() => {
-    return JSON.parse(localStorage.getItem('darkMode')) ?? false;
+    return JSON.parse(localStorage.getItem(storageKey('darkMode'))) ?? false;
   });
   const [users, setUsers] = useState([]);
   const [classes, setClasses] = useState([]);

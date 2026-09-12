@@ -1,4 +1,5 @@
 import { NodeViewWrapper } from "@tiptap/react";
+import { mediaPath } from "../utils/urlUtils";
 
 const EditorVideoNodeView = ({ deleteNode, editor, node, selected }) => {
   const editable = Boolean(editor?.isEditable);
@@ -17,10 +18,10 @@ const EditorVideoNodeView = ({ deleteNode, editor, node, selected }) => {
     >
       {node.attrs.type ? (
         <video {...videoAttributes}>
-          <source src={node.attrs.src} type={node.attrs.type} />
+          <source src={mediaPath(node.attrs.src)} type={node.attrs.type} />
         </video>
       ) : (
-        <video {...videoAttributes} src={node.attrs.src} />
+        <video {...videoAttributes} src={mediaPath(node.attrs.src)} />
       )}
       {editable && selected && (
         <div className="litblogs-media-node__controls" contentEditable={false}>

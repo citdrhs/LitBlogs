@@ -14,17 +14,57 @@ HOST = 'litblogs.cit.internal'
 PORT = 18443
 
 
-def request(path, *, headers=None, method='GET', body=None):
+def load_settings():
+    """Read only nonsecret routing values; never trust a URL as a connection target."""
+    values = {}
+    names = {'LITBLOGS_ORIGIN', 'LITBLOGS_BASE_PATH', 'LITBLOGS_GATEWAY_HOST'}
+    for line in (STATE / '.env').read_text().splitlines():
+        key = line.partition('=')[0]
+        if key not in names:
+            continue
+        match = re.fullmatch(r"[A-Z_]+=(?:'([^'\r\n]*)'|([^'\s#]*))", line)
+        if match is None or key in values:
+            raise ValueError('Invalid routing setting')
+        values[key] = match[1] if match[1] is not None else match[2]
+    origin = values.get('LITBLOGS_ORIGIN', f'https://{HOST}:{PORT}')
+    match = re.fullmatch(r'https://([A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?)(?::([0-9]{1,5}))?', origin)
+    if match is None or (match[2] and not 1 <= int(match[2]) <= 65535):
+        raise ValueError('Invalid HTTPS origin')
+    host = origin.removeprefix('https://').lower()
+    if values.get('LITBLOGS_GATEWAY_HOST', host).lower() != host:
+        raise ValueError('Gateway Host must match the configured origin')
+    base = values.get('LITBLOGS_BASE_PATH', '')
+    if len(base) > 256 or (base and re.fullmatch(r'(?:/[A-Za-z0-9][A-Za-z0-9_-]*)+', base) is None):
+        raise ValueError('Invalid public base path')
+    return {'origin': origin.lower(), 'host': host, 'base_path': base, 'cookie_path': base + '/'}
+
+
+def request(path, *, headers=None, method='GET', body=None, settings=None):
+    settings = settings if settings is not None else load_settings()
     context = ssl.create_default_context(cafile=str(STATE / 'https/server.crt'))
     connection = http.client.HTTPSConnection(HOST, PORT, timeout=20, context=context)
     connection._create_connection = lambda *args, **kwargs: socket.create_connection(('127.0.0.1', PORT), timeout=20)
     try:
-        connection.request(method, path, body=body, headers=headers or {})
+        connection.request(method, path, body=body, headers={'Host': settings['host'], **(headers or {})})
         response = connection.getresponse()
         data = response.read(12 * 1024 * 1024)
         return response.status, {k.lower(): v for k, v in response.getheaders()}, data
     finally:
         connection.close()
+
+
+def runtime_cookies(config, settings):
+    """Use runtime names while enforcing host-only secure cookie conventions."""
+    prefix = '__Secure-' if settings['base_path'] else '__Host-'
+    session = config.get('session_cookie_name', '__Host-litblogs-session')
+    csrf = config.get('csrf_cookie_name', '__Host-litblogs-csrf')
+    path = config.get('cookie_path', '/')
+    for name in (session, csrf):
+        if not isinstance(name, str) or re.fullmatch(prefix + r'[A-Za-z0-9_.-]{1,128}', name) is None:
+            raise ValueError('Unexpected secure cookie name')
+    if session == csrf or path != settings['cookie_path']:
+        raise ValueError('Unexpected cookie scope')
+    return session, csrf, path
 
 
 def compose(*args):
@@ -38,27 +78,46 @@ def compose(*args):
 
 
 def main():
+    settings = load_settings()
     evidence = {}
-    status, headers, body = request('/api/health/ready')
+    status, headers, body = request('/api/health/ready', settings=settings)
     assert status == 200 and json.loads(body)['status'] == 'ready'
     evidence['https_certificate_hostname_and_readiness'] = True
-    status, _, body = request('/api/runtime-config')
+    status, _, body = request('/api/runtime-config', settings=settings)
     assert status == 200
     config = json.loads(body)
     assert config.get('local_password_registration_enabled') is True
     assert config.get('google_oauth_enabled') is False
     assert config.get('microsoft_oauth_enabled') is False
+    runtime_cookies(config, settings)
     evidence['password_registration_and_disabled_oauth'] = True
+    assets = set()
     for route in ('/', '/index.html', '/help', '/sign-in'):
-        status, headers, body = request(route)
+        status, headers, body = request(route, settings=settings)
         assert status == 200 and b'<html' in body.lower()
         assert 'no-store' in headers.get('cache-control', '')
         assert headers.get('x-content-type-options') == 'nosniff'
         assert 'content-security-policy' in headers
+        urls = re.findall(r'''(?:src|href)=["']([^"']+)["']''', body.decode('utf-8'))
+        for url in urls:
+            if '/assets/' not in url:
+                continue
+            if re.fullmatch(re.escape(settings['base_path']) + r'/assets/[A-Za-z0-9_.-]+', url) is None:
+                raise ValueError('Frontend asset prefix does not match deployment')
+            assets.add(url[len(settings['base_path']):])
     evidence['frontend_routes_cache_and_security_headers'] = True
-    assert request('/api/health/ready', headers={'Host': 'unapproved.invalid'})[0] == 421
+    assert any(path.endswith('.js') for path in assets)
+    for path in sorted(assets):
+        if not path.endswith(('.js', '.css')):
+            continue
+        status, headers, body = request(path, settings=settings)
+        assert status == 200 and body
+        expected_type = 'javascript' if path.endswith('.js') else 'text/css'
+        assert expected_type in headers.get('content-type', '')
+    evidence['frontend_asset_prefix_and_delivery'] = True
+    assert request('/api/health/ready', headers={'Host': 'unapproved.invalid'}, settings=settings)[0] == 421
     for path in ('/.env', '/uploads/private.txt', '/api/nonexistent', '/assets/missing.js'):
-        assert request(path)[0] in (403, 404)
+        assert request(path, settings=settings)[0] in (403, 404)
     evidence['host_and_private_path_rejection'] = True
     # Existing repository probe proves DB TLS, least-privilege identity, uploads,
     # malware scanner response, and returns only a public bundled video path.
@@ -69,7 +128,7 @@ def main():
     spec.loader.exec_module(module)
     probe = json.loads(compose('exec', '-T', 'app', 'python', '-c', module.RUNTIME_PROBE))
     assert re.fullmatch(r'/assets/[A-Za-z0-9_.-]+\.mp4', probe['video'])
-    status, headers, body = request(probe['video'], headers={'Range': 'bytes=0-1023'})
+    status, headers, body = request(probe['video'], headers={'Range': 'bytes=0-1023'}, settings=settings)
     assert status == 206 and len(body) == 1024 and headers.get('content-range', '').startswith('bytes 0-1023/')
     evidence['database_tls_roles_upload_custody_scanner_and_video_range'] = True
     evidence['smtp_delivery_tested'] = False

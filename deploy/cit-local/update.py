@@ -114,6 +114,29 @@ def read_env(path):
     return result
 
 
+def frontend_base_path(values):
+    """Match the application's canonical prefix contract without loading secrets."""
+    value = values.get("LITBLOGS_BASE_PATH", "")
+    if not isinstance(value, str) or len(value) > 256 or (
+        value and re.fullmatch(r"(?:/[A-Za-z0-9][A-Za-z0-9_-]*)+", value) is None
+    ):
+        raise ValueError("Invalid frontend base path")
+    return value + "/"
+
+
+def build_image(candidate, source, values, log):
+    base = frontend_base_path(values)
+    if re.fullmatch(r"[0-9a-f]{40}", candidate) is None:
+        raise ValueError("Invalid build revision")
+    subprocess.run(
+        [
+            "/usr/bin/docker", "build", "--build-arg", f"VITE_APP_BASE_PATH={base}",
+            "-t", f"litblogs-app:{candidate}", str(source),
+        ],
+        check=True, timeout=3600, env=CLEAN_ENV, stdout=log, stderr=subprocess.STDOUT,
+    )
+
+
 def write_env(path, values):
     if any("'" in v or "\n" in v or "\r" in v for v in values.values()):
         raise ValueError("Invalid environment value")
@@ -456,6 +479,7 @@ def deploy_candidate(
                 "backup": str(backup_path),
                 "database_container_preserved": True,
                 "migration_applied": has_migrations,
+                "frontend_base_path": frontend_base_path(values),
             },
         )
         latch.unlink()
@@ -609,20 +633,7 @@ def main():
             )
         (STATE / "logs").mkdir(exist_ok=True)
         with (STATE / "logs" / f"build-{candidate}.log").open("wb") as log:
-            subprocess.run(
-                [
-                    "/usr/bin/docker",
-                    "build",
-                    "-t",
-                    f"litblogs-app:{candidate}",
-                    str(source),
-                ],
-                check=True,
-                timeout=3600,
-                env=CLEAN_ENV,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-            )
+            build_image(candidate, source, values, log)
         running = (
             compose("ps", "--status", "running", "--services")
             .stdout.decode()

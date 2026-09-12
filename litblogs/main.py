@@ -1154,7 +1154,9 @@ class UserStatusResponse(BaseModel):
 
 
 class PublicRuntimeConfigResponse(BaseModel):
+    session_cookie_name: str
     csrf_cookie_name: str
+    cookie_path: str
     google_oauth_enabled: bool
     google_client_id: str
     microsoft_oauth_enabled: bool
@@ -1523,7 +1525,7 @@ def _set_browser_session(
     max_age = settings.access_token_expire_minutes * 60
     cookie_options = {
         "max_age": max_age,
-        "path": "/",
+        "path": settings.browser_cookie_path,
         "secure": settings.session_cookie_secure,
         "samesite": "strict",
     }
@@ -1543,7 +1545,7 @@ def _set_browser_session(
 
 def _clear_browser_session(response: Response) -> None:
     common_options = {
-        "path": "/",
+        "path": settings.browser_cookie_path,
         "secure": settings.session_cookie_secure,
         "samesite": "strict",
     }
@@ -2441,7 +2443,9 @@ def liveness():
 def public_runtime_config(response: Response):
     response.headers["Cache-Control"] = "no-store"
     return PublicRuntimeConfigResponse(
+        session_cookie_name=settings.session_cookie_name or "",
         csrf_cookie_name=settings.csrf_cookie_name or "",
+        cookie_path=settings.browser_cookie_path,
         google_oauth_enabled=settings.google_oauth_enabled,
         google_client_id=(
             settings.google_client_id or "" if settings.google_oauth_enabled else ""

@@ -33,6 +33,7 @@ TEST_ENVIRONMENT = {
     "ACCESS_TOKEN_EXPIRE_MINUTES": "30",
     "RESET_DATABASE_ON_STARTUP": "false",
     "LOCAL_PASSWORD_REGISTRATION_ENABLED": "true",
+    "APP_BASE_PATH": "",
     "FRONTEND_URL": "http://testserver",
     "BASE_URL": "http://testserver",
     "CORS_ALLOWED_ORIGINS": "http://testserver",

@@ -384,6 +384,55 @@ def test_production_frontend_url_is_the_root_https_origin():
         _production_settings(frontend_url="https://litblogs.school.edu/school-app")
 
 
+def test_production_subpath_requires_explicit_matching_configuration():
+    settings = _production_settings(
+        app_base_path="/dren",
+        frontend_url="https://litblogs.school.edu/dren",
+        session_cookie_name="__Secure-litblogs-session",
+        csrf_cookie_name="__Secure-litblogs-csrf",
+    )
+    assert settings.app_base_path == "/dren"
+    assert settings.browser_cookie_path == "/dren/"
+    assert _production_settings().browser_cookie_path == "/"
+    assert settings.cors_allowed_origins == ("https://litblogs.school.edu",)
+
+
+@pytest.mark.parametrize("prefix", [
+    "/", "dren", "/dren/", "//dren", "/dren//nested", "/./dren", "/dren/..",
+    "/dren%2fother", "/dren%252fother", "/dren?x=1", "/dren#token", "/dren\\other",
+    " /dren", "/dren ", "/dren\n", "/dr\x00en", "/drén", "/" + "a" * 256,
+])
+def test_app_base_path_rejects_noncanonical_input(prefix):
+    with pytest.raises(ValidationError, match="APP_BASE_PATH"):
+        _production_settings(app_base_path=prefix)
+
+
+@pytest.mark.parametrize("overrides", [
+    {"frontend_url": "https://litblogs.school.edu"},
+    {"frontend_url": "https://litblogs.school.edu/other"},
+    {"frontend_url": "https://litblogs.school.edu/dren/"},
+    {"frontend_url": "https://litblogs.school.edu/dren?x=1"},
+    {"frontend_url": "https://litblogs.school.edu/dren#token"},
+    {"cors_allowed_origins": ("https://litblogs.school.edu/dren",)},
+    {"allowed_hosts": ("other.school.edu",)},
+    {"session_cookie_name": "__Host-litblogs-session"},
+    {"csrf_cookie_name": "__Host-litblogs-csrf"},
+    {"session_cookie_name": "litblogs-session"},
+    {"session_cookie_name": "__Secure-invalid cookie"},
+    {"session_cookie_name": "__Secure-litblogs-csrf"},
+    {"session_cookie_secure": False},
+])
+def test_production_subpath_rejects_mismatched_url_or_cookie_contract(overrides):
+    values = {
+        "app_base_path": "/dren",
+        "frontend_url": "https://litblogs.school.edu/dren",
+        "session_cookie_name": "__Secure-litblogs-session",
+        "csrf_cookie_name": "__Secure-litblogs-csrf",
+    }
+    with pytest.raises(ValidationError):
+        _production_settings(**(values | overrides))
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -723,7 +772,9 @@ def test_public_runtime_config_is_backend_derived_and_contains_no_secrets(client
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert response.json() == {
+        "session_cookie_name": "test-litblog-session",
         "csrf_cookie_name": "test-litblog-csrf",
+        "cookie_path": "/",
         "google_oauth_enabled": True,
         "google_client_id": "test-google-client-id",
         "microsoft_oauth_enabled": True,
@@ -765,7 +816,9 @@ def test_public_runtime_config_blanks_disabled_providers_and_reports_production_
 
     assert response.status_code == 200
     assert response.json() == {
+        "session_cookie_name": "test-litblog-session",
         "csrf_cookie_name": "test-litblog-csrf",
+        "cookie_path": "/",
         "google_oauth_enabled": False,
         "google_client_id": "",
         "microsoft_oauth_enabled": False,

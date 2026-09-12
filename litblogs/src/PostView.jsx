@@ -1,3 +1,4 @@
+import { storageKey } from "./utils/browserStorage";
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -71,7 +72,7 @@ const PostView = () => {
   };
 
   useEffect(() => {
-    const storedDarkMode = JSON.parse(localStorage.getItem('darkMode'));
+    const storedDarkMode = JSON.parse(localStorage.getItem(storageKey('darkMode')));
     if (storedDarkMode !== null) {
       setDarkMode(storedDarkMode);
     } else {
@@ -94,7 +95,7 @@ const PostView = () => {
 
   useEffect(() => {
     // Load user info
-    const storedUserInfo = sessionStorage.getItem('user_info');
+    const storedUserInfo = sessionStorage.getItem(storageKey('user_info'));
     if (storedUserInfo) {
       setUserInfo(JSON.parse(storedUserInfo));
     }

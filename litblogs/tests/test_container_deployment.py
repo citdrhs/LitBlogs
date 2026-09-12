@@ -74,6 +74,28 @@ def test_email_worker_has_no_signing_or_upload_authority(environment):
     assert "EMAIL_PASSWORD" in result
 
 
+@pytest.mark.parametrize("mode", ["web", "email", "reconcile"])
+def test_runtime_subpath_keeps_origin_and_routes_separate(mode, environment):
+    environment["LITBLOGS_BASE_PATH"] = "/dren"
+    result = runtime_module().build_environment(mode, environment)
+    assert result["APP_BASE_PATH"] == "/dren"
+    assert result["FRONTEND_URL"] == "https://litblogs.school.edu/dren"
+    assert result["LITBLOGS_ORIGIN"] == "https://litblogs.school.edu"
+    if mode != "email":
+        assert result["JWT_ISSUER"] == result["CORS_ALLOWED_ORIGINS"] == result["LITBLOGS_ORIGIN"]
+        assert result["ALLOWED_HOSTS"] == "litblogs.school.edu"
+        assert result["SESSION_COOKIE_NAME"] == "__Secure-litblogs-session"
+        assert result["CSRF_COOKIE_NAME"] == "__Secure-litblogs-csrf"
+        assert result["SESSION_COOKIE_SECURE"] == "true"
+
+
+@pytest.mark.parametrize("prefix", ["/", "/dren/", "/../dren", "/dren%2fother", " /dren"])
+def test_runtime_rejects_invalid_subpath_before_worker_start(prefix, environment):
+    environment["LITBLOGS_BASE_PATH"] = prefix
+    with pytest.raises(ValueError, match="APP_BASE_PATH"):
+        runtime_module().build_environment("email", environment)
+
+
 @pytest.mark.parametrize("origin", ["http://school.edu", "https://drhscit.org/student/litblogs", "https://school.edu/?x=y", "https://user:pw@school.edu", "https://school.edu/#hash"])
 def test_shared_paths_and_ambiguous_origins_fail_closed(origin, environment):
     environment["LITBLOGS_ORIGIN"] = origin

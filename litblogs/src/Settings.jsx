@@ -1,3 +1,4 @@
+import { storageKey } from "./utils/browserStorage";
 import { useEffect, useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { motion } from "framer-motion"
@@ -9,10 +10,9 @@ import {
   applyGlobalUserSettings,
   normalizeUserSettings,
   saveLocalUserSettings,
+  SETTINGS_KEY,
 } from "./utils/userSettings"
 import { clearStoredAuth, logoutBrowserSession } from "./utils/auth"
-
-const SETTINGS_KEY = "litblogs_settings"
 
 const getSystemDarkMode = () => {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
@@ -25,7 +25,7 @@ const getDefaultSettings = () => {
   let darkMode = getSystemDarkMode()
 
   if (typeof window !== "undefined") {
-    const storedDarkMode = localStorage.getItem("darkMode")
+    const storedDarkMode = localStorage.getItem(storageKey("darkMode"))
     if (storedDarkMode !== null) {
       try {
         darkMode = JSON.parse(storedDarkMode)
@@ -135,7 +135,7 @@ const Settings = ({ onDarkModeChange }) => {
   )
 
   useEffect(() => {
-    const storedUserInfo = sessionStorage.getItem("user_info")
+    const storedUserInfo = sessionStorage.getItem(storageKey("user_info"))
     if (storedUserInfo) {
       try {
         setUserInfo(JSON.parse(storedUserInfo))
@@ -151,7 +151,7 @@ const Settings = ({ onDarkModeChange }) => {
   }, [settings])
 
   useEffect(() => {
-    localStorage.setItem("darkMode", JSON.stringify(settings.darkMode))
+    localStorage.setItem(storageKey("darkMode"), JSON.stringify(settings.darkMode))
     if (settings.darkMode) {
       document.documentElement.classList.add("dark")
     } else {
@@ -356,7 +356,7 @@ const Settings = ({ onDarkModeChange }) => {
   }, [settings.emailNotifications, settings.assignmentReminders, pushSupported, pushSubscribed])
 
   const handleClearClassCache = () => {
-    sessionStorage.removeItem("class_info")
+    sessionStorage.removeItem(storageKey("class_info"))
     setErrorMessage("")
     setStatusMessage("Cleared cached class data for this device.")
   }

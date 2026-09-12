@@ -1,5 +1,9 @@
 # LitBlogs on CIT Deploy
 
+The manually operated CIT installation and its approved temporary `/dren/`
+route use [cit-public/README.md](cit-public/README.md). The instructions below
+describe the separate portal workflow with a dedicated hostname.
+
 Use **Custom Docker**, not the Flask template. The repository's
 `docker-compose.yml` builds the app and runs its web gateway, PostgreSQL,
 upload scanner, email delivery, and cleanup worker. No separate Python, Node,

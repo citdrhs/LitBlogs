@@ -1,3 +1,4 @@
+import { storageKey } from "./utils/browserStorage";
 "use client"
 
 import { useState, useEffect, useRef } from "react"
@@ -135,7 +136,7 @@ const StudentProfile = () => {
       return
     }
 
-    const storedUserInfo = JSON.parse(sessionStorage.getItem("user_info") || "{}")
+    const storedUserInfo = JSON.parse(sessionStorage.getItem(storageKey("user_info")) || "{}")
     const nextUserInfo = {
       ...storedUserInfo,
       role: profileData.role || storedUserInfo.role,
@@ -151,7 +152,7 @@ const StudentProfile = () => {
       avatar_color: profileData.avatar_color ?? storedUserInfo.avatar_color,
     }
 
-    sessionStorage.setItem("user_info", JSON.stringify(nextUserInfo))
+    sessionStorage.setItem(storageKey("user_info"), JSON.stringify(nextUserInfo))
   }
 
   const getClassIds = (classInfo) => {
@@ -195,7 +196,7 @@ const StudentProfile = () => {
 
   // Load dark mode preference from localStorage
   useEffect(() => {
-    const storedDarkMode = JSON.parse(localStorage.getItem("darkMode"))
+    const storedDarkMode = JSON.parse(localStorage.getItem(storageKey("darkMode")))
     if (storedDarkMode !== null) {
       setDarkMode(storedDarkMode)
     } else {

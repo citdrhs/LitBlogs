@@ -124,7 +124,8 @@ def test_verification_constants_keep_separate_lifetime_and_resend_policy():
     } == {"PENDING", "PROCESSING", "DELIVERED", "FAILED"}
 
 
-def test_verification_email_uses_fragment_link_and_separate_template(monkeypatch):
+@pytest.mark.parametrize("prefix", ["", "/dren"])
+def test_verification_email_uses_fragment_link_and_separate_template(monkeypatch, prefix):
     import auth_email_delivery
     import email_verification_delivery
 
@@ -144,7 +145,7 @@ def test_verification_email_uses_fragment_link_and_separate_template(monkeypatch
         capture_message,
     )
     settings = auth_email_delivery.AuthEmailSettings(
-        frontend_url="https://litblogs.school.org",
+        frontend_url=f"https://litblogs.school.org{prefix}",
         email_host="smtp.school.org",
         email_port=587,
         email_smtp_timeout_seconds=5,
@@ -162,7 +163,7 @@ def test_verification_email_uses_fragment_link_and_separate_template(monkeypatch
     message = captured["message"]
     assert captured["recipient"] == "student@school.org"
     assert "Subject: Verify Your LitBlog Email" in message
-    assert "/verify-email#token=raw-fragment-token" in message
+    assert f"https://litblogs.school.org{prefix}/verify-email#token=raw-fragment-token" in message
     assert "/verify-email?token=" not in message
     assert "Reset Your LitBlog Password" not in message
 
