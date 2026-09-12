@@ -51,6 +51,7 @@ class NginxTransactionTests(unittest.TestCase):
         self.before = b'server {\n location /dren { return 404; }\n}\n'
         self.site.write_bytes(self.before)
         self.sibling.write_bytes(b'server { listen 9443; }\n')
+        (self.nginx / 'fastcgi_params').write_bytes(b'fastcgi_param QUERY_STRING $query_string;\n')
         self.main.write_text('http { include /etc/nginx/sites-enabled/*; }\n')
         (self.state / 'nginx-dren.conf').write_text(' location = /dren { return 308 /dren/; }\n')
         self.patches = patch.multiple(route, STATE=self.state, SITE=self.site, LINK=self.site, MAIN=self.main)
@@ -189,6 +190,38 @@ class NginxTransactionTests(unittest.TestCase):
 
     def test_changed_staged_validation_file_cannot_be_committed(self):
         (self.state / 'nginx-test.conf').write_bytes(b'different validation target\n')
+        with self.assertRaises(ValueError):
+            route.commit()
+        self.assertEqual(self.events, [])
+
+    def test_candidate_and_rollback_keep_relative_include_targets(self):
+        for name in ('nginx-test.conf', 'nginx-rollback-test.conf'):
+            relative = (self.state / name).parent / 'fastcgi_params'
+            self.assertTrue(relative.is_symlink())
+            self.assertEqual(relative.resolve(), self.nginx / 'fastcgi_params')
+            self.assertEqual(relative.read_bytes(), (self.nginx / 'fastcgi_params').read_bytes())
+        self.assertTrue((self.state / 'sites-enabled').is_symlink())
+        self.assertEqual((self.state / 'sites-enabled' / 'another-project').read_bytes(), self.sibling.read_bytes())
+
+    def test_changed_relative_include_link_fails_before_validation(self):
+        mirror = self.state / 'fastcgi_params'
+        mirror.unlink(missing_ok=True)
+        mirror.write_bytes(b'replacement configuration at the staged include path\n')
+        with self.assertRaises(ValueError):
+            route.commit()
+        self.assertEqual(self.events, [])
+
+    def test_missing_relative_include_link_fails_before_validation(self):
+        (self.state / 'fastcgi_params').unlink(missing_ok=True)
+        with self.assertRaises(ValueError):
+            route.commit()
+        self.assertEqual(self.events, [])
+
+    @unittest.skipUnless(os.name == 'posix', 'requires unprivileged symbolic links')
+    def test_retargeted_relative_include_link_is_rejected(self):
+        mirror = self.state / 'fastcgi_params'
+        mirror.unlink(missing_ok=True)
+        mirror.symlink_to(self.sibling)
         with self.assertRaises(ValueError):
             route.commit()
         self.assertEqual(self.events, [])

@@ -13,6 +13,7 @@ STATE = Path('/home/litblogs/.local/state/cit-deploy/public-route')
 SITE = Path('/etc/nginx/sites-available/default')
 LINK = Path('/etc/nginx/sites-enabled/default')
 MAIN = Path('/etc/nginx/nginx.conf')
+STAGED_FILES = frozenset({'default.before', 'default.candidate', 'nginx-test.conf', 'nginx-rollback-test.conf'})
 
 
 def replace_location(original, replacement):
@@ -118,6 +119,47 @@ def configuration_snapshot():
 def assert_current(metadata, expected):
     if SITE.read_bytes() != expected or configuration_snapshot() != metadata['configuration']:
         raise ValueError('Shared configuration changed; refusing activation or reload')
+    if 'relative_includes' in metadata:
+        check_relative_includes(metadata)
+
+
+def create_relative_includes():
+    """Preserve Nginx's -c-directory prefix without editing shared include files."""
+    targets = {path.name: str(path) for path in sorted(MAIN.parent.iterdir())}
+    reserved = STAGED_FILES | {'metadata.json', 'nginx-dren.conf', 'nginx_route.py'}
+    if set(targets) & reserved or any(
+        (STATE / name).exists() or (STATE / name).is_symlink() for name in targets
+    ):
+        raise ValueError('Relative include mirror collides with existing staging files')
+    for name, target in targets.items():
+        (STATE / name).symlink_to(target, target_is_directory=Path(target).is_dir())
+    return targets
+
+
+def check_relative_includes(metadata):
+    expected = {path.name: str(path) for path in sorted(MAIN.parent.iterdir())}
+    if metadata.get('relative_includes') != expected:
+        raise ValueError('Staged relative include inventory changed')
+    if {path.name for path in STATE.iterdir() if path.is_symlink()} != set(expected):
+        raise ValueError('Staged relative include links changed')
+    owner = STATE.stat().st_uid
+    for name, target in expected.items():
+        mirror = STATE / name
+        information = mirror.lstat()
+        if not stat.S_ISLNK(information.st_mode) or information.st_uid != owner or os.readlink(mirror) != target:
+            raise ValueError('Staged relative include custody changed')
+        if mirror.resolve(strict=True) != Path(target).resolve(strict=True):
+            raise ValueError('Staged relative include target changed')
+
+
+def read_stage_file(name):
+    path = STATE / name
+    information = path.lstat()
+    if (not stat.S_ISREG(information.st_mode) or information.st_nlink != 1
+            or information.st_uid != STATE.stat().st_uid
+            or (os.name == 'posix' and stat.S_IMODE(information.st_mode) != 0o600)):
+        raise ValueError('Private staging file custody changed')
+    return path.read_bytes()
 
 
 def write_stage_file(name, content):
@@ -179,6 +221,8 @@ def stage():
               'mode': stat.S_IMODE(metadata.st_mode), 'configuration': configuration,
               'staged_sha256': {name: digest(content) for name, content in files}}
     assert_current(record, original)
+    record['relative_includes'] = create_relative_includes()
+    check_relative_includes(record)
     # Exclusive files ensure a repeated invocation never overwrites the rollback copy.
     for name, content in [*files, ('metadata.json', json.dumps(record).encode())]:
         write_stage_file(name, content)
@@ -189,14 +233,14 @@ def stage():
 
 
 def load_stage():
-    metadata = json.loads((STATE / 'metadata.json').read_text())
-    expected_files = {'default.before', 'default.candidate', 'nginx-test.conf', 'nginx-rollback-test.conf'}
-    if set(metadata['staged_sha256']) != expected_files:
+    metadata = json.loads(read_stage_file('metadata.json'))
+    check_relative_includes(metadata)
+    if set(metadata['staged_sha256']) != STAGED_FILES:
         raise ValueError('Staged configuration inventory changed')
-    for name in expected_files:
-        if digest((STATE / name).read_bytes()) != metadata['staged_sha256'][name]:
+    for name in STAGED_FILES:
+        if digest(read_stage_file(name)) != metadata['staged_sha256'][name]:
             raise ValueError('Staged configuration bytes changed')
-    original, candidate = (STATE / 'default.before').read_bytes(), (STATE / 'default.candidate').read_bytes()
+    original, candidate = read_stage_file('default.before'), read_stage_file('default.candidate')
     if digest(original) != metadata['original_sha256'] or digest(candidate) != metadata['candidate_sha256']:
         raise ValueError('Staged configuration bytes changed')
     return metadata, original, candidate
