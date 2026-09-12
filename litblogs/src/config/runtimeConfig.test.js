@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -6,6 +6,8 @@ import { loadPublicRuntimeConfig } from "./runtimeConfig.js";
 
 const VALID_PAYLOAD = {
   csrf_cookie_name: "__Host-litblogs-csrf",
+  session_cookie_name: "__Host-litblogs-session",
+  cookie_path: "/",
   google_oauth_enabled: true,
   google_client_id: "987654321.apps.googleusercontent.com",
   microsoft_oauth_enabled: true,
@@ -13,6 +15,11 @@ const VALID_PAYLOAD = {
   microsoft_tenant_id: "871bd3e0-2dc0-4a40-9b07-9d03068c2364",
   local_password_registration_enabled: false,
 };
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.resetModules();
+});
 
 describe("public runtime configuration", () => {
   it("loads same-origin backend-derived browser settings without persistence", async () => {
@@ -23,6 +30,8 @@ describe("public runtime configuration", () => {
 
     await expect(loadPublicRuntimeConfig(fetchImpl)).resolves.toEqual({
       csrfCookieName: VALID_PAYLOAD.csrf_cookie_name,
+      sessionCookieName: VALID_PAYLOAD.session_cookie_name,
+      cookiePath: "/",
       googleOauthEnabled: true,
       googleClientId: VALID_PAYLOAD.google_client_id,
       microsoftOauthEnabled: true,
@@ -42,6 +51,10 @@ describe("public runtime configuration", () => {
   it.each([
     [{ ...VALID_PAYLOAD, csrf_cookie_name: "" }],
     [{ ...VALID_PAYLOAD, csrf_cookie_name: "unsafe;cookie" }],
+    [{ ...VALID_PAYLOAD, session_cookie_name: "unsafe;cookie" }],
+    [{ ...VALID_PAYLOAD, session_cookie_name: "" }],
+    [{ ...VALID_PAYLOAD, cookie_path: "/other/" }],
+    [{ ...VALID_PAYLOAD, cookie_path: null }],
     [{ ...VALID_PAYLOAD, google_oauth_enabled: "true" }],
     [{ ...VALID_PAYLOAD, google_client_id: null }],
     [{ ...VALID_PAYLOAD, microsoft_oauth_enabled: 1 }],
@@ -66,6 +79,22 @@ describe("public runtime configuration", () => {
     await expect(loadPublicRuntimeConfig(fetchImpl)).rejects.toThrow(
       "Browser configuration is unavailable",
     );
+  });
+
+  it("loads path-scoped cookie settings from the prefixed API", async () => {
+    vi.stubEnv("BASE_URL", "/dren/");
+    vi.resetModules();
+    const { loadPublicRuntimeConfig: loadSubpathConfig } = await import("./runtimeConfig.js");
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => ({
+      ...VALID_PAYLOAD,
+      csrf_cookie_name: "__Secure-litblogs-csrf",
+      session_cookie_name: "__Secure-litblogs-session",
+      cookie_path: "/dren/",
+    }) });
+    await expect(loadSubpathConfig(fetchImpl)).resolves.toMatchObject({
+      csrfCookieName: "__Secure-litblogs-csrf", sessionCookieName: "__Secure-litblogs-session", cookiePath: "/dren/",
+    });
+    expect(fetchImpl).toHaveBeenCalledWith("/dren/api/runtime-config", expect.any(Object));
   });
 
   it("keeps the accepted canonical payload aligned with the backend response model", async () => {

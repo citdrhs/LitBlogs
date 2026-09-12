@@ -54,6 +54,26 @@ def test_worker_settings_are_minimal_and_normalize_the_frontend_origin():
     assert "password_reset_claim_timeout_seconds" in model_fields
 
 
+def test_email_worker_accepts_only_its_explicit_subpath():
+    settings = _worker_settings(app_base_path="/dren", frontend_url="https://litblogs.school.org/dren")
+    assert settings.app_base_path == "/dren"
+    assert settings.frontend_url == "https://litblogs.school.org/dren"
+
+
+@pytest.mark.parametrize("prefix,url", [
+    ("", "https://litblogs.school.org/dren"),
+    ("/dren", "https://litblogs.school.org"),
+    ("/dren", "https://litblogs.school.org/dren/"),
+    ("/dren", "https://litblogs.school.org/other"),
+    ("/dren", "https://litblogs.school.org/dren#token"),
+    ("/dren/", "https://litblogs.school.org"),
+    ("/dren%2fother", "https://litblogs.school.org"),
+])
+def test_email_worker_rejects_mismatched_or_ambiguous_subpath(prefix, url):
+    with pytest.raises(ValidationError):
+        _worker_settings(app_base_path=prefix, frontend_url=url)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -263,8 +283,9 @@ def test_reset_shared_plumbing_compatibility_wrappers_use_neutral_runtime(
     ]
 
 
+@pytest.mark.parametrize("prefix", ["", "/dren"])
 def test_reset_template_and_plain_digest_remain_compatible_after_extraction(
-    monkeypatch,
+    monkeypatch, prefix,
 ):
     import auth_email_delivery
     import password_reset_delivery
@@ -280,7 +301,7 @@ def test_reset_template_and_plain_digest_remain_compatible_after_extraction(
         or True,
     )
     settings = password_reset_delivery.PasswordResetEmailSettings(
-        frontend_url="https://litblogs.school.org",
+        frontend_url=f"https://litblogs.school.org{prefix}",
         email_host="smtp.school.org",
         email_port=587,
         email_smtp_timeout_seconds=5,
@@ -299,7 +320,7 @@ def test_reset_template_and_plain_digest_remain_compatible_after_extraction(
         raw_token,
     ) is True
     assert captured["recipient"] == "student@school.org"
-    assert f"/reset-password#token={raw_token}" in captured["message"]
+    assert f"https://litblogs.school.org{prefix}/reset-password#token={raw_token}" in captured["message"]
     assert "/verify-email" not in captured["message"]
 
 

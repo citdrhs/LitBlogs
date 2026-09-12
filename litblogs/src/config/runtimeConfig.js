@@ -1,9 +1,11 @@
-import { apiPath } from "../utils/urlUtils.js";
+import { APP_BASE_PATH, apiPath } from "../utils/urlUtils.js";
 
 const CONFIGURATION_ERROR = "Browser configuration is unavailable";
 const COOKIE_NAME_PATTERN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,80}$/;
 const PUBLIC_STRING_FIELDS = [
   "csrf_cookie_name",
+  "session_cookie_name",
+  "cookie_path",
   "google_client_id",
   "microsoft_client_id",
   "microsoft_tenant_id",
@@ -36,12 +38,18 @@ const parsePublicRuntimeConfig = (payload) => {
   }
 
   const csrfCookieName = payload.csrf_cookie_name.trim();
-  if (!COOKIE_NAME_PATTERN.test(csrfCookieName)) {
+  const sessionCookieName = payload.session_cookie_name.trim();
+  const cookiePath = payload.cookie_path;
+  if (!COOKIE_NAME_PATTERN.test(csrfCookieName)
+    || !COOKIE_NAME_PATTERN.test(sessionCookieName)
+    || cookiePath !== `${APP_BASE_PATH}/`) {
     throw invalidConfiguration();
   }
 
   return Object.freeze({
     csrfCookieName,
+    sessionCookieName,
+    cookiePath,
     googleOauthEnabled: payload.google_oauth_enabled,
     googleClientId: payload.google_client_id.trim(),
     microsoftOauthEnabled: payload.microsoft_oauth_enabled,

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef } from "react";
 
 import "../styles/rich-text-content.css";
-import { normalizeRichTextUrl, sanitizeRichText } from "../utils/richTextSecurity";
+import { createSanitizedRichTextContainer, normalizeRichTextUrl } from "../utils/richTextSecurity";
+import { mediaPath } from "../utils/urlUtils";
 import { openPdfViewerModal } from "./PdfViewerModal";
 
 const RichTextContent = ({
@@ -15,7 +16,12 @@ const RichTextContent = ({
   const contentRef = useRef(null);
   const sanitizedHtml = useMemo(() => {
     try {
-      return sanitizeRichText(typeof html === "string" ? html : "", { mode: "render" });
+      const content = createSanitizedRichTextContainer(typeof html === "string" ? html : "", { mode: "render" });
+      // Keep saved HTML canonical; add the deployment prefix only at display.
+      for (const media of content.querySelectorAll("img[src], video[src], source[src]")) {
+        media.setAttribute("src", mediaPath(media.getAttribute("src")));
+      }
+      return content.innerHTML;
     } catch {
       return "";
     }
@@ -54,7 +60,7 @@ const RichTextContent = ({
       const title = attachment.getAttribute("data-file-name")
         || attachment.querySelector(".file-name")?.textContent?.trim()
         || "PDF document";
-      openPdfViewerModal({ fileUrl, title });
+      openPdfViewerModal({ fileUrl: mediaPath(fileUrl), title });
       return true;
     };
     const handleClick = (event) => {

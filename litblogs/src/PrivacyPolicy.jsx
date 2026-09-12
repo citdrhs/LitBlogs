@@ -1,3 +1,4 @@
+import { storageKey } from "./utils/browserStorage";
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
@@ -13,7 +14,7 @@ const PrivacyPolicy = () => {
 
   // Load dark mode preference from localStorage
   useEffect(() => {
-    const storedDarkMode = JSON.parse(localStorage.getItem('darkMode'));
+    const storedDarkMode = JSON.parse(localStorage.getItem(storageKey('darkMode')));
     if (storedDarkMode !== null) {
       setDarkMode(storedDarkMode);
     } else {
@@ -32,7 +33,7 @@ const PrivacyPolicy = () => {
   }, [darkMode]);
 
   useEffect(() => {
-    const storedUserInfo = sessionStorage.getItem('user_info');
+    const storedUserInfo = sessionStorage.getItem(storageKey('user_info'));
     if (storedUserInfo) {
       setUserInfo(JSON.parse(storedUserInfo));
     }

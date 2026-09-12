@@ -8,7 +8,7 @@ from urllib.parse import quote, urlencode, urlsplit
 APPLICATION = Path(__file__).resolve().parents[2] / "litblogs"
 sys.path.insert(0, str(APPLICATION))
 
-from config import _canonical_https_origin  # noqa: E402
+from config import _canonical_https_origin, validate_app_base_path  # noqa: E402
 
 
 def required(environment, key):
@@ -23,7 +23,8 @@ def build_environment(mode, environment):
         raise ValueError("Unknown container mode")
     origin = _canonical_https_origin(environment.get("LITBLOGS_ORIGIN", ""))
     if origin is None:
-        raise ValueError("LITBLOGS_ORIGIN must be a root HTTPS origin on an exclusive hostname")
+        raise ValueError("LITBLOGS_ORIGIN must be a root HTTPS origin")
+    base_path = validate_app_base_path(environment.get("LITBLOGS_BASE_PATH", ""))
     password = required(environment, "LITBLOGS_DB_PASSWORD")
     query = urlencode({"sslmode": "verify-full", "sslrootcert": "/etc/litblogs/postgres-root-ca.pem"})
     # Never pass inherited administrative secrets, loader paths, or shell startup files.
@@ -34,7 +35,8 @@ def build_environment(mode, environment):
         "PYTHONUNBUFFERED": "1",
         "APP_ENV": "production",
         "DATABASE_URL": f"postgresql+psycopg2://litblogs_runtime:{quote(password, safe='')}@postgres.internal:5432/litblogs?{query}",
-        "FRONTEND_URL": origin,
+        "APP_BASE_PATH": base_path,
+        "FRONTEND_URL": f"{origin}{base_path}",
         "LITBLOGS_ORIGIN": origin,
         "EMAIL_PORT": environment.get("EMAIL_PORT", "587"),
     }
@@ -51,8 +53,8 @@ def build_environment(mode, environment):
         "LOCAL_PASSWORD_REGISTRATION_ENABLED": "true",
         "GOOGLE_OAUTH_ENABLED": environment.get("GOOGLE_OAUTH_ENABLED", "false"),
         "MICROSOFT_OAUTH_ENABLED": "false",
-        "SESSION_COOKIE_NAME": "__Host-litblogs-session",
-        "CSRF_COOKIE_NAME": "__Host-litblogs-csrf",
+        "SESSION_COOKIE_NAME": "__Secure-litblogs-session" if base_path else "__Host-litblogs-session",
+        "CSRF_COOKIE_NAME": "__Secure-litblogs-csrf" if base_path else "__Host-litblogs-csrf",
         "SESSION_COOKIE_SECURE": "true",
         "API_DOCS_ENABLED": "false",
         "RESET_DATABASE_ON_STARTUP": "false",

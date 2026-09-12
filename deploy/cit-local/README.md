@@ -3,8 +3,9 @@
 This deployment uses the root Dockerfile and Compose services, with this overlay
 replacing the bundled Nginx gateway with HAProxy. The only published endpoint is
 `127.0.0.1:18443`. It uses a private certificate for
-`https://litblogs.cit.internal:18443`; no DNS, public routing, host Nginx,
-other CIT services, or host PostgreSQL configuration is changed.
+`https://litblogs.cit.internal:18443`. The optional, explicitly approved public
+route is documented in [../cit-public/README.md](../cit-public/README.md).
+The private stack never publishes PostgreSQL or its application port.
 
 The source checkout is `/home/litblogs/www/LitBlogs`. Root-owned settings,
 installed operations scripts, certificates, logs and recovery archives are in
@@ -18,9 +19,9 @@ the application, and never delete its volumes to redeploy.
   Until then, email verification and password reset are unavailable even when
   container health checks pass. The initial administrator is provisioned through
   the trusted bootstrap command; this does not bypass verification for students.
-- Public release still needs a dedicated approved HTTPS hostname and routing,
-  appropriate trusted-proxy/rate-limit configuration, load validation and an
-  off-host recovery schedule. This installation intentionally remains local.
+- The temporary `/dren/` route shares a browser origin with other CIT projects.
+  A dedicated hostname remains necessary for browser isolation. Load validation
+  and an off-host recovery schedule remain operational follow-ups.
 - Store the backup encryption key separately from the encrypted archives, and
   monitor disk usage/retention. Automated backups are retained without deletion.
 
@@ -91,9 +92,10 @@ curl --cacert server.crt \
   https://litblogs.cit.internal:18443/api/health/ready
 ```
 
-Browser access needs a client-only hostname mapping and trust for the private
-certificate. Do not add public DNS or route the shared CIT hostname to this
-installation as part of local testing.
+In private mode, browser access needs a client-only hostname mapping and trust
+for the private certificate. After public-route activation, use
+`https://drhscit.org/dren/`; internal probes still verify the private certificate
+but send `Host: drhscit.org`. Run `verify.py` for this mode-aware verification.
 
 ## Updates, scaling and reboot behavior
 
@@ -140,8 +142,9 @@ At three app replicas the steady-state caps total 10.25 GiB and 8.5 CPUs.
 This is bounded scaling on one server, not unlimited student capacity or a cluster.
 
 The local gateway permits HTTP/1.1, rejects chunked bodies, applies route-specific
-body limits and separate source-IP request limits. SSH clients share a source
-bucket; broader use needs the routing and capacity review mentioned above.
+body limits and separate source-IP request limits. In public mode, only the exact
+configured Docker gateway address can attest the client IP overwritten by host
+Nginx. Other callers cannot select a bucket using a forwarded header.
 
 ## Backup and restore
 

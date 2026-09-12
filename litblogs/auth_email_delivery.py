@@ -13,7 +13,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TypeVar
 
-from pydantic import EmailStr, Field, SecretStr, field_validator, model_validator
+from pydantic import EmailStr, Field, SecretStr, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine, make_url
@@ -21,9 +21,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from config import (
     _PLACEHOLDER_FRAGMENTS,
-    _canonical_https_origin,
+    _canonical_https_frontend_url,
     _is_network_host,
     _is_verified_postgresql_url,
+    validate_app_base_path,
 )
 from runtime_database_identity import verify_runtime_database_identity
 
@@ -65,6 +66,7 @@ class AuthEmailWorkerSettings(BaseSettings):
     db_statement_timeout_ms: int = Field(default=15_000, ge=1_000, le=60_000)
     db_lock_timeout_ms: int = Field(default=5_000, ge=500, le=30_000)
 
+    app_base_path: str = ""
     frontend_url: str
     email_host: str
     email_port: int = Field(default=587, ge=1, le=65_535)
@@ -88,11 +90,19 @@ class AuthEmailWorkerSettings(BaseSettings):
             raise ValueError("worker setting must be nonempty")
         return normalized
 
+    @field_validator("app_base_path", mode="before")
+    @classmethod
+    def validate_base_path(cls, value) -> str:
+        return validate_app_base_path(value)
+
     @field_validator("frontend_url")
     @classmethod
-    def canonicalize_frontend_origin(cls, value: str) -> str:
-        canonical = _canonical_https_origin(value)
+    def canonicalize_frontend_url(cls, value: str, info: ValidationInfo) -> str:
+        base_path = info.data.get("app_base_path", "")
+        canonical = _canonical_https_frontend_url(value, base_path)
         if canonical is None:
+            if base_path:
+                raise ValueError("FRONTEND_URL must use HTTPS with its path equal to APP_BASE_PATH")
             raise ValueError("FRONTEND_URL must be a root HTTPS origin")
         return canonical
 
