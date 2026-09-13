@@ -280,6 +280,10 @@ The service's `ProtectHome=true` policy means production cannot read the `~/www`
 
 In a private browser with synthetic accounts, verify the invited teacher must open the email verification link before sign-in, then can create a class and join code. Verify a student can sign up, verify email, sign in, reset the password, join, post, upload/remove image/video/PDF, and see the rendered post in teacher/student views. Retain no private data in logs.
 
+After activation, any active administrator can create 48-hour teacher invitations
+from **Admin Dashboard → Invite Teacher** and share the code privately. The teacher
+signs up with the matching school email and verifies it before signing in.
+
 Email/password remains the production signup method. After county approval,
 create a Google Web Application client for the exact site origin, change only
 these protected values, rerun preflight/postflight, and restart the web service:

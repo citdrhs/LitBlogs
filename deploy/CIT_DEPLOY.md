@@ -163,6 +163,13 @@ and password. It refuses to bootstrap a populated installation. The second asks
 for a teacher's allowed school email and returns a one-time invitation; send it
 privately to that teacher. Never paste invitations/passwords into shared logs.
 
+After administrator setup, any active administrator can instead use **Invite
+Teacher** on the admin dashboard. Enter the school email, create the 48-hour
+invitation, and copy it for private sharing. This replaces any unused invitation
+for that email and does not send an email automatically. The teacher enters the
+code in **Teacher invitation token** when signing up and verifies their email
+before using the teacher dashboard.
+
 At the dedicated HTTPS URL, test a synthetic student signup, verification email,
 sign-in, class join, post, attachment, sign-out, and password reset. Also verify
 teacher preview and student visibility. Confirm the Help video and captions load

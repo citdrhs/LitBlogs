@@ -57,7 +57,7 @@ UTC_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
 IDENTITY_RESULT = re.compile(r"^ok:([0-9]+)$")
 PSQL_VARIABLE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 MAX_MANIFEST_BYTES = 16 * 1024
-EXPECTED_ALEMBIC_HEAD = "a82f8f2b1d7c"
+EXPECTED_ALEMBIC_HEAD = "b64a9c2e7d31"
 BACKEND_ROOT = Path(__file__).resolve().parents[2] / "litblogs"
 OPERATOR_ROUTINE_MIGRATIONS = (
     (
@@ -1032,6 +1032,10 @@ expected_column_acl(
         ('litblogs_runtime', 'teacher_invitations', 'revoked_at', 'SELECT', FALSE),
         ('litblogs_runtime', 'teacher_invitations', 'consumed_at', 'UPDATE', FALSE),
         ('litblogs_runtime', 'teacher_invitations', 'revoked_at', 'UPDATE', FALSE),
+        ('litblogs_runtime', 'teacher_invitations', 'token_digest', 'INSERT', FALSE),
+        ('litblogs_runtime', 'teacher_invitations', 'email_digest', 'INSERT', FALSE),
+        ('litblogs_runtime', 'teacher_invitations', 'expires_at', 'INSERT', FALSE),
+        ('litblogs_runtime', 'teacher_invitations', 'created_by', 'INSERT', FALSE),
         ('litblogs_runtime', 'operator_audit_events', 'actor_identifier', 'INSERT', FALSE),
         ('litblogs_runtime', 'operator_audit_events', 'action', 'INSERT', FALSE),
         ('litblogs_runtime', 'operator_audit_events', 'outcome', 'INSERT', FALSE),
@@ -1101,6 +1105,8 @@ expected_sequence_acl(role_name, sequence_name, privilege_type, is_grantable) AS
         FALSE
     FROM runtime_sequences
     CROSS JOIN (VALUES ('USAGE'), ('SELECT')) AS privilege(privilege_type)
+    UNION ALL
+    SELECT 'litblogs_runtime', 'teacher_invitations_id_seq', 'USAGE', FALSE
     UNION ALL
     SELECT
         'litblog_identity_owner',

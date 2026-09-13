@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -565,7 +566,23 @@ def test_restore_verifier_expected_head_matches_the_release_migration_graph():
     migration_head = ScriptDirectory.from_config(config).get_current_head()
 
     assert restore_verify_postgres.EXPECTED_ALEMBIC_HEAD == migration_head
-    assert restore_verify_postgres.EXPECTED_ALEMBIC_HEAD == "a82f8f2b1d7c"
+    assert restore_verify_postgres.EXPECTED_ALEMBIC_HEAD == "b64a9c2e7d31"
+
+
+def test_restore_invitation_runtime_acl_accepts_only_the_reviewed_insert_columns_and_sequence_usage():
+    sql = restore_verify_postgres.IDENTITY_DATA_INTEGRITY_SQL
+    columns = sql.split("expected_column_acl(", 1)[1].split("actual_column_acl(", 1)[0]
+    insert_columns = set(re.findall(
+        r"\('litblogs_runtime', 'teacher_invitations', '([^']+)', 'INSERT', FALSE\)",
+        columns,
+    ))
+    assert insert_columns == {"token_digest", "email_digest", "expires_at", "created_by"}
+    # Keep this sequence out of the ordinary USAGE+SELECT sequence collection.
+    runtime_sequences = sql.split("runtime_sequences(", 1)[1].split("expected_schema_acl(", 1)[0]
+    assert "teacher_invitations_id_seq" not in runtime_sequences
+    sequences = " ".join(sql.split("expected_sequence_acl(", 1)[1].split("actual_sequence_acl(", 1)[0].split())
+    assert "SELECT 'litblogs_runtime', 'teacher_invitations_id_seq', 'USAGE', FALSE" in sequences
+    assert "'teacher_invitations_id_seq', 'SELECT'" not in sequences
 
 
 def test_backup_publishes_custom_archive_and_matching_checksum_manifest(tmp_path):
@@ -2015,7 +2032,8 @@ def test_runbook_matches_the_runtime_database_identity_postflight():
 
     assert (
         "teacher_invitations | select (id, token_digest, email_digest, expires_at, "
-        "consumed_at, revoked_at), update (consumed_at, revoked_at)" in normalized
+        "consumed_at, revoked_at), insert (token_digest, email_digest, expires_at, created_by), "
+        "update (consumed_at, revoked_at)" in normalized
     )
     assert (
         "operator_audit_events | insert (actor_identifier, action, outcome, "
@@ -2071,12 +2089,12 @@ def test_operator_docs_publish_the_email_verification_acl_and_routine_contract(
     assert "latest reviewed definition" in documentation
 
 
-def test_repository_policy_validator_pins_the_email_verification_head():
+def test_repository_policy_validator_pins_the_reviewed_migration_head():
     validator = (ROOT_DIR / "scripts/validate-repository-policy.py").read_text(
         encoding="utf-8"
     )
 
-    assert 'EXPECTED_ALEMBIC_HEAD = "a82f8f2b1d7c"' in validator
+    assert 'EXPECTED_ALEMBIC_HEAD = "b64a9c2e7d31"' in validator
 
 
 def test_runtime_browser_configuration_is_backend_owned_and_checked_in_the_bundle():

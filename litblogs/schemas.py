@@ -47,6 +47,16 @@ class StrictRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class TeacherInvitationCreate(StrictRequest):
+    email: EmailStr = Field(max_length=100)
+
+
+class TeacherInvitationResponse(BaseModel):
+    email: EmailStr
+    invitation_token: str
+    expires_at: datetime
+
+
 class CodeSnippet(StrictRequest):
     language: str = Field(min_length=1, max_length=50)
     code: str = Field(min_length=1, max_length=20_000)

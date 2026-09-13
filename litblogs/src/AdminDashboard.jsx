@@ -5,6 +5,7 @@ import { motion } from 'framer-motion';
 import axios from 'axios';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
+import TeacherInvitationDialog from './components/TeacherInvitationDialog';
 import { getStoredSessionMetadata, logoutBrowserSession } from './utils/auth';
 
 const AdminDashboard = () => {
@@ -23,6 +24,7 @@ const AdminDashboard = () => {
   const [statusUpdating, setStatusUpdating] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   const [statusError, setStatusError] = useState('');
+  const [invitationOpen, setInvitationOpen] = useState(false);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -209,6 +211,15 @@ const AdminDashboard = () => {
             <h2 className="text-xl font-semibold mb-4">Quick Actions</h2>
             <div className="space-y-3">
               <button
+                type="button"
+                className={`w-full rounded-xl px-4 py-3 text-left font-medium shadow-sm transition-all ${
+                  darkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-100 hover:bg-gray-200'
+                }`}
+                onClick={() => setInvitationOpen(true)}
+              >
+                Invite Teacher
+              </button>
+              <button
                 className={`w-full rounded-xl px-4 py-3 text-left font-medium shadow-sm transition-all ${
                   darkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-100 hover:bg-gray-200'
                 }`}
@@ -367,6 +378,9 @@ const AdminDashboard = () => {
           </div>
         </section>
       </div>
+      {invitationOpen && (
+        <TeacherInvitationDialog darkMode={darkMode} onClose={() => setInvitationOpen(false)} />
+      )}
       {pendingStatusUser && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
           <div

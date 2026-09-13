@@ -98,6 +98,7 @@ from access_control import (
 from access_control import (
     user_class_ids as _get_user_class_ids,
 )
+from admin_teacher_invitations import issue_admin_teacher_invitation
 from auth_security import (
     csrf_token_matches,
     decode_access_token,
@@ -2002,6 +2003,27 @@ async def get_current_user(
 @app.get("/api/auth/session", response_model=SessionMetadataResponse)
 async def get_browser_session(current_user: models.User = Depends(get_current_user)):
     return _session_metadata(current_user)
+
+
+@app.post(
+    "/api/admin/teacher-invitations",
+    response_model=schemas.TeacherInvitationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_admin_teacher_invitation(
+    payload: schemas.TeacherInvitationCreate,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    result = issue_admin_teacher_invitation(
+        db, actor_id=current_user.id, session_id=getattr(request.state, "browser_session_id", None),
+        email=str(payload.email), settings=settings,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return result
 
 
 @app.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)

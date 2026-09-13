@@ -13,7 +13,7 @@ import yaml
 from yaml.constructor import ConstructorError
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_ALEMBIC_HEAD = "a82f8f2b1d7c"
+EXPECTED_ALEMBIC_HEAD = "b64a9c2e7d31"
 ACTION_PIN = re.compile(
     r"^\s*uses:\s*(?P<action>(?:actions|github)/[^@\s]+)@(?P<sha>[0-9a-f]{40})"
     r"\s+#\s+(?P<version>v(?P<major>\d+)\.\d+\.\d+)\s*$"
@@ -634,7 +634,7 @@ def validate_browser_job(relative_path: str, job: Any) -> None:
     journey_steps = [
         step
         for step in steps
-        if isinstance(step, dict) and step.get("name") == "Run eight browser journeys"
+        if isinstance(step, dict) and step.get("name") == "Run nine browser journeys"
     ]
     expected_journey_environment = {
         "CI": "true",
@@ -645,7 +645,7 @@ def validate_browser_job(relative_path: str, job: Any) -> None:
     expect(
         len(journey_steps) == 1
         and str(journey_steps[0].get("run", "")).strip() == "npm run test:e2e",
-        f"{label} must run the eight-journey suite exactly once",
+        f"{label} must run the nine-journey suite exactly once",
     )
     journey_environment = journey_steps[0].get("env", {}) if len(journey_steps) == 1 else {}
     expect(
@@ -746,6 +746,7 @@ def validate_browser_e2e_contract() -> None:
     spec_paths = sorted(spec_directory.glob("*.spec.js")) if spec_directory.is_dir() else []
     spec_source = "\n".join(path.read_text(encoding="utf-8") for path in spec_paths)
     journey_titles = (
+        "an administrator invites a teacher who verifies email and creates a class",
         "serves the built sign-in shell in real Chromium",
         "login uses runtime config, HttpOnly sessions, CSRF, and role guards",
         "teacher creates a class plus student-visible and staff-only assignments",
@@ -758,7 +759,7 @@ def validate_browser_e2e_contract() -> None:
     expect(
         len(re.findall(r"(?m)^\s*test\(", spec_source)) == len(journey_titles)
         and all(title in spec_source for title in journey_titles),
-        "browser release suite must contain exactly the eight reviewed journeys",
+        "browser release suite must contain exactly the nine reviewed journeys",
     )
 
     for marker in (
@@ -2345,7 +2346,7 @@ def validate_maintenance_release_contract() -> None:
         "email_smtp_timeout_seconds:",
         "password_reset_claim_timeout_seconds:",
         "verify_runtime_database_identity",
-        'EXPECTED_ALEMBIC_HEAD = "a82f8f2b1d7c"',
+        f'EXPECTED_ALEMBIC_HEAD = "{EXPECTED_ALEMBIC_HEAD}"',
         '"application_name": "litblogs-auth-email"',
         "def send_smtp_message",
         "def dispatch_auth_email_batch",

@@ -19,9 +19,23 @@ frontend and uses the same path. Root-host deployments retain `__Host-` cookies;
 the explicit prefix deployment uses `__Secure-litblogs-*` names. Changing modes
 requires logging in again. Stored media paths and database rows are unchanged.
 
-**SMTP is still a TODO.** Registration verification and password-reset mail
-cannot be delivered until working credentials are installed and delivery is
-verified. Health checks and administrator access do not attest email delivery.
+The CIT SMTP replacement and a real password-reset delivery were verified on
+September 12, 2026. Credentials remain in the private server environment, outside
+Git. Health checks alone do not attest mail delivery; retest after credential changes.
+
+## Invite a teacher
+
+Any active administrator can select **Invite Teacher** on the admin dashboard,
+enter the teacher's allowed school email, and choose **Create invitation**.
+Copy the invitation and share it privately with that teacher. The code is shown
+only in this dialog, works once for that email, and expires after 48 hours.
+Creating another invitation replaces an unused previous code for the same email.
+This action does not send an invitation email or create an account automatically.
+
+The teacher opens `https://drhscit.org/dren/sign-up`, registers with that same
+email, selects **Teacher**, and enters the code in **Teacher invitation token**.
+They must verify their school email before signing in and creating classes.
+Existing accounts are not promoted through this invitation action.
 
 ## Private settings and application build
 

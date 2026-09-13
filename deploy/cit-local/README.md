@@ -15,10 +15,9 @@ the application, and never delete its volumes to redeploy.
 
 ## Current follow-up
 
-- **TODO: replace the rejected SMTP credentials and verify actual delivery.**
-  Until then, email verification and password reset are unavailable even when
-  container health checks pass. The initial administrator is provisioned through
-  the trusted bootstrap command; this does not bypass verification for students.
+- The SMTP replacement and real password-reset delivery were verified on
+  September 12, 2026. Keep credentials private and retest actual delivery after
+  changing them; healthy containers alone do not prove working email.
 - The temporary `/dren/` route shares a browser origin with other CIT projects.
   A dedicated hostname remains necessary for browser isolation. Load validation
   and an off-host recovery schedule remain operational follow-ups.
@@ -65,10 +64,18 @@ sudo flock --exclusive /home/litblogs/.local/state/cit-deploy/operation.lock \
 ```
 
 Authenticate to the approved STARTTLS relay and verify registration/reset delivery
-to an explicitly approved test recipient. No mail was sent during commissioning.
+to an explicitly approved test recipient. The September 12 SMTP replacement
+included a successful real password-reset test.
 The two approved registration domains are `henricostudents.org` and
 `henrico.k12.va.us`; teachers also require an email-bound invitation. Domain
 membership alone does not grant teacher or administrator privileges.
+
+Active administrators can create 48-hour, single-use teacher invitations through
+**Admin Dashboard → Invite Teacher**. Copy the resulting code and share it privately
+with the intended teacher; invitation creation does not send email. The teacher
+uses that same email and selects **Teacher** at signup, then verifies their email.
+A new invitation replaces a previous unused code for that email. The trusted
+host operator command remains available for IT.
 
 The initial administrator credentials are kept separately in
 `/home/litblogs/.litblogs-admin-initial.json`, readable only by the LitBlogs account.
