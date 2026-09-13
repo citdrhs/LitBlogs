@@ -1,0 +1,11 @@
+# Administrator teacher invitations
+
+Any active, verified administrator can invite a teacher from the admin dashboard, including administrators with a student-domain email. This implements the user's authorized request without changing other CIT applications.
+
+The dashboard exposes an Invite Teacher button and a focused form for the teacher's school email. Submission creates a cryptographically random, email-bound invitation valid for 48 hours. The result shows the code, expiry, and signup instructions with a Copy invitation action. No email is sent automatically; the admin shares the code privately. The code remains only in component memory and is cleared on dismissal. The form explains that creating a replacement invalidates an unused prior invitation.
+
+`POST /api/admin/teacher-invitations` accepts `{email}` and returns HTTP 201 with `{email, invitation_token, expires_at}`. It requires a current admin session and valid CSRF protection, normalizes and validates the email against configured school domains, rejects existing accounts with 409, and rechecks the actor while creating the invitation. Existing signup and email verification remain required; this action does not create or promote an account.
+
+PostgreSQL retains the existing identity-owner and runtime-role boundaries. A new narrowly scoped database transition, if required, checks active verified ADMIN status, atomically replaces only unused invitations for the target email, and records the actor and hashed target in the existing audit trail. Plain invitation codes are never stored in the database, URLs, browser storage, logs, or audit records. Existing operator tools keep working. Any migration is additive and preserves data.
+
+Verification covers admin and nonadmin permissions, CSRF, revoked/disabled sessions, invalid domains, existing accounts, replacement, single use, email binding, expiry, audit records, and PostgreSQL role boundaries. UI tests cover the complete form, loading, safe errors, copy failures, and clearing credentials. Deployment follows the existing CI-gated updater, encrypted backup, migrations, and app-only activation; PostgreSQL and unrelated CIT projects remain running.
