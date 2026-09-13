@@ -244,8 +244,8 @@ def test_worker_expected_revision_tracks_the_repository_head():
     scripts = ScriptDirectory.from_config(config)
 
     assert password_reset_delivery.EXPECTED_ALEMBIC_HEAD == scripts.get_current_head()
-    assert password_reset_delivery.EXPECTED_ALEMBIC_HEAD == "a82f8f2b1d7c"
-    assert auth_email_delivery.EXPECTED_ALEMBIC_HEAD == "a82f8f2b1d7c"
+    assert password_reset_delivery.EXPECTED_ALEMBIC_HEAD == "b64a9c2e7d31"
+    assert auth_email_delivery.EXPECTED_ALEMBIC_HEAD == "b64a9c2e7d31"
 
 
 def test_reset_shared_plumbing_compatibility_wrappers_use_neutral_runtime(

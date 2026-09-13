@@ -168,6 +168,10 @@ def verify_runtime_database_identity(connection) -> None:
                     ('litblogs_runtime', 'teacher_invitations', 'revoked_at', 'SELECT', FALSE),
                     ('litblogs_runtime', 'teacher_invitations', 'consumed_at', 'UPDATE', FALSE),
                     ('litblogs_runtime', 'teacher_invitations', 'revoked_at', 'UPDATE', FALSE),
+                    ('litblogs_runtime', 'teacher_invitations', 'token_digest', 'INSERT', FALSE),
+                    ('litblogs_runtime', 'teacher_invitations', 'email_digest', 'INSERT', FALSE),
+                    ('litblogs_runtime', 'teacher_invitations', 'expires_at', 'INSERT', FALSE),
+                    ('litblogs_runtime', 'teacher_invitations', 'created_by', 'INSERT', FALSE),
                     ('litblogs_runtime', 'operator_audit_events', 'actor_identifier', 'INSERT', FALSE),
                     ('litblogs_runtime', 'operator_audit_events', 'action', 'INSERT', FALSE),
                     ('litblogs_runtime', 'operator_audit_events', 'outcome', 'INSERT', FALSE),
@@ -216,6 +220,8 @@ def verify_runtime_database_identity(connection) -> None:
                 FROM runtime_sequences
                 CROSS JOIN (VALUES ('USAGE'), ('SELECT'))
                     AS privilege(privilege_type)
+                UNION ALL
+                SELECT 'litblogs_runtime', 'teacher_invitations_id_seq', 'USAGE', FALSE
             ),
             actual_sequence_acl(
                 role_name,

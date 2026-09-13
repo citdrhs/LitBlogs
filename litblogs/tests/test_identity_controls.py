@@ -4877,7 +4877,10 @@ def test_operator_cli_database_failures_are_generic_and_secret_free(client):
     assert private_error not in account_stderr.getvalue()
 
 
-def test_no_public_invitation_or_operator_account_routes_exist():
+def test_only_reviewed_admin_invitation_route_exists_and_no_operator_routes_exist():
     route_paths = {route.path.casefold() for route in main.app.routes}
-    assert not any("invite" in path or "invitation" in path for path in route_paths)
+    invitation_routes = [route for route in main.app.routes if "invite" in route.path or "invitation" in route.path]
+    assert len(invitation_routes) == 1
+    assert invitation_routes[0].path == "/api/admin/teacher-invitations"
+    assert invitation_routes[0].methods == {"POST"}
     assert not any("operator" in path for path in route_paths)

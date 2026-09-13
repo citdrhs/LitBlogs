@@ -71,6 +71,7 @@ EXPECTED_API_ROUTES = frozenset(
         ("GET", "/api/user/settings"),
         ("GET", "/api/user/{user_id}/posts"),
         ("GET", "/api/users"),
+        ("POST", "/api/admin/teacher-invitations"),
         ("POST", "/api/assignments/{assignment_id}/submit"),
         ("POST", "/api/auth/forgot-password"),
         ("POST", "/api/auth/change-password"),

@@ -29,7 +29,7 @@ from config import (
 from runtime_database_identity import verify_runtime_database_identity
 
 APP_DIRECTORY = Path(__file__).resolve().parent
-EXPECTED_ALEMBIC_HEAD = "a82f8f2b1d7c"
+EXPECTED_ALEMBIC_HEAD = "b64a9c2e7d31"
 MAX_AUTH_EMAIL_BATCH_SIZE = 100
 
 Claim = tuple[int, str, str]
