@@ -25,12 +25,14 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
+import lifecycle
+
 STATE = Path("/home/litblogs/.local/state/cit-deploy")
 REPO = Path("/home/litblogs/www/LitBlogs")
 PROJECT = "litblogs-cit"
 KEY = STATE / "backup.key"
 WRITERS = ("web", "app", "email", "reconcile")
-OPERATORS = ("migrate", "bootstrap-admin", "invitation", "account")
+OPERATORS = ("initialize", "migrate", "bootstrap-admin", "invitation", "account")
 VOLUMES = ("uploads", "postgres-tls", "postgres-ca")
 REQUIRED_MEMBERS = frozenset({"database.dump", "roles.sql", "uploads.tar", "postgres-tls.tar", "postgres-ca.tar", "environment", "manifest.json"})
 OPTIONAL_MEMBERS = frozenset({"compose.yaml", "haproxy.cfg", "haproxy.pem"})
@@ -134,26 +136,22 @@ def service_states():
 
 @contextmanager
 def quiesced(*, resume=True):
-    states = service_states()
-    if states.get("postgres") != "running":
-        raise BackupError("PostgreSQL must already be running for a logical backup.")
-    if any(states.get(name) in {"running", "restarting", "paused"} for name in OPERATORS):
-        raise BackupError("An active database operator prevents a consistent backup.")
-    if any(states.get(name) in {"restarting", "paused"} for name in WRITERS):
+    original = lifecycle.capture()
+    lifecycle.assert_operators_idle(original)
+    lifecycle.assert_database_preserved(original, original)
+    if any(row["Service"] in WRITERS and row["State"] not in {"running", "exited", "created"}
+           for row in original.values()):
         raise BackupError("A writer has an unexpected state; backup was not started.")
-    previous = [name for name in WRITERS if states.get(name) == "running"]
+    previous = lifecycle.selected_ids(original, WRITERS, running_only=True)
     try:
         if previous:
-            compose(["stop", "--timeout", "60", *previous])
-        stopped = service_states()
-        if any(stopped.get(name) in {"running", "restarting", "paused"} for name in (*WRITERS, *OPERATORS)):
-            raise BackupError("Database and upload writers did not stop.")
-        if stopped.get("postgres") != "running":
-            raise BackupError("PostgreSQL stopped before backup.")
+            lifecycle.stop_existing(original, previous)
+        lifecycle.assert_quiesced(original)
         yield
     finally:
         if resume and previous:
-            compose(["start", *previous])
+            lifecycle.start_existing(original, previous)
+            lifecycle.assert_database_preserved(original)
 
 
 def validate_volume_record(volume, row):

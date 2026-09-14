@@ -11,54 +11,53 @@ from contextlib import ExitStack, nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
+from lifecycle_fixture import DockerFixture, load_lifecycle
+
 MODULE_PATH = Path(__file__).resolve().parents[1] / "backup.py"
 
 
 class BackupTests(unittest.TestCase):
     def setUp(self):
+        self.lifecycle = load_lifecycle()
+        self.engine = DockerFixture()
+        runner = patch.object(self.lifecycle, "run", side_effect=lambda *args, **kwargs: self.engine.run(*args, **kwargs))
+        runner.start()
+        self.addCleanup(runner.stop)
         self.assertTrue(MODULE_PATH.exists(), "The guarded backup implementation must exist")
         spec = importlib.util.spec_from_file_location("cit_backup", MODULE_PATH)
         self.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.module)
 
     def test_partial_stop_failure_resumes_exact_previous_writers(self):
-        states = {"web": "running", "app": "running", "postgres": "running", "email": "exited"}
-        calls = []
-
-        def command(arguments, **_kwargs):
-            calls.append(arguments)
-            if arguments[0] == "stop":
-                raise self.module.BackupError("stop failed")
-
-        with (
-            patch.object(self.module, "service_states", return_value=states),
-            patch.object(self.module, "compose", side_effect=command),
-            self.assertRaises(self.module.BackupError),
-            self.module.quiesced(resume=True),
-        ):
+        self.engine.fail_stop = True
+        before = self.engine.snapshot()
+        with self.assertRaisesRegex(RuntimeError, "partial Docker stop"), self.module.quiesced(resume=True):
             self.fail("Backup must not run after a failed stop")
-        self.assertEqual(calls, [["stop", "--timeout", "60", "web", "app"], ["start", "web", "app"]])
+        self.assertTrue(all(row["State"] == "running" for row in self.engine.records.values() if row["Service"] in self.module.WRITERS))
+        for key in self.engine.ids("postgres", "clamav", "migrate", "initialize"):
+            self.assertEqual(before[key], self.engine.records[key])
 
     def test_backup_failure_resumes_previous_writers_and_never_postgres(self):
-        states = [{"app": "running", "postgres": "running"}, {"app": "exited", "postgres": "running"}]
-        with (
-            patch.object(self.module, "service_states", side_effect=states),
-            patch.object(self.module, "compose") as command,
-            self.assertRaisesRegex(RuntimeError, "fixture"),
-            self.module.quiesced(resume=True),
-        ):
+        stopped_app = self.engine.ids("app")[1]
+        self.engine.records[stopped_app].update(State="exited", Health=None)
+        before = self.engine.snapshot()
+        with self.assertRaisesRegex(RuntimeError, "fixture"), self.module.quiesced(resume=True):
             raise RuntimeError("fixture")
-        self.assertEqual([call.args[0] for call in command.call_args_list], [["stop", "--timeout", "60", "app"], ["start", "app"]])
+        self.assertEqual(self.engine.records[stopped_app], before[stopped_app])
+        for key in self.engine.ids("postgres", "clamav", "migrate", "initialize"):
+            self.assertEqual(before[key], self.engine.records[key])
+        started = [key for command in self.engine.mutations() if command[1] == "start" for key in command[2:]]
+        self.assertCountEqual(started, [key for key in self.engine.ids(*self.module.WRITERS) if key != stopped_app])
 
     def test_running_operator_blocks_backup_before_stop(self):
-        with (
-            patch.object(self.module, "service_states", return_value={"app": "running", "migrate": "running", "postgres": "running"}),
-            patch.object(self.module, "compose") as command,
-            self.assertRaises(self.module.BackupError),
-            self.module.quiesced(),
-        ):
-            self.fail("Concurrent migration must block backup")
-        command.assert_not_called()
+        for name in ("migrate", "initialize"):
+            with self.subTest(operator=name):
+                original = self.engine.snapshot()
+                self.engine.records[self.engine.ids(name)[0]].update(State="running", Oneoff="True")
+                with self.assertRaises(self.lifecycle.LifecycleError), self.module.quiesced():
+                    self.fail("Concurrent database operator must block backup")
+                self.assertEqual(self.engine.mutations(), [])
+                self.engine.records = original
 
     def test_service_inventory_accepts_equal_replicas_and_rejects_mixed_state(self):
         rows = [{"Service": "app", "State": "running"}, {"Service": "app", "State": "running"}]
@@ -69,13 +68,32 @@ class BackupTests(unittest.TestCase):
             self.module.service_states()
 
     def test_leave_stopped_does_not_resume(self):
+        before = self.engine.snapshot()
+        with self.module.quiesced(resume=False):
+            pass
+        self.assertTrue(all(command[1] == "stop" for command in self.engine.mutations()))
+        for key in self.engine.ids("postgres", "clamav", "migrate", "initialize"):
+            self.assertEqual(before[key], self.engine.records[key])
+
+    def test_failed_resume_readiness_prevents_backup_success(self):
         with (
-            patch.object(self.module, "service_states", side_effect=[{"app": "running", "postgres": "running"}, {"app": "exited", "postgres": "running"}]),
-            patch.object(self.module, "compose") as command,
-            self.module.quiesced(resume=False),
+            patch.object(self.lifecycle, "wait_healthy", side_effect=self.lifecycle.LifecycleError("readiness fixture")),
+            self.assertRaisesRegex(self.lifecycle.LifecycleError, "readiness fixture"), self.module.quiesced(),
         ):
             pass
-        self.assertEqual([call.args[0] for call in command.call_args_list], [["stop", "--timeout", "60", "app"]])
+
+    def test_new_active_operator_after_stop_prevents_backup_body(self):
+        original = self.lifecycle.stop_existing
+
+        def concurrent_operator(*args):
+            original(*args)
+            self.engine.records[self.engine.ids("initialize")[0]]["State"] = "running"
+
+        with (
+            patch.object(self.lifecycle, "stop_existing", side_effect=concurrent_operator),
+            self.assertRaises(self.lifecycle.LifecycleError), self.module.quiesced(),
+        ):
+            self.fail("An operator started while writers stopped")
 
     def test_volume_identity_must_match_both_exact_compose_labels(self):
         info = {"Name": "litblogs-cit_uploads", "Driver": "local", "Options": None, "Labels": {
