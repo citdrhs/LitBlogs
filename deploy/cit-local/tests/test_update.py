@@ -59,6 +59,24 @@ def config():
 
 
 class UpdateTests(unittest.TestCase):
+    def test_build_passes_only_validated_public_base_path_and_commit_tag(self):
+        self.assertTrue(hasattr(update, "build_image"), "The updater must preserve the frontend public base path")
+        for base_path, expected in (("", "/"), ("/dren", "/dren/"), ("/school/blogs", "/school/blogs/")):
+            with self.subTest(base_path=base_path), patch.object(update.subprocess, "run") as run:
+                update.build_image(SHA, Path("candidate-source"), {"LITBLOGS_BASE_PATH": base_path, "SECRET_KEY": "must-stay-private"}, object())
+                command = run.call_args.args[0]
+                self.assertEqual(command, ["/usr/bin/docker", "build", "--build-arg", f"VITE_APP_BASE_PATH={expected}", "-t", f"litblogs-app:{SHA}", "candidate-source"])
+                self.assertNotIn("must-stay-private", repr(run.call_args))
+                self.assertEqual(run.call_args.kwargs["env"], update.CLEAN_ENV)
+
+    def test_build_rejects_noncanonical_paths_before_running_docker(self):
+        self.assertTrue(hasattr(update, "build_image"), "Build inputs need validation")
+        for value in ("/", "/dren/", "//evil.test", "/a/../b", "/%2e", "/a?x", "/a b", "/a\nARG X", "/_bad", "/a" * 130):
+            with self.subTest(value=value), patch.object(update.subprocess, "run") as run:
+                with self.assertRaises(ValueError):
+                    update.build_image(SHA, Path("source"), {"LITBLOGS_BASE_PATH": value}, object())
+                run.assert_not_called()
+
     def test_git_subprocess_keeps_public_source_readable_and_disables_hooks(self):
         with patch.object(
             update.subprocess,
@@ -431,7 +449,7 @@ class UpdateTests(unittest.TestCase):
         ):
             update.deploy_candidate(
                 NEXT,
-                {"LITBLOGS_IMAGE_TAG": SHA},
+                {"LITBLOGS_IMAGE_TAG": SHA, "LITBLOGS_BASE_PATH": "/dren"},
                 Path(temporary) / ".candidate.env",
                 Path(temporary) / NEXT,
                 3,
@@ -443,6 +461,7 @@ class UpdateTests(unittest.TestCase):
             record = json.loads((Path(temporary) / "last-update.json").read_text())
             self.assertEqual(record["commit"], NEXT)
             self.assertEqual(record["backup"], "backup.enc")
+            self.assertEqual(record["frontend_base_path"], "/dren/")
             self.assertFalse(
                 any(
                     "migrate" in call.args or "down" in call.args

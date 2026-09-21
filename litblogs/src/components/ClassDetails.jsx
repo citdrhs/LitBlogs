@@ -1,3 +1,4 @@
+import { storageKey } from "../utils/browserStorage";
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import axios from 'axios';
@@ -96,7 +97,7 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
     : 'bg-blue-500/20 text-blue-700 border border-blue-200';
 
   useEffect(() => {
-    const storedUserInfo = sessionStorage.getItem('user_info');
+    const storedUserInfo = sessionStorage.getItem(storageKey('user_info'));
     if (storedUserInfo) {
       setUserInfo(JSON.parse(storedUserInfo));
     }

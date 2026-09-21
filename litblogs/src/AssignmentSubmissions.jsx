@@ -1,3 +1,4 @@
+import { storageKey } from "./utils/browserStorage";
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import axios from 'axios';
@@ -12,7 +13,7 @@ const AssignmentSubmissions = () => {
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [darkMode] = useState(() => JSON.parse(localStorage.getItem('darkMode')) ?? false);
+  const [darkMode] = useState(() => JSON.parse(localStorage.getItem(storageKey('darkMode'))) ?? false);
   const [userInfo, setUserInfo] = useState(null);
   const [assignment, setAssignment] = useState(null);
   const [submissions, setSubmissions] = useState([]);
@@ -24,7 +25,7 @@ const AssignmentSubmissions = () => {
       setLoading(true);
       setError(null);
 
-      const storedUserInfo = sessionStorage.getItem('user_info');
+      const storedUserInfo = sessionStorage.getItem(storageKey('user_info'));
       if (storedUserInfo) {
         setUserInfo(JSON.parse(storedUserInfo));
       }

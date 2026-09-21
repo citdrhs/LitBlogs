@@ -1,3 +1,4 @@
+import { storageKey } from "./utils/browserStorage";
 import { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
@@ -86,7 +87,7 @@ const SignUp = ({
     setIsDropdownOpen((prev) => !prev);
   };  
   useEffect(() => {
-    const storedDarkMode = JSON.parse(localStorage.getItem('darkMode'));
+    const storedDarkMode = JSON.parse(localStorage.getItem(storageKey('darkMode')));
     if (storedDarkMode !== null) {
       setDarkMode(storedDarkMode);
     } else {

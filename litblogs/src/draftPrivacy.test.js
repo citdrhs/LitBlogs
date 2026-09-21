@@ -43,8 +43,8 @@ describe("private browser draft policy", () => {
       /(?:localStorage|sessionStorage)\.setItem\([^;]*\);?/g,
     ) || [];
     expect(classFeedStorageWrites).toEqual([
-      "localStorage.setItem('darkMode', JSON.stringify(darkMode));",
-      "localStorage.setItem(reminderKey, new Date().toISOString());",
+      "localStorage.setItem(storageKey('darkMode'), JSON.stringify(darkMode));",
+      "localStorage.setItem(storageKey(reminderKey), new Date().toISOString());",
     ]);
     expect(classFeedSource).not.toMatch(/indexedDB|CacheStorage|\bcaches\.|createObjectURL|pushState|replaceState/);
   });

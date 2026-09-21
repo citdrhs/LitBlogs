@@ -98,6 +98,7 @@ from access_control import (
 from access_control import (
     user_class_ids as _get_user_class_ids,
 )
+from admin_teacher_invitations import issue_admin_teacher_invitation
 from auth_security import (
     csrf_token_matches,
     decode_access_token,
@@ -1154,7 +1155,9 @@ class UserStatusResponse(BaseModel):
 
 
 class PublicRuntimeConfigResponse(BaseModel):
+    session_cookie_name: str
     csrf_cookie_name: str
+    cookie_path: str
     google_oauth_enabled: bool
     google_client_id: str
     microsoft_oauth_enabled: bool
@@ -1523,7 +1526,7 @@ def _set_browser_session(
     max_age = settings.access_token_expire_minutes * 60
     cookie_options = {
         "max_age": max_age,
-        "path": "/",
+        "path": settings.browser_cookie_path,
         "secure": settings.session_cookie_secure,
         "samesite": "strict",
     }
@@ -1543,7 +1546,7 @@ def _set_browser_session(
 
 def _clear_browser_session(response: Response) -> None:
     common_options = {
-        "path": "/",
+        "path": settings.browser_cookie_path,
         "secure": settings.session_cookie_secure,
         "samesite": "strict",
     }
@@ -2002,6 +2005,27 @@ async def get_browser_session(current_user: models.User = Depends(get_current_us
     return _session_metadata(current_user)
 
 
+@app.post(
+    "/api/admin/teacher-invitations",
+    response_model=schemas.TeacherInvitationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_admin_teacher_invitation(
+    payload: schemas.TeacherInvitationCreate,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    result = issue_admin_teacher_invitation(
+        db, actor_id=current_user.id, session_id=getattr(request.state, "browser_session_id", None),
+        email=str(payload.email), settings=settings,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return result
+
+
 @app.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout(
     request: Request,
@@ -2441,7 +2465,9 @@ def liveness():
 def public_runtime_config(response: Response):
     response.headers["Cache-Control"] = "no-store"
     return PublicRuntimeConfigResponse(
+        session_cookie_name=settings.session_cookie_name or "",
         csrf_cookie_name=settings.csrf_cookie_name or "",
+        cookie_path=settings.browser_cookie_path,
         google_oauth_enabled=settings.google_oauth_enabled,
         google_client_id=(
             settings.google_client_id or "" if settings.google_oauth_enabled else ""

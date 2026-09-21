@@ -8,12 +8,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from lifecycle_fixture import load_lifecycle
 from test_compose import OVERLAY, ROOT, compose_config
 
 DIRECTORY = Path(__file__).resolve().parents[1]
 
 
 def load_restore():
+    load_lifecycle()
     backup_spec = importlib.util.spec_from_file_location("backup", DIRECTORY / "backup.py")
     backup = importlib.util.module_from_spec(backup_spec)
     backup_spec.loader.exec_module(backup)

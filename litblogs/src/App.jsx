@@ -1,3 +1,4 @@
+import { storageKey } from "./utils/browserStorage";
 import { Navigate, Routes, Route } from "react-router-dom";
 import LitBlogs from "./LitBlogs";
 import Help from "./Help";
@@ -32,7 +33,7 @@ function App() {
   const toggleDarkMode = () => {
     setDarkMode((prevDarkMode) => {
       const newDarkMode = !prevDarkMode;
-      localStorage.setItem('darkMode', JSON.stringify(newDarkMode));
+      localStorage.setItem(storageKey('darkMode'), JSON.stringify(newDarkMode));
       return newDarkMode;
     });
   };

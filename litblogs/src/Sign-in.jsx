@@ -1,3 +1,4 @@
+import { storageKey } from "./utils/browserStorage";
 import { useState, useEffect, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
@@ -62,7 +63,7 @@ const SignIn = () => {
   };
 
   useEffect(() => {
-    const storedDarkMode = JSON.parse(localStorage.getItem('darkMode'));
+    const storedDarkMode = JSON.parse(localStorage.getItem(storageKey('darkMode')));
     if (storedDarkMode !== null) {
       setDarkMode(storedDarkMode);
     } else {
@@ -98,7 +99,7 @@ const SignIn = () => {
       const normalizedSettings = saveLocalUserSettings(settingsResponse?.data || {}, session.role);
       applyGlobalUserSettings(normalizedSettings);
 
-      localStorage.setItem('darkMode', JSON.stringify(Boolean(normalizedSettings.darkMode)));
+      localStorage.setItem(storageKey('darkMode'), JSON.stringify(Boolean(normalizedSettings.darkMode)));
       if (normalizedSettings.darkMode) {
         document.documentElement.classList.add('dark');
       } else {

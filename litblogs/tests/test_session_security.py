@@ -2,10 +2,12 @@ import logging
 import secrets
 import time
 from datetime import UTC, datetime
+from http.cookies import SimpleCookie
 
 import pytest
 from pydantic import BaseModel
 from settings_test_support import production_upload_settings
+from starlette.testclient import TestClient
 
 import auth_security
 import main
@@ -239,6 +241,53 @@ def test_production_login_marks_both_cookies_secure(monkeypatch, client):
         secure=True,
         max_age=max_age,
     )
+
+
+def test_subpath_session_cookie_scope_csrf_and_logout(monkeypatch, client):
+    user = _create_student("subpath")
+    values = _production_settings().model_dump() | {
+        "app_base_path": "/dren",
+        "frontend_url": "https://litblogs.school.edu/dren",
+        "session_cookie_name": "__Secure-litblogs-session",
+        "csrf_cookie_name": "__Secure-litblogs-csrf",
+    }
+    monkeypatch.setattr(main, "settings", Settings(**values))
+
+    async def stripping_proxy(scope, receive, send):
+        # Model the reviewed ingress: cookies use the public URL; ASGI sees /api.
+        if scope["type"] == "http" and scope["path"].startswith("/dren/"):
+            scope = {**scope, "path": scope["path"].removeprefix("/dren"),
+                     "raw_path": scope["raw_path"].removeprefix(b"/dren")}
+        await main.app(scope, receive, send)
+
+    with TestClient(stripping_proxy, base_url="https://testserver") as browser:
+        runtime = browser.get("/dren/api/runtime-config")
+        assert runtime.status_code == 200
+        assert runtime.json()["session_cookie_name"] == "__Secure-litblogs-session"
+        assert runtime.json()["csrf_cookie_name"] == "__Secure-litblogs-csrf"
+        assert runtime.json()["cookie_path"] == "/dren/"
+        response = browser.post("/dren/api/auth/login", json={
+            "email": user.email, "password": "synthetic-session-password",
+        })
+        assert response.status_code == 200
+        for name, http_only in ((main.settings.session_cookie_name, True),
+                                (main.settings.csrf_cookie_name, False)):
+            cookie = SimpleCookie(_cookie_header(response, name))[name]
+            assert cookie["path"] == "/dren/"
+            assert cookie["secure"] and bool(cookie["httponly"]) is http_only
+            assert cookie["samesite"] == "strict" and not cookie["domain"]
+        assert "cookie" not in browser.build_request("GET", "/another-project/").headers
+        assert "cookie" not in browser.build_request("GET", "/dren-other/").headers
+        assert browser.get("/dren/api/auth/session").status_code == 200
+        assert browser.post("/dren/api/auth/logout").status_code == 403
+        csrf = browser.cookies.get(main.settings.csrf_cookie_name)
+        response = browser.post("/dren/api/auth/logout", headers={"X-CSRF-Token": csrf})
+        assert response.status_code == 204
+        for header in response.headers.get_list("set-cookie"):
+            cookie = next(iter(SimpleCookie(header).values()))
+            assert cookie["path"] == "/dren/" and cookie["max-age"] == "0"
+            assert cookie["secure"] and not cookie["domain"]
+        assert browser.get("/dren/api/auth/session").status_code == 401
 
 
 def test_safe_session_endpoint_returns_typed_nonsecret_metadata(client):

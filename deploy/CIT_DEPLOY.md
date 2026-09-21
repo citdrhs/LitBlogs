@@ -1,5 +1,9 @@
 # LitBlogs on CIT Deploy
 
+The manually operated CIT installation and its approved temporary `/dren/`
+route use [cit-public/README.md](cit-public/README.md). The instructions below
+describe the separate portal workflow with a dedicated hostname.
+
 Use **Custom Docker**, not the Flask template. The repository's
 `docker-compose.yml` builds the app and runs its web gateway, PostgreSQL,
 upload scanner, email delivery, and cleanup worker. No separate Python, Node,
@@ -158,6 +162,13 @@ The first command privately prompts for the administrator username, school email
 and password. It refuses to bootstrap a populated installation. The second asks
 for a teacher's allowed school email and returns a one-time invitation; send it
 privately to that teacher. Never paste invitations/passwords into shared logs.
+
+After administrator setup, any active administrator can instead use **Invite
+Teacher** on the admin dashboard. Enter the school email, create the 48-hour
+invitation, and copy it for private sharing. This replaces any unused invitation
+for that email and does not send an email automatically. The teacher enters the
+code in **Teacher invitation token** when signing up and verifies their email
+before using the teacher dashboard.
 
 At the dedicated HTTPS URL, test a synthetic student signup, verification email,
 sign-in, class join, post, attachment, sign-out, and password reset. Also verify

@@ -1,3 +1,4 @@
+import { storageKey } from "./utils/browserStorage";
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -21,12 +22,12 @@ const StudentHub = () => {
   const [posts, setPosts] = useState([]);
   const [postsLoading, setPostsLoading] = useState(false);
   const [darkMode] = useState(() => {
-    return JSON.parse(localStorage.getItem('darkMode')) ?? false;
+    return JSON.parse(localStorage.getItem(storageKey('darkMode'))) ?? false;
   });
   const [archivedClasses, setArchivedClasses] = useState([]);
 
   useEffect(() => {
-    const storedUserInfo = sessionStorage.getItem('user_info');
+    const storedUserInfo = sessionStorage.getItem(storageKey('user_info'));
     if (storedUserInfo) {
       setUserInfo(JSON.parse(storedUserInfo));
     }

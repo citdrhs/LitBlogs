@@ -7,7 +7,8 @@ COPY litblogs/index.html litblogs/vite.config.js litblogs/postcss.config.js litb
 COPY litblogs/rich_text_contract.json ./
 COPY litblogs/src ./src
 COPY litblogs/public ./public
-ENV VITE_APP_BASE_PATH=/
+ARG VITE_APP_BASE_PATH=/
+ENV VITE_APP_BASE_PATH=${VITE_APP_BASE_PATH}
 RUN npm run build
 
 FROM python:3.13-slim-bookworm@sha256:ed86c82274b3c69b52fb5820f358f0bd7df0b603332063cb5c6e32bd220c3e6e AS runtime

@@ -17,7 +17,7 @@ OVERLAY = ROOT / "deploy/cit-local/compose.yaml"
 ORIGIN = "https://litblogs.cit.internal:18443"
 
 
-def compose_config(*files, project="litblogs-compose-test"):
+def compose_config(*files, project="litblogs-compose-test", environment_overrides=None):
     environment = dict(os.environ)
     # Override every required base input, including any real inherited secrets.
     for name in (
@@ -28,7 +28,9 @@ def compose_config(*files, project="litblogs-compose-test"):
     ):
         environment[name] = "compose-test-placeholder"
     environment.update(
-        LITBLOGS_ORIGIN="https://compose-base.example.invalid",
+        LITBLOGS_ORIGIN=ORIGIN,
+        LITBLOGS_GATEWAY_HOST="litblogs.cit.internal:18443",
+        LITBLOGS_TRUSTED_PROXY_CIDR="127.0.0.1/32",
         ALLOWED_EMAIL_DOMAINS="example.test",
         LITBLOGS_IMAGE_TAG="compose-test",
         LITBLOGS_HTTP_PORT="54321",  # Must not survive the replacement gateway.
@@ -38,6 +40,7 @@ def compose_config(*files, project="litblogs-compose-test"):
         UPLOAD_LEGACY_IMPORT_COMPLETE="false",
         UPLOAD_BACKUP_RESTORE_VERIFIED="false",
     )
+    environment.update(environment_overrides or {})
     with tempfile.TemporaryDirectory(prefix="litblogs-compose-test-") as state:
         environment["LITBLOGS_STATE_DIR"] = state
         command = ["docker", "compose", "--env-file", os.devnull, "-p", project]
@@ -117,9 +120,28 @@ class LocalComposeTests(unittest.TestCase):
     def test_gateway_has_only_edge_network_and_no_application_secrets(self):
         gateway = self.services["web"]
         self.assertEqual(set(gateway["networks"]), {"edge"})
-        self.assertFalse(gateway.get("environment"))
+        self.assertEqual(gateway.get("environment"), {
+            "LITBLOGS_GATEWAY_HOST": "litblogs.cit.internal:18443",
+            "LITBLOGS_TRUSTED_PROXY_CIDR": "127.0.0.1/32",
+        })
         for name in ("app", "email", "reconcile"):
             self.assertNotIn("POSTGRES_PASSWORD", self.services[name]["environment"])
+
+    def test_public_host_health_probe_and_origin_are_configurable(self):
+        config = compose_config(ROOT / "docker-compose.yml", OVERLAY, environment_overrides={
+            "LITBLOGS_ORIGIN": "https://drhscit.org",
+            "LITBLOGS_GATEWAY_HOST": "drhscit.org",
+            "LITBLOGS_BASE_PATH": "/dren",
+            "LITBLOGS_TRUSTED_PROXY_CIDR": "172.31.42.1/32",
+        })
+        gateway = config["services"]["web"]
+        self.assertEqual(gateway["environment"], {
+            "LITBLOGS_GATEWAY_HOST": "drhscit.org",
+            "LITBLOGS_TRUSTED_PROXY_CIDR": "172.31.42.1/32",
+        })
+        self.assertIn("--header=Host: drhscit.org", gateway["healthcheck"]["test"])
+        for name in ("app", "email", "reconcile"):
+            self.assertEqual(config["services"][name]["environment"]["LITBLOGS_ORIGIN"], "https://drhscit.org")
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import { storageKey } from "./utils/browserStorage";
 import { useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -12,7 +13,7 @@ const TeacherDashboard = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const [darkMode] = useState(() => {
-    return JSON.parse(localStorage.getItem('darkMode')) ?? false;
+    return JSON.parse(localStorage.getItem(storageKey('darkMode'))) ?? false;
   });
   const [activeTab, setActiveTab] = useState('Dashboard');
   const [showClassForm, setShowClassForm] = useState(false);
@@ -51,7 +52,7 @@ const TeacherDashboard = () => {
   // Combine the useEffects
   useEffect(() => {
     // Load user info
-    const storedUserInfo = sessionStorage.getItem('user_info');
+    const storedUserInfo = sessionStorage.getItem(storageKey('user_info'));
     if (storedUserInfo) {
       setUserInfo(JSON.parse(storedUserInfo));
     }

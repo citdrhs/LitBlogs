@@ -3,8 +3,9 @@
 This deployment uses the root Dockerfile and Compose services, with this overlay
 replacing the bundled Nginx gateway with HAProxy. The only published endpoint is
 `127.0.0.1:18443`. It uses a private certificate for
-`https://litblogs.cit.internal:18443`; no DNS, public routing, host Nginx,
-other CIT services, or host PostgreSQL configuration is changed.
+`https://litblogs.cit.internal:18443`. The optional, explicitly approved public
+route is documented in [../cit-public/README.md](../cit-public/README.md).
+The private stack never publishes PostgreSQL or its application port.
 
 The source checkout is `/home/litblogs/www/LitBlogs`. Root-owned settings,
 installed operations scripts, certificates, logs and recovery archives are in
@@ -14,45 +15,65 @@ the application, and never delete its volumes to redeploy.
 
 ## Current follow-up
 
-- **TODO: replace the rejected SMTP credentials and verify actual delivery.**
-  Until then, email verification and password reset are unavailable even when
-  container health checks pass. The initial administrator is provisioned through
-  the trusted bootstrap command; this does not bypass verification for students.
-- Public release still needs a dedicated approved HTTPS hostname and routing,
-  appropriate trusted-proxy/rate-limit configuration, load validation and an
-  off-host recovery schedule. This installation intentionally remains local.
+- The SMTP replacement and real password-reset delivery were verified on
+  September 12, 2026. Keep credentials private and retest actual delivery after
+  changing them; healthy containers alone do not prove working email.
+- The temporary `/dren/` route shares a browser origin with other CIT projects.
+  A dedicated hostname remains necessary for browser isolation. Load validation
+  and an off-host recovery schedule remain operational follow-ups.
 - Store the backup encryption key separately from the encrypted archives, and
   monitor disk usage/retention. Automated backups are retained without deletion.
 
 ## Common commands
 
-Log in using `ssh -p 4243 litblogs@drhscit.org`, then define this helper in a
-trusted administrator shell. It always targets only the named LitBlogs stack:
+Log in using `ssh -p 4243 litblogs@drhscit.org`. The permanent command works from
+any directory and needs no exported variables:
 
 ```bash
-lc() {
-  sudo docker --host unix:///var/run/docker.sock compose \
-    --project-name litblogs-cit \
-    --project-directory /home/litblogs/www/LitBlogs \
-    --env-file /home/litblogs/.local/state/cit-deploy/.env \
-    -f /home/litblogs/www/LitBlogs/docker-compose.yml \
-    -f /home/litblogs/.local/state/cit-deploy/compose.yaml "$@"
-}
-lc ps
-sudo systemctl status litblogs-cit.service --no-pager
-sudo systemctl list-timers 'litblogs-cit-*' --no-pager
-sudo python3 /home/litblogs/.local/state/cit-deploy/verify.py
+sudo litblogs status
+sudo litblogs start
+sudo litblogs check
+sudo litblogs logs
 ```
 
-Do not print resolved `compose config` or environment contents into shared logs.
-Use `lc config --quiet` for validation. To replace mail credentials, hold the
+`status` reports the unit, recovery latch and service health counts. `start`
+recovers the existing installed containers without building images or running
+initialization/migrations. Healthy running containers remain running. It uses
+validated exact container IDs; do not substitute `docker compose start`, which
+can traverse dependencies. A maintenance lock or recovery latch blocks startup.
+If the oneshot unit is already active, the command invokes the installed startup
+helper directly; otherwise it starts the unit so systemd tracks the deployment.
+`check` verifies private HTTPS and runtime controls without sending mail. `logs`
+saves up to 100 recent lines per container from the last 24 hours, capped at 2 MiB,
+in root-only `logs/operator-latest.log` and prints that path. Inspect this file
+privately; it may contain application details. Startup diagnostics remain in
+`logs/service-start.log`.
+
+The private `.env` persists outside Git across logout, reboot and source updates.
+The command always uses that file, the installed HAProxy overlay, project
+`litblogs-cit` and the local Docker socket. It discards inherited shell settings;
+no `export`, copied secrets or `.env` in the source checkout are required. For
+the current public route, these nonsecret settings remain separate in the private
+file:
+
+```dotenv
+LITBLOGS_ORIGIN='https://drhscit.org'
+LITBLOGS_BASE_PATH='/dren'
+```
+
+Do not put `/dren` in `LITBLOGS_ORIGIN` or run plain `docker compose` from the
+repository to recover this installation. If containers or private settings are
+missing, stop for operator review rather than recreating the database or guessing
+credentials. Do not print resolved `compose config`, environment contents or
+private log contents into shared transcripts. To replace mail credentials, hold the
 shared operation lock across editing and recreating the mail-related services,
 keeping the private `.env` single-quoted `KEY='value'` format.
 Set the approved `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USERNAME`, `EMAIL_PASSWORD`
 and bare-address `EMAIL_FROM`, then recreate only these services:
 
 ```bash
-sudo flock --exclusive /home/litblogs/.local/state/cit-deploy/operation.lock \
+sudo env -i PATH=/usr/bin:/bin HOME=/root LANG=C.UTF-8 \
+  flock --exclusive /home/litblogs/.local/state/cit-deploy/operation.lock \
   bash -c 'nano /home/litblogs/.local/state/cit-deploy/.env &&
   docker --host unix:///var/run/docker.sock compose \
     --project-name litblogs-cit \
@@ -64,10 +85,18 @@ sudo flock --exclusive /home/litblogs/.local/state/cit-deploy/operation.lock \
 ```
 
 Authenticate to the approved STARTTLS relay and verify registration/reset delivery
-to an explicitly approved test recipient. No mail was sent during commissioning.
+to an explicitly approved test recipient. The September 12 SMTP replacement
+included a successful real password-reset test.
 The two approved registration domains are `henricostudents.org` and
 `henrico.k12.va.us`; teachers also require an email-bound invitation. Domain
 membership alone does not grant teacher or administrator privileges.
+
+Active administrators can create 48-hour, single-use teacher invitations through
+**Admin Dashboard → Invite Teacher**. Copy the resulting code and share it privately
+with the intended teacher; invitation creation does not send email. The teacher
+uses that same email and selects **Teacher** at signup, then verifies their email.
+A new invitation replaces a previous unused code for that email. The trusted
+host operator command remains available for IT.
 
 The initial administrator credentials are kept separately in
 `/home/litblogs/.litblogs-admin-initial.json`, readable only by the LitBlogs account.
@@ -91,14 +120,15 @@ curl --cacert server.crt \
   https://litblogs.cit.internal:18443/api/health/ready
 ```
 
-Browser access needs a client-only hostname mapping and trust for the private
-certificate. Do not add public DNS or route the shared CIT hostname to this
-installation as part of local testing.
+In private mode, browser access needs a client-only hostname mapping and trust
+for the private certificate. After public-route activation, use
+`https://drhscit.org/dren/`; internal probes still verify the private certificate
+but send `Host: drhscit.org`. Run `verify.py` for this mode-aware verification.
 
 ## Updates, scaling and reboot behavior
 
-`litblogs-cit.service` starts the existing pinned containers at boot and waits for
-all of them to be healthy. It never rebuilds, resets the database, or applies
+`litblogs-cit.service` starts validated existing container IDs at boot and waits
+for all of them to be healthy. It never rebuilds, resets the database, or applies
 migrations during boot. The services also have Docker `unless-stopped` restart
 policies. An unhealthy status alone is an alert condition, not an automatic
 Docker restart.
@@ -140,8 +170,9 @@ At three app replicas the steady-state caps total 10.25 GiB and 8.5 CPUs.
 This is bounded scaling on one server, not unlimited student capacity or a cluster.
 
 The local gateway permits HTTP/1.1, rejects chunked bodies, applies route-specific
-body limits and separate source-IP request limits. SSH clients share a source
-bucket; broader use needs the routing and capacity review mentioned above.
+body limits and separate source-IP request limits. In public mode, only the exact
+configured Docker gateway address can attest the client IP overwritten by host
+Nginx. Other callers cannot select a bucket using a forwarded header.
 
 ## Backup and restore
 
@@ -181,7 +212,35 @@ LITBLOGS_TEST_HAPROXY_RUNTIME=1 python3 -m unittest discover \
 ```
 
 Install reviewed copies of the Python helpers, overlay and HAProxy configuration
-into the private state directory. Install only `systemd/litblogs-cit*` units into
+into the private state directory. The shared `lifecycle.py` must be installed
+alongside `service.py` and `backup.py` before either updated helper is used. All
+installed helper files are root:root mode 0600; the state and logs directories
+remain root:root mode 0700, and `.env` remains root:root mode 0600. The operator
+command refuses unexpected ownership, permissions or symlinks.
+
+From the reviewed repository root, an administrator can install the operation
+helpers and permanent command under the existing maintenance lock:
+
+```bash
+sudo env -i PATH=/usr/bin:/bin HOME=/root LANG=C.UTF-8 \
+  flock --exclusive /home/litblogs/.local/state/cit-deploy/operation.lock \
+  /bin/sh -eu -c '
+    for helper in lifecycle.py backup.py service.py verify.py autoscale.py update.py restore_rehearsal.py admin_probe.py; do
+      install -o root -g root -m 0600 "$1/$helper" "$2/$helper"
+    done
+    install -o root -g root -m 0755 "$1/operator.py" /usr/local/bin/litblogs
+  ' sh "$PWD/deploy/cit-local" /home/litblogs/.local/state/cit-deploy
+sudo litblogs status
+sudo litblogs check
+```
+
+Copy `operator.py` only to `/usr/local/bin/litblogs`, not into the state directory;
+its source name would conflict with Python's standard `operator` module there.
+Never link the installed command to a writable source checkout. These commands
+do not replace the private `.env`, overlay, certificates or data. The application
+updater does not install new operation helpers automatically.
+
+Install only `systemd/litblogs-cit*` units into
 `/etc/systemd/system`, validate them with `systemd-analyze verify`, reload systemd,
 and enable the main service and three timers after initial startup succeeds.
 All maintenance uses `operation.lock`; timers skip when the main service is inactive

@@ -6,9 +6,12 @@ import os
 import runpy
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from itertools import product
 from pathlib import Path
+from threading import Barrier, Event
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +20,7 @@ from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy.engine import make_url
+from sqlalchemy.orm import Session
 
 import database
 
@@ -36,6 +40,7 @@ EXPECTED_REVISIONS = (
     "b983b7aebe7b",
     "f1ad78b2035f",
     "a82f8f2b1d7c",
+    "b64a9c2e7d31",
 )
 EXPECTED_TABLES = (
     "assignment_drafts",
@@ -891,7 +896,7 @@ def test_email_verification_upgrade_backfills_existing_users_at_one_transaction_
         assert len(backfilled) == 2
         assert backfilled[0] is not None
         assert backfilled[0] == backfilled[1]
-        assert _current_revision(engine) == "a82f8f2b1d7c"
+        assert _current_revision(engine) == EXPECTED_REVISIONS[-1]
     finally:
         engine.dispose()
 
@@ -921,7 +926,7 @@ def test_email_verification_sqlite_complete_model_metadata_is_adopted_and_backfi
             assert connection.exec_driver_sql(
                 "SELECT email_verified_at IS NOT NULL FROM users WHERE id = 1"
             ).scalar_one()
-        assert _current_revision(engine) == "a82f8f2b1d7c"
+        assert _current_revision(engine) == EXPECTED_REVISIONS[-1]
     finally:
         engine.dispose()
 
@@ -949,7 +954,7 @@ def test_email_verification_sqlite_partial_adoption_is_rejected_and_retryable(
                 "ALTER TABLE users DROP COLUMN email_verified_at"
             )
         _upgrade(engine)
-        assert _current_revision(engine) == "a82f8f2b1d7c"
+        assert _current_revision(engine) == EXPECTED_REVISIONS[-1]
     finally:
         engine.dispose()
 
@@ -999,6 +1004,129 @@ def test_invalidated_password_reset_secrets_block_downgrade_before_schema_change
         } == columns_before
     finally:
         engine.dispose()
+
+
+def _assert_runtime_invitation_issuance_and_concurrency(runtime_engine, migrator_engine):
+    """Exercise real runtime-role INSERTs and two distinct admin transactions."""
+    from fastapi import HTTPException
+
+    import main
+    import models
+    from admin_teacher_invitations import issue_admin_teacher_invitation
+    from identity_controls import consume_teacher_invitation, invitation_email_digest, issue_browser_session
+
+    actors = []
+    with Session(runtime_engine) as db:
+        for index in range(2):
+            actor = models.User(
+                username=f"runtime-inviter-{index}", email=f"runtime-inviter-{index}@example.com",
+                password="unused-synthetic-password", role=models.UserRole.ADMIN,
+                email_verified_at=datetime.now(UTC),
+            )
+            db.add(actor)
+            db.flush()
+            issue_browser_session(db, user_id=actor.id, settings=main.settings)
+            session_id = db.scalar(sa.select(models.BrowserSession.id).where(models.BrowserSession.user_id == actor.id))
+            actors.append((actor.id, session_id))
+        db.commit()
+
+    barrier = Barrier(2, timeout=10)
+
+    def rendezvous(_connection, _cursor, statement, _parameters, _context, _many):
+        if statement.startswith("INSERT INTO public.teacher_invitations "):
+            barrier.wait()
+
+    def issue(actor):
+        with Session(runtime_engine) as db:
+            try:
+                result = issue_admin_teacher_invitation(
+                    db, actor_id=actor[0], session_id=actor[1], email="concurrent-invite@example.com",
+                    settings=main.settings,
+                )
+            except HTTPException as error:
+                return error.status_code, None
+            return 201, result
+
+    sa.event.listen(runtime_engine, "before_cursor_execute", rendezvous)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(issue, actor) for actor in actors]
+            results = [future.result(timeout=20) for future in futures]
+    finally:
+        sa.event.remove(runtime_engine, "before_cursor_execute", rendezvous)
+    assert sorted(status for status, _ in results) == [201, 409]
+    invitation = next(result for status, result in results if status == 201)
+    with Session(runtime_engine) as db:
+        assert consume_teacher_invitation(
+            db, token=invitation.invitation_token, email=invitation.email, settings=main.settings,
+        )
+        db.rollback()
+    with migrator_engine.connect() as connection:
+        assert connection.execute(sa.text(
+            "SELECT count(*) FROM public.teacher_invitations WHERE email_digest = :digest"
+        ), {"digest": invitation_email_digest(invitation.email, settings=main.settings)}).scalar_one() == 1
+        assert connection.exec_driver_sql(
+            "SELECT count(*) FROM public.operator_audit_events WHERE action = 'TEACHER_INVITATION_CREATED'"
+        ).scalar_one() == 1
+
+    # A signup can consume the previous invitation while replacement waits on
+    # that row. Its newly committed account must turn replacement into a 409.
+    replacement_reached_update = Event()
+
+    def observe_replacement(_connection, _cursor, statement, _parameters, _context, _many):
+        if statement.startswith("UPDATE teacher_invitations SET revoked_at="):
+            replacement_reached_update.set()
+
+    with Session(runtime_engine) as signup:
+        assert consume_teacher_invitation(
+            signup, token=invitation.invitation_token, email=invitation.email, settings=main.settings,
+        )
+        signup.add(models.User(
+            username="concurrent-new-teacher", email=invitation.email,
+            password="unused-synthetic-password", role=models.UserRole.TEACHER,
+        ))
+        signup.flush()
+        sa.event.listen(runtime_engine, "before_cursor_execute", observe_replacement)
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                pending = executor.submit(issue, actors[0])
+                try:
+                    assert replacement_reached_update.wait(timeout=10)
+                    signup.commit()
+                finally:
+                    signup.rollback()
+                assert pending.result(timeout=20) == (409, None)
+        finally:
+            sa.event.remove(runtime_engine, "before_cursor_execute", observe_replacement)
+    with migrator_engine.connect() as connection:
+        assert connection.exec_driver_sql("SELECT count(*) FROM public.teacher_invitations").scalar_one() == 1
+        assert connection.exec_driver_sql(
+            "SELECT count(*) FROM public.operator_audit_events WHERE action = 'TEACHER_INVITATION_CREATED'"
+        ).scalar_one() == 1
+
+    for extra_column, extra_value in (
+        ("id", "999999"), ("created_at", "CURRENT_TIMESTAMP"),
+        ("consumed_at", "CURRENT_TIMESTAMP"), ("revoked_at", "CURRENT_TIMESTAMP"),
+    ):
+        with pytest.raises(sa.exc.DBAPIError):
+            with runtime_engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "INSERT INTO public.teacher_invitations "
+                    f"(token_digest,email_digest,expires_at,created_by,{extra_column}) VALUES "
+                    "(repeat('d',64),repeat('e',64),CURRENT_TIMESTAMP + INTERVAL '48 hours',"
+                    f"'runtime-smoke',{extra_value})"
+                )
+    for statement in (
+        "DELETE FROM public.teacher_invitations",
+        "SELECT created_by FROM public.teacher_invitations",
+        "SELECT last_value FROM public.teacher_invitations_id_seq",
+        "SELECT public.operator_create_teacher_invitation(repeat('d',64)::varchar,"
+        "repeat('e',64)::varchar,CURRENT_TIMESTAMP + INTERVAL '48 hours',"
+        "'runtime-smoke'::varchar,repeat('f',64)::varchar)",
+    ):
+        with pytest.raises(sa.exc.DBAPIError):
+            with runtime_engine.begin() as connection:
+                connection.exec_driver_sql(statement)
 
 
 def test_postgresql_upgrade_has_exact_schema_and_acl_when_available(
@@ -1240,6 +1368,38 @@ def test_postgresql_upgrade_has_exact_schema_and_acl_when_available(
             assert "No new upgrade operations detected." in cli_check.stdout
 
         database.check_database_readiness(runtime_engine)
+        _assert_runtime_invitation_issuance_and_concurrency(runtime_engine, migrator_engine)
+
+        # The additive grant is reversible without deleting any invitation.
+        _downgrade(migrator_engine, "a82f8f2b1d7c")
+        with runtime_engine.connect() as connection:
+            with pytest.raises(RuntimeError, match="privilege boundary"):
+                database.verify_runtime_database_identity(connection)
+        with migrator_engine.connect() as connection:
+            assert connection.exec_driver_sql("SELECT count(*) FROM teacher_invitations").scalar_one() == 1
+        _upgrade(migrator_engine)
+        database.check_database_readiness(runtime_engine)
+
+        for grant, revoke in (
+            ("GRANT SELECT ON SEQUENCE public.teacher_invitations_id_seq TO litblogs_runtime",
+             "REVOKE SELECT ON SEQUENCE public.teacher_invitations_id_seq FROM litblogs_runtime"),
+            ("GRANT INSERT ON TABLE public.teacher_invitations TO litblogs_runtime",
+             "REVOKE INSERT ON TABLE public.teacher_invitations FROM litblogs_runtime"),
+        ):
+            with admin_engine.begin() as connection:
+                connection.exec_driver_sql(grant)
+            with runtime_engine.connect() as connection:
+                with pytest.raises(RuntimeError, match="privilege boundary"):
+                    database.verify_runtime_database_identity(connection)
+            with admin_engine.begin() as connection:
+                connection.exec_driver_sql(revoke)
+                # PostgreSQL table-level REVOKE also clears that privilege's
+                # column ACLs, so restore the reviewed four-column contract.
+                connection.exec_driver_sql(
+                    "GRANT INSERT (token_digest,email_digest,expires_at,created_by) "
+                    "ON TABLE public.teacher_invitations TO litblogs_runtime"
+                )
+            database.check_database_readiness(runtime_engine)
 
         with admin_engine.begin() as connection:
             connection.exec_driver_sql(
@@ -1547,7 +1707,9 @@ def test_postgresql_upgrade_has_exact_schema_and_acl_when_available(
                     "('id', 'SELECT'), ('token_digest', 'SELECT'), "
                     "('email_digest', 'SELECT'), ('expires_at', 'SELECT'), "
                     "('consumed_at', 'SELECT'), ('revoked_at', 'SELECT'), "
-                    "('consumed_at', 'UPDATE'), ('revoked_at', 'UPDATE')"
+                    "('consumed_at', 'UPDATE'), ('revoked_at', 'UPDATE'), "
+                    "('token_digest', 'INSERT'), ('email_digest', 'INSERT'), "
+                    "('expires_at', 'INSERT'), ('created_by', 'INSERT')"
                     ") AS required(column_name, privilege_name)"
                 ).scalar_one()
                 is True

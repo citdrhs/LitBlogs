@@ -1143,7 +1143,7 @@ def test_restore_acl_probe_is_catalog_wide_and_checks_fixed_security_boundary():
 
 
 def test_restore_email_verification_schema_data_and_acl_inventory_is_exact():
-    assert restore_verify_postgres.EXPECTED_ALEMBIC_HEAD == "a82f8f2b1d7c"
+    assert restore_verify_postgres.EXPECTED_ALEMBIC_HEAD == "b64a9c2e7d31"
 
     schema_probe = restore_verify_postgres.SCHEMA_INTEGRITY_SQL
     for fragment in (

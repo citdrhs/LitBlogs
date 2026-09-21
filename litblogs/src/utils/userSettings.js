@@ -1,4 +1,6 @@
-export const SETTINGS_KEY = "litblogs_settings";
+import { storageKey } from "./browserStorage.js";
+
+export const SETTINGS_KEY = storageKey("litblogs_settings");
 
 export const DEFAULT_USER_SETTINGS = {
   darkMode: false,

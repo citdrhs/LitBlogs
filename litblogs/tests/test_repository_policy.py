@@ -1191,7 +1191,7 @@ def test_ci_browser_gate_is_mandatory_and_uploads_only_sanitized_failures(
     assert "npx playwright install --with-deps chromium" in commands
     assert "npm run test:e2e" in commands
     browser_steps = browser_job["steps"]
-    journey_step = next(step for step in browser_steps if step.get("name") == "Run eight browser journeys")
+    journey_step = next(step for step in browser_steps if step.get("name") == "Run nine browser journeys")
     assert journey_step["env"] == {
         "CI": "true",
         "E2E_ADMIN_DATABASE_URL": (
@@ -1226,7 +1226,7 @@ def test_release_packaging_depends_on_unprivileged_browser_gate(policy_validator
     journey_step = next(
         step
         for step in browser_job["steps"]
-        if step.get("name") == "Run eight browser journeys"
+        if step.get("name") == "Run nine browser journeys"
     )
     assert journey_step["env"]["E2E_REQUIRE_AVAILABLE"] == "true"
     assert workflow["jobs"]["build-release"]["needs"] == "browser-journeys"
@@ -1333,7 +1333,7 @@ def test_browser_harness_forbids_raw_artifacts_and_proves_runtime_database_acl()
     assert "storageState" not in playwright_config
     for ignored_output in ("test-results/", "playwright-report/", "blob-report/"):
         assert ignored_output in ignore_policy
-    assert sum(source.count("test('") for source in spec_sources) == 8
+    assert sum(source.count("test('") for source in spec_sources) == 9
     assert any(
         "the LitBlogs editor preserves one rich post across every author and course view"
         in source

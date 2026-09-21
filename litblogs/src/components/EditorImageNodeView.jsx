@@ -1,4 +1,5 @@
 import { NodeViewWrapper } from "@tiptap/react";
+import { mediaPath } from "../utils/urlUtils";
 
 const WIDTH_OPTIONS = ["", "25%", "50%", "75%", "100%"];
 const ALIGNMENT_CLASSES = {
@@ -61,7 +62,7 @@ const EditorImageNodeView = ({
       data-node-kind="image"
     >
       <img
-        src={node.attrs.src}
+        src={mediaPath(node.attrs.src)}
         alt={node.attrs.alt || ""}
         title={node.attrs.title || undefined}
         width={node.attrs.width || undefined}

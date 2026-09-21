@@ -7,7 +7,9 @@ image for synthetic backends too; publishes only a random loopback test port.
 """
 
 import http.client
+import json
 import os
+import re
 import socket
 import ssl
 import subprocess
@@ -21,7 +23,10 @@ from test_compose import OVERLAY, ROOT, compose_config
 
 
 @unittest.skipUnless(os.environ.get("LITBLOGS_TEST_HAPROXY_RUNTIME") == "1", "Opt-in local Docker integration test")
-class GatewayRuntimeTests(unittest.TestCase):
+class GatewayFixture(unittest.TestCase):
+    gateway_host = "litblogs.cit.internal:18443"
+    trust_docker_gateway = False
+    proxy_cidr_override = None
     @classmethod
     def docker(cls, *arguments, check=True):
         result = subprocess.run(["docker", *arguments], capture_output=True, text=True, timeout=120, check=False)
@@ -49,6 +54,9 @@ class GatewayRuntimeTests(unittest.TestCase):
         pem.chmod(0o444)
         cls.docker("network", "create", cls.network)
         cls.addClassCleanup(cls.cleanup_docker)
+        network = json.loads(cls.docker("network", "inspect", cls.network))[0]
+        proxy_cidr = network["IPAM"]["Config"][0]["Gateway"] + "/32" if cls.trust_docker_gateway else "127.0.0.1/32"
+        proxy_cidr = cls.proxy_cidr_override or proxy_cidr
         cls.start_backend(1)
         cls.gateway = cls.network + "-gateway"
         cls.containers.append(cls.gateway)
@@ -57,6 +65,8 @@ class GatewayRuntimeTests(unittest.TestCase):
             "--user", "99:99", "--read-only", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges:true", "--memory", "256m", "--cpus", "0.5", "--pids-limit", "64",
             "-p", "127.0.0.1::5443",
+            "-e", f"LITBLOGS_GATEWAY_HOST={cls.gateway_host}",
+            "-e", f"LITBLOGS_TRUSTED_PROXY_CIDR={proxy_cidr}",
             "--mount", f"type=bind,src={ROOT / 'deploy/cit-local/haproxy.cfg'},dst=/usr/local/etc/haproxy/haproxy.cfg,readonly",
             "--mount", f"type=bind,src={pem},dst=/usr/local/etc/haproxy/haproxy.pem,readonly",
             cls.image, "haproxy", "-W", "-db", "-f", "/usr/local/etc/haproxy/haproxy.cfg",
@@ -85,9 +95,10 @@ class GatewayRuntimeTests(unittest.TestCase):
             "global\n    maxconn 64\n    nbthread 1\n"
             "defaults\n    mode http\n    timeout connect 3s\n    timeout client 10s\n    timeout server 10s\n"
             "frontend app\n    bind :5000\n"
-            "    http-request deny deny_status 421 unless { req.hdr(host) -i litblogs.cit.internal:18443 }\n"
+            f"    http-request deny deny_status 421 unless {{ req.hdr(host) -i {cls.gateway_host} }}\n"
             "    http-request deny deny_status 403 if { req.hdr(Forwarded) -m found }\n"
             "    http-request deny deny_status 403 if { req.hdr(X-Forwarded-For) -m found }\n"
+            "    http-request deny deny_status 403 if { req.hdr(X-LitBlogs-Client-IP) -m found }\n"
             "    http-request return status 206 content-type text/plain string data hdr Content-Range bytes\\ 0-3/100 "
             "hdr Cache-Control private hdr Content-Security-Policy sandbox if { req.hdr(Range) -m str bytes=0-3 }\n"
             f"    http-request return status 200 content-type text/plain string replica-{number}\n"
@@ -102,7 +113,7 @@ class GatewayRuntimeTests(unittest.TestCase):
         )
 
     @classmethod
-    def request(cls, *, path="/api/health/ready", headers=None, method="GET", body=None):
+    def request(cls, *, path="/api/health/ready", headers=None, method="GET", body=None, duplicate_headers=()):
         # Connect to the fixed test port but verify TLS using the actual name;
         # no machine DNS or hosts-file change is made.
         context = ssl.create_default_context(cafile=str(cls.directory / "cert.pem"))
@@ -110,9 +121,15 @@ class GatewayRuntimeTests(unittest.TestCase):
         connection = http.client.HTTPSConnection("127.0.0.1", cls.port, timeout=5, context=context)
         connection.sock = context.wrap_socket(socket.create_connection(("127.0.0.1", cls.port), timeout=5), server_hostname="litblogs.cit.internal")
         try:
-            request_headers = {"Host": "litblogs.cit.internal:18443"}
+            request_headers = {"Host": cls.gateway_host}
             request_headers.update(headers or {})
-            connection.request(method, path, body=body, headers=request_headers)
+            if duplicate_headers:
+                connection.putrequest(method, path, skip_host=True)
+                for key, value in [*request_headers.items(), *duplicate_headers]:
+                    connection.putheader(key, value)
+                connection.endheaders(body)
+            else:
+                connection.request(method, path, body=body, headers=request_headers)
             response = connection.getresponse()
             return response.status, dict(response.getheaders()), response.read().decode()
         finally:
@@ -137,6 +154,8 @@ class GatewayRuntimeTests(unittest.TestCase):
             time.sleep(0.25)
         raise AssertionError(f"Gateway never routed to all expected test replicas: expected={expected}, seen={seen}")
 
+
+class GatewayRuntimeTests(GatewayFixture):
     def test_tls_readiness_and_actual_container_health_command(self):
         self.assertEqual(self.request()[0], 200)
         gateway = compose_config(ROOT / "docker-compose.yml", OVERLAY)["services"]["web"]
@@ -149,6 +168,7 @@ class GatewayRuntimeTests(unittest.TestCase):
         self.assertEqual(self.request(path="/api/upload/video", method="POST", headers={"Content-Length": "106954753"})[0], 413)
         self.assertEqual(self.request(method="POST", headers={"Transfer-Encoding": "chunked"}, body=b"1\r\nx\r\n0\r\n\r\n")[0], 411)
         self.assertEqual(self.request(headers={"Forwarded": "for=evil", "X-Forwarded-For": "203.0.113.1"})[0], 200)
+        self.assertEqual(self.request(headers={"X-LitBlogs-Client-IP": "203.0.113.2"})[0], 200)
 
     def test_body_limit_matches_each_route_and_rejects_larger_requests(self):
         for path, limit in (
@@ -169,7 +189,7 @@ class GatewayRuntimeTests(unittest.TestCase):
     def test_z_auth_and_api_have_separate_source_rate_limits(self):
         # Last test: deliberately exhaust the source buckets after other checks.
         # Encoded auth paths must use the same bucket as decoded application paths.
-        auth = [self.request(path="/api/%61uth/login")[0] for _ in range(11)]
+        auth = [self.request(path="/api/%61uth/login", headers={"X-LitBlogs-Client-IP": f"203.0.113.{index + 1}"})[0] for index in range(11)]
         self.assertEqual(auth[:10], [200] * 10)
         self.assertEqual(auth[-1], 429)
         self.assertEqual(self.request(path="/api/posts")[0], 200)
@@ -201,6 +221,70 @@ class GatewayRuntimeTests(unittest.TestCase):
         self.assertEqual(consecutive, 12, "Removed replicas must stop receiving requests")
         self.start_backend(4)
         self.wait_for_replicas({"replica-1", "replica-4"})
+
+
+class PublicGatewayRuntimeTests(GatewayFixture):
+    gateway_host = "drhscit.org"
+    trust_docker_gateway = True
+
+    def test_public_host_and_actual_gateway_healthcheck(self):
+        self.assertEqual(self.request()[0], 200)
+        self.assertEqual(self.request(headers={"Host": "litblogs.cit.internal:18443"})[0], 421)
+        gateway = compose_config(ROOT / "docker-compose.yml", OVERLAY, environment_overrides={"LITBLOGS_GATEWAY_HOST": self.gateway_host})["services"]["web"]
+        self.docker("exec", self.gateway, *gateway["healthcheck"]["test"][1:])
+
+    def test_trusted_ipv4_and_ipv6_clients_get_independent_rate_buckets(self):
+        for client in ("198.51.100.101", "2001:db8::101", "::ffff:198.51.100.102"):
+            with self.subTest(client=client):
+                headers = {"X-LitBlogs-Client-IP": client, "X-Forwarded-For": "203.0.113.99"}
+                statuses = [self.request(path="/api/auth/login", headers=headers)[0] for _ in range(11)]
+                self.assertEqual(statuses[:10], [200] * 10)
+                self.assertEqual(statuses[-1], 429)
+                self.assertEqual(self.request(path="/api/posts", headers=headers)[0], 200)
+        self.assertEqual(self.request(path="/api/auth/login", headers={"X-LitBlogs-Client-IP": "198.51.100.200"})[0], 200)
+
+    def test_trusted_api_limits_are_per_client_and_separate_from_auth(self):
+        headers = {"X-LitBlogs-Client-IP": "198.51.100.220"}
+        statuses = [self.request(path="/api/posts", headers=headers)[0] for _ in range(121)]
+        self.assertEqual(statuses[:120], [200] * 120)
+        self.assertEqual(statuses[-1], 429)
+        self.assertEqual(self.request(path="/api/auth/login", headers=headers)[0], 200)
+        self.assertEqual(self.request(path="/api/posts", headers={"X-LitBlogs-Client-IP": "198.51.100.221"})[0], 200)
+
+    def test_untrusted_container_cannot_evade_limits_with_spoofed_headers(self):
+        statuses = []
+        for index in range(11):
+            result = subprocess.run([
+                "docker", "exec", self.network + "-app-1", "wget", "-S", "-O", "/dev/null", "-T", "5", "--no-check-certificate",
+                "--header=Host: drhscit.org", f"--header=X-LitBlogs-Client-IP: 203.0.113.{index + 1}",
+                f"https://{self.gateway}:5443/api/auth/login",
+            ], check=False, capture_output=True, text=True, timeout=15)
+            status = re.search(r"HTTP/1\.[01] (\d{3})", result.stderr)
+            self.assertIsNotNone(status, result.stderr)
+            statuses.append(int(status[1]))
+        self.assertEqual(statuses[:10], [200] * 10)
+        self.assertEqual(statuses[-1], 429)
+
+    def test_z_invalid_or_duplicate_client_addresses_use_socket_source(self):
+        # Exhaust the actual host's source bucket, then invalid header forms must
+        # never create fresh identities. Valid IPv4 and IPv6 remain independent.
+        for _ in range(10):
+            self.assertEqual(self.request(path="/api/auth/login")[0], 200)
+        for value in ("198.51.100.1:80", "[2001:db8::202]", "198.51.100.1,198.51.100.2", "not-an-ip", "999.1.1.1", "2001:::202", "198.51.100.1/32", "::ffff:198.51.100.1:80"):
+            with self.subTest(value=value):
+                self.assertEqual(self.request(path="/api/auth/login", headers={"X-LitBlogs-Client-IP": value})[0], 429)
+        self.assertEqual(self.request(path="/api/auth/login", duplicate_headers=(("X-LitBlogs-Client-IP", "198.51.100.203"), ("X-LitBlogs-Client-IP", "198.51.100.204")))[0], 429)
+        self.assertEqual(self.request(path="/api/auth/login", headers={"X-LitBlogs-Client-IP": "2001:db8::203"})[0], 200)
+
+
+class BroadProxyRuntimeTests(GatewayFixture):
+    gateway_host = "drhscit.org"
+    proxy_cidr_override = "0.0.0.0/0"
+
+    def test_a_broad_proxy_cidr_cannot_enable_trusted_client_headers(self):
+        statuses = [self.request(path="/api/auth/login", headers={"X-LitBlogs-Client-IP": f"198.51.100.{index + 1}"})[0] for index in range(11)]
+        self.assertEqual(statuses[:10], [200] * 10)
+        self.assertEqual(statuses[-1], 429)
 
 
 if __name__ == "__main__":

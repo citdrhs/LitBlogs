@@ -1,3 +1,4 @@
+import { storageKey } from "./utils/browserStorage";
 import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
@@ -13,7 +14,7 @@ const TermsOfService = () => {
 
   // Load dark mode preference from localStorage
   useEffect(() => {
-    const storedDarkMode = JSON.parse(localStorage.getItem('darkMode'));
+    const storedDarkMode = JSON.parse(localStorage.getItem(storageKey('darkMode')));
     if (storedDarkMode !== null) {
       setDarkMode(storedDarkMode);
     } else {
@@ -32,7 +33,7 @@ const TermsOfService = () => {
   }, [darkMode]);
 
   useEffect(() => {
-    const storedUserInfo = sessionStorage.getItem('user_info');
+    const storedUserInfo = sessionStorage.getItem(storageKey('user_info'));
     if (storedUserInfo) {
       setUserInfo(JSON.parse(storedUserInfo));
     }
@@ -162,7 +163,7 @@ const TermsOfService = () => {
             <section>
               <h2 className={`text-2xl font-bold mb-4 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>12. Contact Us</h2>
               <p className="mb-3">If you have any questions about these Terms, please contact us at:</p>
-              <p className="font-medium">litblogapi@gmail.com</p>
+              <p className="font-medium">litblogscit@gmail.com</p>
             </section>
           </div>
         </motion.div>

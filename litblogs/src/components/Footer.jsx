@@ -53,7 +53,7 @@ const Footer = ({ darkMode }) => {
           <div>
             <h3 className="text-lg font-semibold mb-4">Contact</h3>
             <p className={isDark ? "text-gray-400" : "text-gray-600"}>
-              litblogapi@gmail.com
+              litblogscit@gmail.com
             </p>
           </div>
         </div>

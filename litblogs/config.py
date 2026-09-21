@@ -53,6 +53,8 @@ _LOCAL_SCANNER_HOST_PATTERN = re.compile(
 )
 _POSIX_UPLOAD_CUSTODY = os.name == "posix"
 _HOST_COOKIE_PATTERN = re.compile(r"^__Host-[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$")
+_SECURE_COOKIE_PATTERN = re.compile(r"^__Secure-[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$")
+_APP_BASE_PATH_PATTERN = re.compile(r"(?:/[A-Za-z0-9][A-Za-z0-9_-]*)+")
 _RESERVED_DNS_SUFFIXES = frozenset({"example", "invalid", "localhost", "test"})
 
 
@@ -96,6 +98,7 @@ class Settings(BaseSettings):
     jwt_clock_skew_seconds: int = Field(default=5, ge=0, le=60)
     access_token_expire_minutes: int = Field(default=30, ge=1, le=60)
 
+    app_base_path: str = ""
     frontend_url: str | None = None
     base_url: str | None = None
     cors_allowed_origins: tuple[str, ...] = ()
@@ -183,6 +186,16 @@ class Settings(BaseSettings):
     @classmethod
     def normalize_origins(cls, value: Any) -> tuple[str, ...]:
         return _csv_tuple(value, strip_slash=True)
+
+    @field_validator("app_base_path", mode="before")
+    @classmethod
+    def validate_base_path(cls, value: Any) -> str:
+        return validate_app_base_path(value)
+
+    @property
+    def browser_cookie_path(self) -> str:
+        # Path scope reduces incidental cookie delivery; it does not isolate origins.
+        return f"{self.app_base_path}/" if self.app_base_path else "/"
 
     @field_validator(
         "allowed_email_domains",
@@ -386,10 +399,12 @@ class Settings(BaseSettings):
         email_from_domain = str(self.email_from or "").rsplit("@", 1)[-1]
         if _is_reserved_dns_name(email_from_domain):
             raise ValueError("EMAIL_FROM must not use a reserved example domain in production")
-        if not _HOST_COOKIE_PATTERN.fullmatch(self.session_cookie_name or ""):
-            raise ValueError("SESSION_COOKIE_NAME must use a valid __Host- prefix in production")
-        if not _HOST_COOKIE_PATTERN.fullmatch(self.csrf_cookie_name or ""):
-            raise ValueError("CSRF_COOKIE_NAME must use a valid __Host- prefix in production")
+        cookie_pattern = _SECURE_COOKIE_PATTERN if self.app_base_path else _HOST_COOKIE_PATTERN
+        cookie_prefix = "__Secure-" if self.app_base_path else "__Host-"
+        if not cookie_pattern.fullmatch(self.session_cookie_name or ""):
+            raise ValueError(f"SESSION_COOKIE_NAME must use a valid {cookie_prefix} prefix in production")
+        if not cookie_pattern.fullmatch(self.csrf_cookie_name or ""):
+            raise ValueError(f"CSRF_COOKIE_NAME must use a valid {cookie_prefix} prefix in production")
         if self.session_cookie_name == self.csrf_cookie_name:
             raise ValueError("Session and CSRF cookie names must differ in production")
         if self.push_notifications_enabled:
@@ -409,16 +424,16 @@ class Settings(BaseSettings):
             raise ValueError("JWT_ISSUER must use an unambiguous HTTPS URL in production")
         if _is_reserved_dns_name(self.jwt_audience or ""):
             raise ValueError("JWT_AUDIENCE must not use a reserved example domain in production")
-        if (
-            not _is_https_url(self.frontend_url)
-            or urlsplit(self.frontend_url or "").path not in {"", "/"}
-        ):
+        frontend_url = _canonical_https_frontend_url(self.frontend_url, self.app_base_path)
+        if frontend_url is None:
+            if self.app_base_path:
+                raise ValueError("FRONTEND_URL must use HTTPS with its path equal to APP_BASE_PATH")
             raise ValueError(
                 "FRONTEND_URL must use the root HTTPS origin in production"
             )
         if any(origin == "*" or not _is_https_origin(origin) for origin in self.cors_allowed_origins):
             raise ValueError("CORS_ALLOWED_ORIGINS must contain explicit HTTPS origins in production")
-        frontend_origin = _canonical_https_origin(self.frontend_url)
+        frontend_origin = frontend_url.removesuffix(self.app_base_path)
         configured_origins = {
             _canonical_https_origin(origin) for origin in self.cors_allowed_origins
         }
@@ -540,6 +555,37 @@ def _reveal_secret(value: SecretStr | None) -> str:
 
 def _is_https_origin(value: str) -> bool:
     return _canonical_https_origin(value) is not None
+
+
+def validate_app_base_path(value: Any) -> str:
+    """Accept only the empty root prefix or bounded, literal path segments."""
+    if (
+        not isinstance(value, str)
+        or len(value) > 256
+        or (value != "" and _APP_BASE_PATH_PATTERN.fullmatch(value) is None)
+    ):
+        raise ValueError("APP_BASE_PATH must be empty or canonical path segments without a trailing slash")
+    return value
+
+
+def _canonical_https_frontend_url(value: str | None, app_base_path: str = "") -> str | None:
+    """Keep the public URL's approved path separate from its browser origin."""
+    try:
+        validate_app_base_path(app_base_path)
+        if not value or any(
+            character.isspace() or ord(character) < 0x20 or ord(character) == 0x7F
+            or character in "\\%?#"
+            for character in value
+        ):
+            return None
+        parsed = urlsplit(value)
+        allowed_paths = {app_base_path} if app_base_path else {"", "/"}
+        if parsed.path not in allowed_paths:
+            return None
+        origin = _canonical_https_origin(parsed._replace(path="").geturl())
+    except (TypeError, ValueError):
+        return None
+    return f"{origin}{app_base_path}" if origin is not None else None
 
 
 def _canonical_https_origin(value: str | None) -> str | None:

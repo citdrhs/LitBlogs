@@ -276,7 +276,7 @@ jobs:
       - name: Install Chromium with system dependencies
         working-directory: litblogs
         run: npx playwright install --with-deps chromium
-      - name: Run eight browser journeys
+      - name: Run nine browser journeys
         working-directory: litblogs
         env:
           CI: "true"
