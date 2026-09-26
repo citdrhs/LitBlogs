@@ -18,6 +18,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from alembic.util.exc import CommandError
 from dotenv import dotenv_values
+from legacy_schema_support import create_pre_recovery_tables
 from pydantic import ValidationError
 from settings_test_support import production_upload_settings
 from sqlalchemy import create_engine, inspect
@@ -1718,13 +1719,8 @@ def test_baseline_migration_can_round_trip_without_leaving_postgresql_enum_types
 
 
 def test_existing_schema_can_be_stamped_then_receive_security_migrations(tmp_path):
-    from base import Base
-
     engine = create_engine(f"sqlite:///{(tmp_path / 'adoption.db').as_posix()}")
-    baseline_tables = [
-        table for name, table in Base.metadata.tables.items() if name != "federated_identities"
-    ]
-    Base.metadata.create_all(bind=engine, tables=baseline_tables)
+    create_pre_recovery_tables(engine, omit=frozenset({"federated_identities"}))
 
     _upgrade(engine, "985a04df032a", stamp=True)
     _upgrade(engine, "head")

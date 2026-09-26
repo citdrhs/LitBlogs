@@ -57,6 +57,31 @@ class TeacherInvitationResponse(BaseModel):
     expires_at: datetime
 
 
+class AdminAccountRecoveryRequest(StrictRequest):
+    delivery: Literal["manual", "email"]
+
+
+class ManualAccountRecoveryResponse(BaseModel):
+    email: EmailStr
+    reset_url: str
+    expires_at: datetime
+
+
+class EmailAccountRecoveryResponse(BaseModel):
+    email: EmailStr
+    queued: Literal[True]
+
+
+class AdminAccountVerificationRequest(StrictRequest):
+    pass
+
+
+class ManualAccountVerificationResponse(BaseModel):
+    email: EmailStr
+    verification_url: str
+    expires_at: datetime
+
+
 class CodeSnippet(StrictRequest):
     language: str = Field(min_length=1, max_length=50)
     code: str = Field(min_length=1, max_length=20_000)
@@ -165,6 +190,7 @@ class AdminUserSummary(UserBase):
     is_admin: bool
     created_at: datetime
     disabled: bool
+    email_verified: bool
 
 class ClassBase(BaseModel):
     name: str = Field(min_length=1, max_length=100)

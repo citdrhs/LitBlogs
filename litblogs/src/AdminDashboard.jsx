@@ -6,7 +6,9 @@ import axios from 'axios';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
 import TeacherInvitationDialog from './components/TeacherInvitationDialog';
+import AdminAccountActionDialog from './components/AdminAccountActionDialog';
 import { getStoredSessionMetadata, logoutBrowserSession } from './utils/auth';
+import { assetPath } from './utils/urlUtils';
 
 const AdminDashboard = () => {
   const navigate = useNavigate();
@@ -25,6 +27,8 @@ const AdminDashboard = () => {
   const [statusMessage, setStatusMessage] = useState('');
   const [statusError, setStatusError] = useState('');
   const [invitationOpen, setInvitationOpen] = useState(false);
+  const [accountAction, setAccountAction] = useState(null);
+  const verificationResendUrl = new URL(`${assetPath('verify-email')}?resend=1`, window.location.origin).href;
 
   useEffect(() => {
     const fetchData = async () => {
@@ -94,6 +98,24 @@ const AdminDashboard = () => {
       setStatusError('Account status could not be updated. Try again.');
     } finally {
       setStatusUpdating(false);
+    }
+  };
+
+  const handleAccountDeleted = async (deletedUser) => {
+    setUsers((currentUsers) => currentUsers.filter((user) => user.id !== deletedUser.id));
+    setAccountAction(null);
+    setStatusMessage(`${deletedUser.username} has been deleted.`);
+    setStatusError('');
+    try {
+      const [usersResponse, classesResponse] = await Promise.all([
+        axios.get('/users'),
+        axios.get('/classes'),
+      ]);
+      setUsers(usersResponse.data);
+      setClasses(classesResponse.data);
+      setLastUpdated(new Date());
+    } catch {
+      setStatusError('The account was deleted, but dashboard data could not be refreshed. Reload the page.');
     }
   };
 
@@ -283,6 +305,7 @@ const AdminDashboard = () => {
             <h2 className="text-2xl font-semibold">Users</h2>
             <div className="flex items-center gap-2">
               <input
+                id="admin-user-search"
                 type="text"
                 value={userQuery}
                 onChange={(event) => setUserQuery(event.target.value)}
@@ -307,6 +330,10 @@ const AdminDashboard = () => {
             {filteredUsers.map((user) => {
               const isCurrentAdmin = Number(userInfo?.userId) === Number(user.id);
               const selfDisableBlocked = isCurrentAdmin && !user.disabled;
+              const emailUnverified = user.email_verified === false;
+              const recoveryGuidance = emailUnverified
+                ? `${user.disabled ? 'Enable this account, then ask' : 'Ask'} this user to resend their verification email at ${verificationResendUrl}`
+                : user.disabled ? 'Enable this account before recovering access' : undefined;
               return (
                 <motion.div
                   key={user.id}
@@ -328,6 +355,11 @@ const AdminDashboard = () => {
                   <p className="text-sm text-gray-500 dark:text-gray-400">
                     {user.email}
                   </p>
+                  {emailUnverified && (
+                    <span className="mt-1 inline-block rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-900 dark:bg-amber-900 dark:text-amber-100">
+                      Email unverified
+                    </span>
+                  )}
                   <p className="text-sm text-gray-500 dark:text-gray-400">
                     Role: {user.role}
                   </p>
@@ -344,6 +376,49 @@ const AdminDashboard = () => {
                     } disabled:cursor-not-allowed disabled:opacity-50`}
                   >
                     {user.disabled ? 'Enable account' : 'Disable account'}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Recover access ${user.username}`}
+                    disabled={user.disabled || emailUnverified || statusUpdating}
+                    title={recoveryGuidance}
+                    aria-describedby={emailUnverified ? `verification-guidance-${user.id}` : undefined}
+                    onClick={() => setAccountAction({ action: 'recovery', user })}
+                    className={`mt-2 w-full rounded-lg px-3 py-2 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                      darkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-100 hover:bg-gray-200'
+                    }`}
+                  >
+                    Recover access
+                  </button>
+                  {emailUnverified && (
+                    <button
+                      type="button"
+                      aria-label={`Create verification link ${user.username}`}
+                      disabled={user.disabled || statusUpdating}
+                      title={user.disabled ? 'Enable this account before creating a verification link' : undefined}
+                      onClick={() => setAccountAction({ action: 'verification', user })}
+                      className="mt-2 w-full rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Create verification link
+                    </button>
+                  )}
+                  {emailUnverified && (
+                    <p id={`verification-guidance-${user.id}`} className="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                      {user.disabled ? 'Enable this account, then ask' : 'Ask'} this user to request a new verification email:{' '}
+                      <a href={verificationResendUrl} target="_blank" rel="noopener noreferrer" className="font-medium text-blue-600 underline dark:text-blue-300">
+                        Verification page
+                      </a>.
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    aria-label={`Delete account ${user.username}`}
+                    disabled={isCurrentAdmin || statusUpdating}
+                    title={isCurrentAdmin ? 'You cannot delete your current administrator account here' : undefined}
+                    onClick={() => setAccountAction({ action: 'delete', user })}
+                    className="mt-2 w-full rounded-lg border border-red-300 px-3 py-2 text-sm font-semibold text-red-700 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-red-300 dark:hover:bg-red-950"
+                  >
+                    Delete account
                   </button>
                 </motion.div>
               );
@@ -380,6 +455,15 @@ const AdminDashboard = () => {
       </div>
       {invitationOpen && (
         <TeacherInvitationDialog darkMode={darkMode} onClose={() => setInvitationOpen(false)} />
+      )}
+      {accountAction && (
+        <AdminAccountActionDialog
+          user={accountAction.user}
+          action={accountAction.action}
+          darkMode={darkMode}
+          onClose={() => setAccountAction(null)}
+          onDeleted={handleAccountDeleted}
+        />
       )}
       {pendingStatusUser && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">

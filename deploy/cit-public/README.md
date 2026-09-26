@@ -37,6 +37,29 @@ email, selects **Teacher**, and enters the code in **Teacher invitation token**.
 They must verify their school email before signing in and creating classes.
 Existing accounts are not promoted through this invitation action.
 
+## Recover or delete an account
+
+The admin dashboard shows whether an account has verified its email. For an
+unverified account, an administrator can create a one-use verification link and
+share it privately with the account owner. For a verified, enabled account, an
+administrator can queue a password-recovery email or create a one-use recovery
+link for private sharing. The links appear only once in the admin dialog;
+copy them before closing it. The account owner uses the link to verify the
+email or choose a new password. Creating a link does not send an email.
+
+If school mail does not arrive, check the exact account address and delivery
+status before issuing another link. A queued email is not proof that it reached
+the recipient's inbox. Send a manually copied link through a trusted private
+channel after confirming the recipient's identity; treat it as a credential.
+
+**Delete account** requires typing the exact email address. It removes an
+otherwise empty account and its login data, revoking its sessions. Accounts
+with classes, student work, enrollments, or registered uploads are blocked so
+those records can be preserved or transferred first. Disabling an account is
+available while those records remain. Operator audit history is retained, and
+an encrypted backup can still contain the deleted account until backup
+retention expires.
+
 ## Private settings and application build
 
 Keep the settings in the root-owned state `.env`, outside Git, using its existing

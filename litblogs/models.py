@@ -250,7 +250,11 @@ class OperatorAuditEvent(Base):
             "'TEACHER_INVITATION_CREATED', "
             "'TEACHER_INVITATION_REVOKED', "
             "'ACCOUNT_DISABLED', "
-            "'ACCOUNT_ENABLED'"
+            "'ACCOUNT_ENABLED', "
+            "'ACCOUNT_DELETED', "
+            "'ACCOUNT_RECOVERY_LINK_CREATED', "
+            "'ACCOUNT_RECOVERY_EMAIL_QUEUED', "
+            "'ACCOUNT_VERIFICATION_LINK_CREATED'"
             ")",
             name="ck_operator_audit_action",
         ),

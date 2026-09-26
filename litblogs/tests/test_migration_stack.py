@@ -19,6 +19,7 @@ import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from legacy_schema_support import create_pre_recovery_tables
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
@@ -41,6 +42,7 @@ EXPECTED_REVISIONS = (
     "f1ad78b2035f",
     "a82f8f2b1d7c",
     "b64a9c2e7d31",
+    "c8f21d9a6b70",
 )
 EXPECTED_TABLES = (
     "assignment_drafts",
@@ -817,18 +819,11 @@ def test_sqlite_marker_only_adoption_is_rejected_and_repair_is_retryable(
 
 
 def test_populated_current_sqlite_adoption_runs_identity_data_transitions(tmp_path):
-    from base import Base
-
     engine = sa.create_engine(
         f"sqlite:///{(tmp_path / 'populated-current-adoption.db').as_posix()}"
     )
     try:
-        current_tables = [
-            table
-            for name, table in Base.metadata.tables.items()
-            if name != "federated_identities"
-        ]
-        Base.metadata.create_all(bind=engine, tables=current_tables)
+        create_pre_recovery_tables(engine, omit=frozenset({"federated_identities"}))
         with engine.begin() as connection:
             connection.exec_driver_sql(
                 "INSERT INTO users (id, username, email, password, role) "
@@ -959,7 +954,7 @@ def test_email_verification_sqlite_partial_adoption_is_rejected_and_retryable(
         engine.dispose()
 
 
-@pytest.mark.parametrize("starting_revision", EXPECTED_REVISIONS[3:])
+@pytest.mark.parametrize("starting_revision", EXPECTED_REVISIONS[3:-1])
 def test_invalidated_password_reset_secrets_block_downgrade_before_schema_changes(
     tmp_path,
     starting_revision,
@@ -1004,6 +999,105 @@ def test_invalidated_password_reset_secrets_block_downgrade_before_schema_change
         } == columns_before
     finally:
         engine.dispose()
+
+
+def test_admin_audit_migration_downgrade_preserves_active_reset(tmp_path):
+    engine = sa.create_engine(f"sqlite:///{(tmp_path / 'admin-audit-downgrade.db').as_posix()}")
+    try:
+        _upgrade(engine)
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "INSERT INTO users (id, username, email, password, role) "
+                "VALUES (1, 'student', 'student@example.com', 'hash', 'STUDENT')"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO password_resets (id, user_id, token, expires_at, used, delivery_status) "
+                "VALUES (1, 1, :token, '2099-01-01 00:00:00', 0, 'DELIVERED')",
+                {"token": "a" * 64},
+            )
+        _downgrade(engine, "b64a9c2e7d31")
+        assert _current_revision(engine) == "b64a9c2e7d31"
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql(
+                "SELECT token FROM password_resets WHERE id = 1"
+            ).scalar_one() == "a" * 64
+        assert "_alembic_tmp_operator_audit_events" not in sa.inspect(engine).get_table_names()
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("action", [
+    "ACCOUNT_DELETED", "ACCOUNT_RECOVERY_LINK_CREATED", "ACCOUNT_RECOVERY_EMAIL_QUEUED",
+    "ACCOUNT_VERIFICATION_LINK_CREATED",
+])
+def test_admin_audit_migration_preserves_new_history_on_refused_downgrade(tmp_path, action):
+    engine = sa.create_engine(f"sqlite:///{(tmp_path / 'admin-audit-history.db').as_posix()}")
+    try:
+        _upgrade(engine)
+        with engine.begin() as connection:
+            connection.execute(sa.text(
+                "INSERT INTO operator_audit_events (actor_identifier,action,outcome,resource_digest) "
+                "VALUES ('admin-user:1',:action,'SUCCEEDED',:digest)"
+            ), {"action": action, "digest": "a" * 64})
+        with pytest.raises(RuntimeError, match="Cannot downgrade while new administrator audit events exist"):
+            _downgrade(engine, "b64a9c2e7d31")
+        assert _current_revision(engine) == "c8f21d9a6b70"
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql("SELECT action FROM operator_audit_events").scalar_one() == action
+    finally:
+        engine.dispose()
+
+
+def _assert_runtime_manual_account_verification(runtime_engine, migrator_engine):
+    """The actual runtime grants must allow issuance, replacement and redemption."""
+    from urllib.parse import parse_qs, urlsplit
+
+    import main
+    import models
+    import schemas
+    from admin_account_recovery import create_admin_account_verification
+    from identity_controls import issue_browser_session
+
+    with Session(runtime_engine) as db:
+        actor = models.User(username="verification-runtime-admin", email="verification-runtime-admin@example.com",
+                            password="unused-synthetic-hash", role=models.UserRole.ADMIN, email_verified_at=datetime.now(UTC))
+        target = models.User(username="verification-runtime-target", email="verification-runtime-target@example.com",
+                             password="unused-synthetic-hash", role=models.UserRole.STUDENT)
+        db.add_all([actor, target])
+        db.flush()
+        actor_id, target_id = actor.id, target.id
+        issue_browser_session(db, user_id=actor_id, settings=main.settings)
+        session_id = db.scalar(sa.select(models.BrowserSession.id).where(models.BrowserSession.user_id == actor_id))
+        db.commit()
+    try:
+        with Session(runtime_engine) as db:
+            assert db.execute(sa.text("SELECT current_user")).scalar_one() == "litblogs_runtime"
+            first = create_admin_account_verification(
+                db, actor_id=actor_id, session_id=session_id, target_id=target_id, settings=main.settings,
+            )
+            second = create_admin_account_verification(
+                db, actor_id=actor_id, session_id=session_id, target_id=target_id, settings=main.settings,
+            )
+            assert first.verification_url != second.verification_url
+            token = parse_qs(urlsplit(second.verification_url).fragment)["token"][0]
+            assert main.verify_email(schemas.VerifyEmailRequest(token=token), db) == main.EMAIL_VERIFIED_RESPONSE
+            assert db.get(models.User, target_id).email_verified_at is not None
+            assert db.query(models.EmailVerification).filter_by(user_id=target_id).one().token_digest is None
+        with migrator_engine.connect() as connection:
+            assert connection.execute(sa.text(
+                "SELECT count(*) FROM operator_audit_events WHERE actor_identifier=:actor "
+                "AND action='ACCOUNT_VERIFICATION_LINK_CREATED'"
+            ), {"actor": f"admin-user:{actor_id}"}).scalar_one() == 2
+        with pytest.raises(RuntimeError, match="Cannot downgrade while new administrator audit events exist"):
+            _downgrade(migrator_engine, "b64a9c2e7d31")
+        assert _current_revision(migrator_engine) == "c8f21d9a6b70"
+    finally:
+        # Remove only this synthetic fixture's history before other downgrade tests.
+        with migrator_engine.begin() as connection:
+            connection.execute(sa.text("DELETE FROM operator_audit_events WHERE actor_identifier=:actor"),
+                               {"actor": f"admin-user:{actor_id}"})
+            connection.execute(sa.text("DELETE FROM users WHERE id IN (:actor,:target)"),
+                               {"actor": actor_id, "target": target_id})
 
 
 def _assert_runtime_invitation_issuance_and_concurrency(runtime_engine, migrator_engine):
@@ -1369,6 +1463,7 @@ def test_postgresql_upgrade_has_exact_schema_and_acl_when_available(
 
         database.check_database_readiness(runtime_engine)
         _assert_runtime_invitation_issuance_and_concurrency(runtime_engine, migrator_engine)
+        _assert_runtime_manual_account_verification(runtime_engine, migrator_engine)
 
         # The additive grant is reversible without deleting any invitation.
         _downgrade(migrator_engine, "a82f8f2b1d7c")

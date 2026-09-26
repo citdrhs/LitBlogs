@@ -13,7 +13,7 @@ import yaml
 from yaml.constructor import ConstructorError
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_ALEMBIC_HEAD = "b64a9c2e7d31"
+EXPECTED_ALEMBIC_HEAD = "c8f21d9a6b70"
 ACTION_PIN = re.compile(
     r"^\s*uses:\s*(?P<action>(?:actions|github)/[^@\s]+)@(?P<sha>[0-9a-f]{40})"
     r"\s+#\s+(?P<version>v(?P<major>\d+)\.\d+\.\d+)\s*$"
