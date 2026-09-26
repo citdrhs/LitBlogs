@@ -8,6 +8,7 @@ from sqlalchemy import create_engine, event, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
+import admin_account_deletion
 import main
 import models
 from database import SessionLocal, engine
@@ -56,11 +57,9 @@ def accounts(deletion_db):
 
 
 def _delete(db, accounts, **changes):
-    from admin_account_deletion import delete_admin_account
-
     arguments = {**accounts, "confirmation_email": "delete-target@example.com", "settings": main.settings}
     arguments.update(changes)
-    return delete_admin_account(db, **arguments)
+    return admin_account_deletion.delete_admin_account(db, **arguments)
 
 
 @pytest.mark.parametrize("role", list(models.UserRole))
@@ -234,8 +233,6 @@ def test_account_metadata_cascades_without_removing_schoolwork(deletion_db, acco
 
 
 def test_audit_failure_rolls_back_deletion_and_invitation_revocation(deletion_db, accounts, monkeypatch):
-    import admin_account_deletion
-
     def fail(*_args, **_kwargs):
         raise SQLAlchemyError("synthetic private database failure")
 
