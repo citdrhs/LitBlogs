@@ -566,7 +566,7 @@ def test_restore_verifier_expected_head_matches_the_release_migration_graph():
     migration_head = ScriptDirectory.from_config(config).get_current_head()
 
     assert restore_verify_postgres.EXPECTED_ALEMBIC_HEAD == migration_head
-    assert restore_verify_postgres.EXPECTED_ALEMBIC_HEAD == "b64a9c2e7d31"
+    assert restore_verify_postgres.EXPECTED_ALEMBIC_HEAD == "c8f21d9a6b70"
 
 
 def test_restore_invitation_runtime_acl_accepts_only_the_reviewed_insert_columns_and_sequence_usage():
@@ -2094,7 +2094,7 @@ def test_repository_policy_validator_pins_the_reviewed_migration_head():
         encoding="utf-8"
     )
 
-    assert 'EXPECTED_ALEMBIC_HEAD = "b64a9c2e7d31"' in validator
+    assert 'EXPECTED_ALEMBIC_HEAD = "c8f21d9a6b70"' in validator
 
 
 def test_runtime_browser_configuration_is_backend_owned_and_checked_in_the_bundle():

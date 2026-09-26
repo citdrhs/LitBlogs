@@ -1,6 +1,6 @@
 # LitBlogs maintenance guide
 
-Last reviewed: September 14, 2026. Applies to the **manually managed CIT installation** at **https://drhscit.org/dren/**, using the recovery controls introduced in PR #67. The public path is lowercase.
+Last reviewed: September 25, 2026. Applies to the **manually managed CIT installation** at **https://drhscit.org/dren/**, using the recovery controls introduced in PR #67. The public path is lowercase.
 
 This guide is for the LitBlogs maintainers and CIT teacher. Commands below run on the CIT server after connecting with SSH. No passwords, app passwords, invitation codes, or secret environment values belong in this file.
 
@@ -255,6 +255,10 @@ Review GitHub security and dependency alerts regularly. Update application depen
 Nginx changes require review of only the LitBlogs route, staging and testing, and **`sudo nginx -t` before any reload**. Follow the [public route procedure](deploy/cit-public/README.md#stage-test-then-reload-the-host-route); never replace the complete shared configuration with a generic template.
 
 At each term change, review who needs administrator and teacher access. Any active administrator can use **Admin Dashboard → Invite Teacher**. Invitations work once, for the specified school email, and expire after 48 hours; creating one does not send an email. Share it privately. New teachers register at `/dren/sign-up`, choose Teacher, and verify their email. Do not grant administrator access merely to invite a teacher.
+
+For account support, check the address and **Email unverified** status in the admin dashboard before resetting a password. An admin can create a one-use verification link for an enabled, unverified account; once verified, the admin can queue a recovery email or create a one-use password-recovery link. Confirm the recipient's identity before sharing a manual link through a trusted private channel. A queued message is not proof that it reached the school inbox. Copy a manual link before closing the dialog; it is shown only once. Never record links in tickets, shared logs, or this guide.
+
+**Delete account** permanently removes an otherwise empty user's profile and login data after exact-email confirmation. It blocks deletion when classes, schoolwork, enrollments, or registered uploads need preservation or transfer. Disable the account while resolving those records. Audit history and encrypted backups retain historical information under their normal retention rules; account deletion is not immediate erasure from backups.
 
 ## 11. Record work and remaining follow-ups
 

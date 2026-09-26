@@ -57,7 +57,7 @@ UTC_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
 IDENTITY_RESULT = re.compile(r"^ok:([0-9]+)$")
 PSQL_VARIABLE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 MAX_MANIFEST_BYTES = 16 * 1024
-EXPECTED_ALEMBIC_HEAD = "b64a9c2e7d31"
+EXPECTED_ALEMBIC_HEAD = "c8f21d9a6b70"
 BACKEND_ROOT = Path(__file__).resolve().parents[2] / "litblogs"
 OPERATOR_ROUTINE_MIGRATIONS = (
     (

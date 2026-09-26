@@ -424,6 +424,7 @@ def test_admin_user_listing_uses_safe_fields_only(client, authorization_scenario
     with SessionLocal() as db:
         disabled_user = db.get(models.User, scenario["student_b"])
         disabled_user.disabled_at = datetime.now(UTC)
+        db.get(models.User, scenario["student_a"]).email_verified_at = None
         db.commit()
 
     response = client.get("/api/users", headers=scenario["admin_headers"])
@@ -440,11 +441,14 @@ def test_admin_user_listing_uses_safe_fields_only(client, authorization_scenario
         "is_admin",
         "created_at",
         "disabled",
+        "email_verified",
     }
     assert all(set(user) == safe_fields for user in response.json())
     by_id = {user["id"]: user for user in response.json()}
     assert by_id[scenario["student_b"]]["disabled"] is True
     assert by_id[scenario["student_a"]]["disabled"] is False
+    assert by_id[scenario["student_a"]]["email_verified"] is False
+    assert by_id[scenario["student_b"]]["email_verified"] is True
 
 
 def test_legacy_admin_flag_never_grants_role_privileges(client, authorization_scenario):

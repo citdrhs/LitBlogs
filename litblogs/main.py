@@ -98,6 +98,8 @@ from access_control import (
 from access_control import (
     user_class_ids as _get_user_class_ids,
 )
+from admin_account_deletion import delete_admin_account
+from admin_account_recovery import create_admin_account_recovery, create_admin_account_verification
 from admin_teacher_invitations import issue_admin_teacher_invitation
 from auth_security import (
     csrf_token_matches,
@@ -2026,6 +2028,45 @@ async def create_admin_teacher_invitation(
     return result
 
 
+@app.post(
+    "/api/admin/users/{user_id}/recovery",
+    response_model=schemas.ManualAccountRecoveryResponse | schemas.EmailAccountRecoveryResponse,
+)
+def recover_admin_account(
+    user_id: int,
+    payload: schemas.AdminAccountRecoveryRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    result = create_admin_account_recovery(
+        db, actor_id=current_user.id, session_id=getattr(request.state, "browser_session_id", None),
+        target_id=user_id, delivery=payload.delivery, settings=settings,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return result
+
+
+@app.post("/api/admin/users/{user_id}/verification", response_model=schemas.ManualAccountVerificationResponse)
+def verify_admin_account(
+    user_id: int,
+    request: Request,
+    response: Response,
+    payload: schemas.AdminAccountVerificationRequest | None = None,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    result = create_admin_account_verification(
+        db, actor_id=current_user.id, session_id=getattr(request.state, "browser_session_id", None),
+        target_id=user_id, settings=settings,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return result
+
+
 @app.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout(
     request: Request,
@@ -2134,6 +2175,27 @@ async def update_user_status(
             detail="Account status could not be updated",
         ) from None
     return {"disabled": payload.disabled}
+
+
+@app.delete("/api/admin/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_user_as_admin(
+    user_id: int,
+    confirm: str,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    delete_admin_account(
+        db,
+        actor_id=current_user.id,
+        session_id=getattr(request.state, "browser_session_id", None),
+        target_user_id=user_id,
+        confirmation_email=confirm,
+        settings=settings,
+    )
+    response.headers["Cache-Control"] = "no-store"
 
 
 @app.post("/api/auth/login", response_model=SessionMetadataResponse)
@@ -2733,6 +2795,7 @@ async def get_users(
             "is_admin": _is_admin_role(user.role),
             "created_at": user.created_at,
             "disabled": user.disabled_at is not None,
+            "email_verified": user.email_verified_at is not None,
         }
         for user in users
     ]

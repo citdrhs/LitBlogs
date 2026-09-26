@@ -28,6 +28,7 @@ EXPECTED_PUBLIC_API_ROUTES = frozenset(
 
 EXPECTED_API_ROUTES = frozenset(
     {
+        ("DELETE", "/api/admin/users/{user_id}"),
         ("DELETE", "/api/classes/{class_id}"),
         ("DELETE", "/api/classes/{class_id}/posts/{post_id}"),
         ("DELETE", "/api/push/unsubscribe"),
@@ -72,6 +73,8 @@ EXPECTED_API_ROUTES = frozenset(
         ("GET", "/api/user/{user_id}/posts"),
         ("GET", "/api/users"),
         ("POST", "/api/admin/teacher-invitations"),
+        ("POST", "/api/admin/users/{user_id}/recovery"),
+        ("POST", "/api/admin/users/{user_id}/verification"),
         ("POST", "/api/assignments/{assignment_id}/submit"),
         ("POST", "/api/auth/forgot-password"),
         ("POST", "/api/auth/change-password"),
