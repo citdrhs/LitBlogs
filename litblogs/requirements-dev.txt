@@ -1245,9 +1245,9 @@ pytest-cov==7.1.0 \
     --hash=sha256:30674f2b5f6351aa09702a9c8c364f6a01c27aae0c1366ae8016160d1efc56b2 \
     --hash=sha256:a0461110b7865f9a271aa1b51e516c9a95de9d696734a2f71e3e78f46e1d4678
     # via -r requirements-dev.in
-python-discovery==1.5.2 \
-    --hash=sha256:3e338c2d0f15dfaeea57493f4c2c6caebe0e998ea815c30ae8bf8ee21f1112d3 \
-    --hash=sha256:45fd4f20a4e3f9b7bf2e0817870bc8e3b320a19658da177af800768c82dbf354
+python-discovery==1.6.1 \
+    --hash=sha256:cf87d3627dfb4412437fdd5b13eae402607722998d21567993aedbc59b23c15e \
+    --hash=sha256:d43fcdef879fe795352bd13ccf8d185ba5a9f86f36cfcd00529f596e737442b3
     # via virtualenv
 python-dotenv==1.2.3 \
     --hash=sha256:904552145e8bfed22162c09dab1c2b9b54fefa7b23ba780f4f26ca0316b0f0d9 \
@@ -1526,9 +1526,9 @@ uvicorn==0.52.4 \
     --hash=sha256:73acfee47a0b133c5de13d219492d62d8a31e935f4fe6e41a232451a15379f86 \
     --hash=sha256:f86e41a149d7d05a9969337e3946a9c171c06a5d42680896daaba624aeac8da1
     # via -r requirements.in
-virtualenv==21.7.4 \
-    --hash=sha256:376ec93cd6aab3044fa395d7db226db38043b7b5748948044b2a87168525e843 \
-    --hash=sha256:c9d960c95fa458171e58222a5ccab7465298e4b6559977865e627c4719f1e825
+virtualenv==21.7.13 \
+    --hash=sha256:0355558b6f33619aab31347e43643b0ebc97f61ea3acf617b2b69e1f8a843d11 \
+    --hash=sha256:1bea5af7463f59c4719db48fe739579a2a4f569c96f26c086edda85c96da9f59
     # via pre-commit
 webencodings==0.6.1 \
     --hash=sha256:565f9ad031c702dae404e27a099e3e09186a3ab1b9520f06d215502b651fd910 \
