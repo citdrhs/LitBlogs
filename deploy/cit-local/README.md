@@ -65,28 +65,97 @@ Do not put `/dren` in `LITBLOGS_ORIGIN` or run plain `docker compose` from the
 repository to recover this installation. If containers or private settings are
 missing, stop for operator review rather than recreating the database or guessing
 credentials. Do not print resolved `compose config`, environment contents or
-private log contents into shared transcripts. To replace mail credentials, hold the
-shared operation lock across editing and recreating the mail-related services,
-keeping the private `.env` single-quoted `KEY='value'` format.
-Set the approved `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USERNAME`, `EMAIL_PASSWORD`
-and bare-address `EMAIL_FROM`, then recreate only these services:
+private log contents into shared transcripts.
+
+### Replace SMTP settings safely
+
+Use an approved SMTP account and its generated application password. For Zoho's
+US `.com` service, use the exact account-specific server from Zoho's account
+settings: `smtp.zoho.com` or `smtppro.zoho.com`. These exact hosts accept Zoho's
+12-character generated application passwords; other hosts retain the 16-byte
+minimum. Use the full mailbox address for `EMAIL_USERNAME` and an approved bare
+sender address for `EMAIL_FROM`. Use STARTTLS on port `587`. Port `465` uses
+implicit TLS and is unsupported by this sender. A normal mailbox login password
+is not an application password. Other Zoho regions need a reviewed configuration;
+do not shorten credentials or add spaces to satisfy a length check.
+
+See [Zoho SMTP settings](https://www.zoho.com/mail/help/zoho-smtp.html) and
+[Zoho application-specific passwords](https://help.zoho.com/portal/en/kb/accounts/manage-your-zoho-account/articles/mfa-application-specific-passwords).
+SMTP authentication and accepted messages still require an actual inbox test;
+healthy containers do not prove school mail filtering accepts the sender.
+
+This procedure requires an installed application image with `runtime.py --check`
+support. Deploy the reviewed image through the normal updater before using it;
+an old image will reject the check instead of silently proceeding. Pause the
+three LitBlogs timers and let any active jobs finish as described in
+[the maintenance guide](../../maintenence.md#9-planned-maintenance-reboots-and-timer-recovery).
+Record the current `app` replica count and replace `N` below with that count
+(one to three). Preserve every other setting and the current image pin.
+
+The command keeps the shared operation lock across a root-only environment
+backup, editing, validation and recreation. Edit only `EMAIL_HOST`, `EMAIL_PORT`,
+`EMAIL_USERNAME`, `EMAIL_PASSWORD` and `EMAIL_FROM`, preserving single-quoted
+`KEY='value'` format. All three preflights validate configuration without running
+the application, workers, migrations or database writers. A failed check restores
+the previous private file and leaves the current services running. A failed
+recreation also attempts to restore the previous configuration and services.
 
 ```bash
-sudo env -i PATH=/usr/bin:/bin HOME=/root LANG=C.UTF-8 \
+sudo env -i PATH=/usr/bin:/bin HOME=/root LANG=C.UTF-8 TERM="${TERM:-xterm}" \
   flock --exclusive /home/litblogs/.local/state/cit-deploy/operation.lock \
-  bash -c 'nano /home/litblogs/.local/state/cit-deploy/.env &&
-  docker --host unix:///var/run/docker.sock compose \
-    --project-name litblogs-cit \
-    --project-directory /home/litblogs/www/LitBlogs \
-    --env-file /home/litblogs/.local/state/cit-deploy/.env \
-    -f /home/litblogs/www/LitBlogs/docker-compose.yml \
-    -f /home/litblogs/.local/state/cit-deploy/compose.yaml \
-    up -d --no-deps --no-build app email reconcile'
+  bash -c '
+    set -eu
+    umask 077
+    app_replicas=N
+    case "$app_replicas" in 1|2|3) ;; *) echo "Set the recorded app count first" >&2; exit 1 ;; esac
+    state=/home/litblogs/.local/state/cit-deploy
+    env_file="$state/.env"
+    previous=$(mktemp "$state/smtp-before.XXXXXXXX.env")
+    install -o root -g root -m 0600 "$env_file" "$previous"
+    printf "Private configuration backup: %s\n" "$previous"
+    compose() {
+      docker --host unix:///var/run/docker.sock compose \
+        --project-name litblogs-cit \
+        --project-directory /home/litblogs/www/LitBlogs \
+        --env-file "$env_file" \
+        -f /home/litblogs/www/LitBlogs/docker-compose.yml \
+        -f "$state/compose.yaml" "$@"
+    }
+    preflight() {
+      compose run --rm --no-deps -T --pull never --entrypoint python \
+        app /opt/litblogs/deploy/container/runtime.py web --check &&
+      compose run --rm --no-deps -T --pull never --entrypoint python \
+        email /opt/litblogs/deploy/container/runtime.py email --check &&
+      compose run --rm --no-deps -T --pull never --entrypoint python \
+        reconcile /opt/litblogs/deploy/container/runtime.py reconcile --check
+    }
+    restore_env() { install -o root -g root -m 0600 "$previous" "$env_file"; }
+    recreate() {
+      compose up -d --no-deps --no-build --wait --wait-timeout 360 \
+        --scale "app=$app_replicas" app email reconcile
+    }
+    if ! nano "$env_file" || ! preflight; then
+      restore_env
+      echo "Configuration check failed; previous settings restored and current services retained" >&2
+      exit 1
+    fi
+    if ! recreate; then
+      restore_env
+      if ! preflight || ! recreate; then
+        echo "Previous settings restored; service recovery needs operator review" >&2
+        exit 1
+      fi
+      echo "Replacement failed; previous settings and services restored" >&2
+      exit 1
+    fi
+  '
 ```
 
-Authenticate to the approved STARTTLS relay and verify registration/reset delivery
-to an explicitly approved test recipient. The September 12 SMTP replacement
-included a successful real password-reset test.
+Run `sudo litblogs status` and `sudo litblogs check`, verify registration/reset
+delivery to an explicitly approved test recipient, then restore the timers after
+validation. Keep the root-only backup until the replacement is verified. Retire
+old credentials only after replacement delivery works. `sudo litblogs start`
+reuses existing container settings; it does not apply an edited `.env`.
 The two approved registration domains are `henricostudents.org` and
 `henrico.k12.va.us`; teachers also require an email-bound invitation. Domain
 membership alone does not grant teacher or administrator privileges.

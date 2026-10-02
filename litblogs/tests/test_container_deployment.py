@@ -1,10 +1,13 @@
 """Production container boundaries, independent of a Docker daemon."""
 
 import importlib.util
+import secrets
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from pydantic import BaseModel, ValidationError, model_validator
+from pydantic_core import PydanticCustomError
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -122,6 +125,159 @@ def test_missing_password_does_not_echo_other_secrets(environment):
 def test_unknown_mode_rejected(environment):
     with pytest.raises(ValueError, match="mode"):
         runtime_module().build_environment("shell", environment)
+
+
+def prepared_runtime(monkeypatch, environment, *arguments):
+    import config
+
+    runtime = runtime_module()
+    environment.update(
+        SECRET_KEY=secrets.token_urlsafe(48),
+        TEACHER_INVITE_HMAC_KEY=secrets.token_urlsafe(48),
+        UPLOAD_LEGACY_IMPORT_COMPLETE="true",
+        UPLOAD_BACKUP_RESTORE_VERIFIED="true",
+    )
+    monkeypatch.setattr(runtime.os, "environ", environment.copy())
+    monkeypatch.setattr(runtime.sys, "argv", ["runtime.py", *arguments])
+    monkeypatch.setattr(config, "_has_valid_upload_root_custody", lambda _path: True)
+    monkeypatch.setattr(config, "_is_canonical_production_upload_root", lambda _path: True)
+    return runtime
+
+
+@pytest.mark.parametrize("mode", ["web", "email", "reconcile"])
+def test_configuration_check_validates_without_starting_a_process(mode, environment, monkeypatch):
+    runtime = prepared_runtime(monkeypatch, environment, mode, "--check")
+
+    def prohibited(*_args):
+        pytest.fail("configuration check must not start a process or change its directory")
+
+    monkeypatch.setattr(runtime.os, "execve", prohibited)
+    monkeypatch.setattr(runtime.os, "chdir", prohibited)
+    assert runtime.main() == 0
+
+
+@pytest.mark.parametrize("mode", ["web", "email", "reconcile"])
+def test_configuration_check_reports_bad_email_port_without_echoing_input(mode, environment, monkeypatch, capsys):
+    marker = "smtp-secret-private-value"
+    environment["EMAIL_PORT"] = marker
+    runtime = prepared_runtime(monkeypatch, environment, mode, "--check")
+    assert runtime.main() == 1
+    diagnostic = capsys.readouterr().err
+    assert "EMAIL_PORT" in diagnostic and "int_parsing" in diagnostic
+    assert marker not in diagnostic
+    assert environment["EMAIL_PASSWORD"] not in diagnostic
+    assert environment["LITBLOGS_DB_PASSWORD"] not in diagnostic
+
+
+@pytest.mark.parametrize("mode", ["web", "email", "reconcile"])
+def test_configuration_check_names_rejected_smtp_password_without_its_value(mode, environment, monkeypatch, capsys):
+    environment["EMAIL_PASSWORD"] = "tiny!"
+    runtime = prepared_runtime(monkeypatch, environment, mode, "--check")
+    assert runtime.main() == 1
+    diagnostic = capsys.readouterr().err
+    assert "EMAIL_PASSWORD" in diagnostic
+    assert environment["EMAIL_PASSWORD"] not in diagnostic
+
+
+@pytest.mark.parametrize("error_factory", [ValueError, RuntimeError])
+def test_arbitrary_exception_messages_are_never_logged(error_factory, environment, monkeypatch, capsys):
+    runtime = prepared_runtime(monkeypatch, environment, "email")
+    marker = "postgresql://owner:private-credential@database/private"
+
+    def invalid_environment(*_args):
+        raise error_factory(marker)
+
+    monkeypatch.setattr(runtime, "build_environment", invalid_environment)
+    assert runtime.main() == 1
+    diagnostic = capsys.readouterr().err
+    assert "Configuration validation failed" in diagnostic
+    assert marker not in diagnostic
+
+
+def test_schema_root_error_does_not_log_arbitrary_message_or_context(environment, monkeypatch, capsys):
+    marker = "postgresql://owner:private-credential@database/private"
+
+    class PrivateFailure(BaseModel):
+        credential: str
+
+        @model_validator(mode="after")
+        def fail(self):
+            raise ValueError(marker)
+
+    with pytest.raises(ValidationError) as caught:
+        PrivateFailure(credential=marker)
+    runtime = prepared_runtime(monkeypatch, environment, "email")
+
+    def invalid_environment(*_args):
+        raise caught.value
+
+    monkeypatch.setattr(runtime, "build_environment", invalid_environment)
+    assert runtime.main() == 1
+    diagnostic = capsys.readouterr().err
+    assert "Configuration validation failed" in diagnostic
+    assert marker not in diagnostic
+
+
+def test_schema_error_does_not_log_arbitrary_field_or_error_code(environment, monkeypatch, capsys):
+    marker = "private-credential"
+    error = ValidationError.from_exception_data(
+        "PrivateSchema",
+        [{"type": PydanticCustomError(marker, "{secret}", {"secret": marker}), "loc": (marker,), "input": marker}],
+    )
+    runtime = prepared_runtime(monkeypatch, environment, "email")
+
+    def invalid_environment(*_args):
+        raise error
+
+    monkeypatch.setattr(runtime, "build_environment", invalid_environment)
+    assert runtime.main() == 1
+    diagnostic = capsys.readouterr().err
+    assert "settings: invalid" in diagnostic
+    assert marker not in diagnostic
+
+
+def test_configuration_check_reports_required_setting_name(environment, monkeypatch, capsys):
+    environment.pop("EMAIL_PASSWORD")
+    runtime = prepared_runtime(monkeypatch, environment, "email", "--check")
+    assert runtime.main() == 1
+    diagnostic = capsys.readouterr().err
+    assert "EMAIL_PASSWORD" in diagnostic and "missing or invalid" in diagnostic
+    assert environment["LITBLOGS_DB_PASSWORD"] not in diagnostic
+
+
+def test_configuration_check_still_requires_runtime_readiness(environment, monkeypatch, capsys):
+    runtime = prepared_runtime(monkeypatch, environment, "web", "--check")
+    runtime.os.environ["UPLOAD_BACKUP_RESTORE_VERIFIED"] = "false"
+    assert runtime.main() == 1
+    assert "Missing production readiness attestation: UPLOAD_BACKUP_RESTORE_VERIFIED" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("arguments", [[], ["email", "--unknown"], ["email", "--check", "extra"], ["--check", "email"], ["shell", "--check"]])
+def test_runtime_rejects_invalid_arguments_without_starting(arguments, environment, monkeypatch, capsys):
+    runtime = prepared_runtime(monkeypatch, environment, *arguments)
+
+    def prohibited(*_args):
+        pytest.fail("invalid invocation must not start a process")
+
+    monkeypatch.setattr(runtime.os, "execve", prohibited)
+    assert runtime.main() == 1
+    assert "Usage:" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("mode", ["web", "email", "reconcile"])
+def test_valid_normal_mode_still_executes_the_original_process(mode, environment, monkeypatch):
+    runtime = prepared_runtime(monkeypatch, environment, mode)
+    execution = []
+    monkeypatch.setattr(runtime.os, "chdir", lambda _path: None)
+    monkeypatch.setattr(runtime.os, "execve", lambda *args: execution.append(args))
+    assert runtime.main() == 1
+    executable, command, settings = execution[0]
+    assert executable == runtime.sys.executable
+    assert settings["APP_ENV"] == "production"
+    if mode == "web":
+        assert command[1:4] == ["-m", "uvicorn", "container_app:app"]
+    else:
+        assert command[-1] == mode and command[-2].endswith("worker.py")
 
 
 def test_image_uses_locked_builds_nonroot_and_runtime_only_secrets():

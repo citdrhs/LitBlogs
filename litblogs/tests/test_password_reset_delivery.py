@@ -96,6 +96,44 @@ def test_worker_settings_fail_closed_for_unsafe_delivery_inputs(field, value):
         _worker_settings(**{field: value})
 
 
+@pytest.mark.parametrize("host", ["smtp.zoho.com", "smtppro.zoho.com", "SMTPPRO.ZOHO.COM"])
+def test_email_worker_accepts_zoho_application_passwords(host):
+    settings = _worker_settings(email_host=host, email_password="A7v2K9m4Q6r8")
+    assert settings.email_password.get_secret_value() == "A7v2K9m4Q6r8"
+
+
+@pytest.mark.parametrize("host,password", [
+    ("smtp.zoho.com", "A7v2K9m4Q6r"),
+    ("smtppro.zoho.com", "A7v2K9m4Q6r"),
+    ("smtp.zoho.com", "replace-with"),
+    ("smtppro.zoho.com", "test-secret!"),
+    ("smtp.school.org", "A7v2K9m4Q6r8"),
+    ("smtp.school.org", "A7v2K9m4Q6r8D3p"),
+    ("smtp.zoho.com.attacker.org", "A7v2K9m4Q6r8"),
+    ("smtp-zoho.com", "A7v2K9m4Q6r8"),
+    ("smtppro.zoho.com.attacker.org", "A7v2K9m4Q6r8"),
+])
+def test_email_worker_keeps_smtp_password_minimum_scoped_to_exact_zoho_hosts(host, password):
+    with pytest.raises(ValidationError, match="EMAIL_PASSWORD"):
+        _worker_settings(email_host=host, email_password=password)
+
+
+def test_email_worker_preserves_sixteen_byte_passwords_for_other_smtp_hosts():
+    settings = _worker_settings(email_password="A7v2K9m4Q6r8D3p5")
+    assert settings.email_password.get_secret_value() == "A7v2K9m4Q6r8D3p5"
+
+
+@pytest.mark.parametrize("host", ["smtp.school.org", "smtppro.zoho.com"])
+def test_email_worker_rejects_implicit_tls_port_for_starttls_mailer(host):
+    with pytest.raises(ValidationError, match="EMAIL_PORT.*STARTTLS"):
+        _worker_settings(email_host=host, email_port=465)
+
+
+@pytest.mark.parametrize("port", [587, 1025, 2525])
+def test_email_worker_preserves_custom_starttls_ports(port):
+    assert _worker_settings(email_port=port).email_port == port
+
+
 @pytest.mark.parametrize("driver", ["postgresql+psycopg", "postgresql+asyncpg"])
 def test_shared_production_database_validator_rejects_unshipped_drivers(driver):
     from config import _is_verified_postgresql_url

@@ -24,6 +24,7 @@ from config import (
     _canonical_https_frontend_url,
     _is_network_host,
     _is_verified_postgresql_url,
+    smtp_password_minimum_bytes,
     validate_app_base_path,
 )
 from runtime_database_identity import verify_runtime_database_identity
@@ -115,11 +116,13 @@ class AuthEmailWorkerSettings(BaseSettings):
             raise ValueError("DATABASE_URL must use the litblogs_runtime role")
         if not _is_network_host(self.email_host):
             raise ValueError("EMAIL_HOST must be an exact network host")
+        if self.email_port == 465:
+            raise ValueError("EMAIL_PORT must use STARTTLS; implicit TLS port 465 is unsupported")
         email_from_domain = str(self.email_from).rsplit("@", 1)[-1]
         if not _is_network_host(email_from_domain):
             raise ValueError("EMAIL_FROM must use a non-reserved DNS domain")
         smtp_password = self.email_password.get_secret_value()
-        if len(smtp_password.encode("utf-8")) < 16 or any(
+        if len(smtp_password.encode("utf-8")) < smtp_password_minimum_bytes(self.email_host) or any(
             fragment in smtp_password.lower() for fragment in _PLACEHOLDER_FRAGMENTS
         ):
             raise ValueError("EMAIL_PASSWORD must be a non-placeholder secret")
