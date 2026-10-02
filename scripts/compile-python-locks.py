@@ -16,8 +16,8 @@ EXPECTED_PACKAGES = {"pip": "26.2.1", "pip-tools": "7.6.1"}
 
 
 def _verify_toolchain() -> None:
-    if sys.version_info[:2] < EXPECTED_PYTHON:
-        raise SystemExit("lock generation requires Python 3.13 or greater")
+    if sys.version_info[:2] != EXPECTED_PYTHON:
+        raise SystemExit("lock generation requires Python 3.13")
     if sys.platform != "linux" or platform.machine().lower() not in {"amd64", "x86_64"}:
         raise SystemExit("lock generation requires the Linux x86_64 production platform")
     for distribution, expected in EXPECTED_PACKAGES.items():
