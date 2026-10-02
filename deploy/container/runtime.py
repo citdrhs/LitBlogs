@@ -93,8 +93,8 @@ def main():
             from config import Settings, require_production_runtime_readiness
 
             require_production_runtime_readiness(Settings(_env_file=None))
-    except Exception:
-        print("Container configuration rejected. Check required settings, storage custody, and readiness attestations; no secrets were logged.", file=sys.stderr)
+    except Exception as e:
+        print(f"Configuration validation failed: {type(e).__name__}: {e}", file=sys.stderr)
         return 1
     os.chdir(APPLICATION)
     if mode == "web":
