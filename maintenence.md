@@ -1,6 +1,6 @@
 # LitBlogs maintenance guide
 
-Last reviewed: September 25, 2026. Applies to the **manually managed CIT installation** at **https://drhscit.org/dren/**, using the recovery controls introduced in PR #67. The public path is lowercase.
+Last reviewed: October 2, 2026. Applies to the **manually managed CIT installation** at **https://drhscit.org/dren/**, using the recovery controls introduced in PR #67. The public path is lowercase.
 
 This guide is for the LitBlogs maintainers and CIT teacher. Commands below run on the CIT server after connecting with SSH. No passwords, app passwords, invitation codes, or secret environment values belong in this file.
 
@@ -101,7 +101,7 @@ sudo less /home/litblogs/.local/state/cit-deploy/logs/service-start.log
 
 `litblogs logs` saves a private snapshot of up to 100 recent lines per container from the last 24 hours, capped at 2 MiB. Save a private copy before collecting again if you need to preserve an incident. Review logs privately and remove secrets, tokens, and student information before sharing excerpts.
 
-## 5. Recover from a 502 or stopped application
+## 5. Recover from a 502, 503, or stopped application
 
 1. Record the time, failing URL, and what changed recently. Check whether an update or backup is currently running; both have a brief maintenance interval.
 2. Inspect the services and collect logs:
@@ -195,11 +195,11 @@ Preserve the file's single-quoted `KEY='value'` format. Do not put `/dren` in `L
 
 For an SMTP change:
 
-1. Obtain working credentials from the account owner. Gmail uses an app password with the account's verification setup; do not use its normal login password as the SMTP credential.
+1. Obtain working credentials from the account owner. Use the provider's generated application password when required, rather than its normal mailbox login password. For Zoho's US `.com` accounts, use the exact server from the mailbox settings (`smtp.zoho.com` or `smtppro.zoho.com`), the full mailbox address as `EMAIL_USERNAME`, and an approved bare sender address as `EMAIL_FROM`. Zoho's generated 12-character app passwords are supported only for those exact hosts; other hosts retain the 16-byte minimum. Use STARTTLS port `587`; implicit TLS port `465` is unsupported. Do not add padding to credentials. Other Zoho regions need reviewed support.
 2. Choose a quiet period, create a verified backup, and retain the previous configuration privately for recovery.
 3. Pause the three timers and wait for active jobs as described in section 9. Record the current `app` container count from `litblogs status` (one to three).
-4. Have IT edit only `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USERNAME`, `EMAIL_PASSWORD`, and the bare-address `EMAIL_FROM` under the shared operation lock. Use the fixed project, private environment, clean shell environment, and overlay from the [locked SMTP configuration procedure](deploy/cit-local/README.md#common-commands). For its interactive `nano` editor, add `TERM="${TERM:-xterm}"` alongside `PATH`, `HOME`, and `LANG` in the `env -i` command so the terminal can initialize. Preserve the current image and all other settings.
-5. Before running that procedure's Compose recreation, add `--wait --wait-timeout 360 --scale app=N` to its existing `up -d --no-deps --no-build` arguments, replacing `N` with the recorded app count. Recreate only `app email reconcile`. This preserves capacity and waits for health instead of just starting containers. `litblogs start` alone does **not** apply changes to `.env`, because it reuses existing container configuration.
+4. Use the [locked SMTP configuration procedure](deploy/cit-local/README.md#replace-smtp-settings-safely), replacing its `N` with the recorded app count. It requires a deployed image with `runtime.py --check` support. The procedure saves a root-only copy of the existing `.env` before editing and keeps the same operation lock across editing, all three preflights, and recreation. Have IT edit only `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USERNAME`, `EMAIL_PASSWORD`, and `EMAIL_FROM`. Preserve the current image and all other settings.
+5. The preflights validate `app`, `email`, and `reconcile` configuration without starting writers. If one fails, the procedure restores the previous `.env` and leaves the old running services in place. Only after all checks pass does it recreate `app email reconcile` with the recorded capacity and wait for health. If that recreation fails, it restores the previous configuration and attempts service recovery. Review any reported recovery failure instead of repeatedly restarting. `litblogs start` alone does **not** apply changes to `.env`, because it reuses existing container configuration.
 6. Run `litblogs status` and `litblogs check`, then send a registration/reset test to an approved recipient and confirm actual delivery. Restore the timers after validation.
 7. Secure the new credentials and retire the old ones only after the replacement works. Do not commit either version.
 

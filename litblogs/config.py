@@ -56,6 +56,12 @@ _HOST_COOKIE_PATTERN = re.compile(r"^__Host-[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$")
 _SECURE_COOKIE_PATTERN = re.compile(r"^__Secure-[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$")
 _APP_BASE_PATH_PATTERN = re.compile(r"(?:/[A-Za-z0-9][A-Za-z0-9_-]*)+")
 _RESERVED_DNS_SUFFIXES = frozenset({"example", "invalid", "localhost", "test"})
+_ZOHO_SMTP_HOSTS = frozenset({"smtp.zoho.com", "smtppro.zoho.com"})
+
+
+def smtp_password_minimum_bytes(email_host: str | None) -> int:
+    # Zoho issues 12-character application passwords; other providers retain 16.
+    return 12 if (email_host or "").lower() in _ZOHO_SMTP_HOSTS else 16
 
 
 def _csv_tuple(value: Any, *, lowercase: bool = False, strip_slash: bool = False) -> tuple[str, ...]:
@@ -337,7 +343,10 @@ class Settings(BaseSettings):
                 _reveal_secret(self.teacher_invite_hmac_key),
                 SECRET_KEY_MIN_BYTES,
             ),
-            "EMAIL_PASSWORD": (_reveal_secret(self.email_password), 16),
+            "EMAIL_PASSWORD": (
+                _reveal_secret(self.email_password),
+                smtp_password_minimum_bytes(self.email_host),
+            ),
         }
         if self.google_oauth_enabled:
             minimum_lengths["GOOGLE_CLIENT_ID"] = (self.google_client_id, 8)
@@ -396,6 +405,8 @@ class Settings(BaseSettings):
             raise ValueError("ALLOWED_HOSTS must contain exact DNS hostnames in production")
         if not _is_network_host(self.email_host):
             raise ValueError("EMAIL_HOST must be an exact DNS hostname or IP address in production")
+        if self.email_port == 465:
+            raise ValueError("EMAIL_PORT must use STARTTLS; implicit TLS port 465 is unsupported")
         email_from_domain = str(self.email_from or "").rsplit("@", 1)[-1]
         if _is_reserved_dns_name(email_from_domain):
             raise ValueError("EMAIL_FROM must not use a reserved example domain in production")

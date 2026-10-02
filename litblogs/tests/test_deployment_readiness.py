@@ -528,6 +528,44 @@ def test_production_rejects_unsafe_password_recovery_delivery_settings(field, va
         _production_settings(**{field: value})
 
 
+@pytest.mark.parametrize("host", ["smtp.zoho.com", "smtppro.zoho.com", "SMTPPRO.ZOHO.COM"])
+def test_production_accepts_zoho_application_passwords(host):
+    settings = _production_settings(email_host=host, email_password="A7v2K9m4Q6r8")
+    assert settings.email_password.get_secret_value() == "A7v2K9m4Q6r8"
+
+
+@pytest.mark.parametrize("host,password", [
+    ("smtp.zoho.com", "A7v2K9m4Q6r"),
+    ("smtppro.zoho.com", "A7v2K9m4Q6r"),
+    ("smtp.zoho.com", "replace-with"),
+    ("smtppro.zoho.com", "test-secret!"),
+    ("smtp.school.edu", "A7v2K9m4Q6r8"),
+    ("smtp.school.edu", "A7v2K9m4Q6r8D3p"),
+    ("smtp.zoho.com.attacker.org", "A7v2K9m4Q6r8"),
+    ("smtp-zoho.com", "A7v2K9m4Q6r8"),
+    ("smtppro.zoho.com.attacker.org", "A7v2K9m4Q6r8"),
+])
+def test_production_keeps_smtp_password_minimum_scoped_to_exact_zoho_hosts(host, password):
+    with pytest.raises(ValidationError, match="EMAIL_PASSWORD"):
+        _production_settings(email_host=host, email_password=password)
+
+
+def test_production_preserves_sixteen_byte_passwords_for_other_smtp_hosts():
+    settings = _production_settings(email_password="A7v2K9m4Q6r8D3p5")
+    assert settings.email_password.get_secret_value() == "A7v2K9m4Q6r8D3p5"
+
+
+@pytest.mark.parametrize("host", ["smtp.school.edu", "smtppro.zoho.com"])
+def test_production_rejects_implicit_tls_port_for_starttls_mailer(host):
+    with pytest.raises(ValidationError, match="EMAIL_PORT.*STARTTLS"):
+        _production_settings(email_host=host, email_port=465)
+
+
+@pytest.mark.parametrize("port", [587, 1025, 2525])
+def test_production_preserves_custom_starttls_ports(port):
+    assert _production_settings(email_port=port).email_port == port
+
+
 def _base64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
