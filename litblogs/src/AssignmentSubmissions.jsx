@@ -1,6 +1,6 @@
 import { storageKey } from "./utils/browserStorage";
 import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import axios from 'axios';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
@@ -11,6 +11,20 @@ import { logoutBrowserSession } from './utils/auth';
 const AssignmentSubmissions = () => {
   const { classId, assignmentId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  const handleBack = () => {
+    if (location.state?.selectedClass) {
+      navigate('/teacher-dashboard', {
+        state: {
+          selectedClass: location.state.selectedClass,
+          classDetailsTab: location.state.classDetailsTab || 'Assignments',
+        },
+      });
+      return;
+    }
+    navigate(`/class-feed/${classId}`);
+  };
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -117,7 +131,7 @@ const AssignmentSubmissions = () => {
             )}
           </div>
           <button
-            onClick={() => navigate(`/class-feed/${classId}`)}
+            onClick={handleBack}
             className={`px-4 py-2 rounded-lg ${darkMode ? 'bg-gray-700 text-gray-200' : 'bg-white text-gray-700 border border-gray-300'}`}
           >
             Back to Class

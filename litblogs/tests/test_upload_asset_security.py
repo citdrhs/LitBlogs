@@ -2186,6 +2186,27 @@ def test_production_schema_guard_accepts_the_exact_upload_registry_shape(monkeyp
 
 
 @pytest.mark.parametrize(
+    "name",
+    ("ck_upload_assets_purpose", "ck_upload_assets_state_shape"),
+)
+def test_production_schema_guard_accepts_postgres_rendered_assignment_media_checks(name):
+    import database
+
+    rendered = database._APPROVED_CHECK_SQL[name]
+    for values in (
+        "'POST', 'PROFILE_IMAGE', 'COVER_IMAGE', 'ASSIGNMENT_MEDIA'",
+        "'POST', 'ASSIGNMENT_MEDIA'",
+        "'PROFILE_IMAGE', 'COVER_IMAGE'",
+    ):
+        rendered = rendered.replace(
+            f"purpose IN ({values})",
+            f"purpose = ANY (ARRAY[{values}])",
+        )
+
+    assert database._check_has_expected_semantics(name, rendered)
+
+
+@pytest.mark.parametrize(
     ("setting_name", "error_marker"),
     (
         ("upload_registry_schema_ready", "UPLOAD_REGISTRY_SCHEMA_READY"),

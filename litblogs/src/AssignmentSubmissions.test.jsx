@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
 import React from 'react';
-import { render, screen } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { beforeEach, expect, it, vi } from 'vitest';
 
 import AssignmentSubmissions from './AssignmentSubmissions.jsx';
@@ -64,4 +64,26 @@ it('shows an authorized submitted image while viewing an archived assignment', a
   expect(screen.getByText('Literal <img src="https://elsewhere.invalid/pixel"> text'))
     .toBeInTheDocument();
   expect(screen.getAllByRole('img')).toHaveLength(1);
+});
+
+it('returns to the teacher assignment controls after viewing archived submissions', async () => {
+  const ReturnState = () => {
+    const location = useLocation();
+    return <p>{`${location.state?.selectedClass?.id}:${location.state?.classDetailsTab}`}</p>;
+  };
+
+  render(
+    <MemoryRouter initialEntries={[{
+      pathname: '/class/4/assignment/12/submissions',
+      state: { selectedClass: { id: 4, name: 'Reading' }, classDetailsTab: 'Assignments' },
+    }]}>
+      <Routes>
+        <Route path="/class/:classId/assignment/:assignmentId/submissions" element={<AssignmentSubmissions />} />
+        <Route path="/teacher-dashboard" element={<ReturnState />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Back to Class' }));
+  expect(screen.getByText('4:Assignments')).toBeInTheDocument();
 });

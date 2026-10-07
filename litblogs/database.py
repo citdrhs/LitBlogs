@@ -257,8 +257,11 @@ def _approved_check_variants(name: str) -> set[str]:
             "purposein'profile_image','cover_image'",
             "purpose=anyarray'profile_image','cover_image'",
         ).replace(
-            "purposein'post','profile_image','cover_image'",
-            "purpose=anyarray'post','profile_image','cover_image'",
+            "purposein'post','profile_image','cover_image','assignment_media'",
+            "purpose=anyarray'post','profile_image','cover_image','assignment_media'",
+        ).replace(
+            "purposein'post','assignment_media'",
+            "purpose=anyarray'post','assignment_media'",
         ).replace(
             "statein'pending','active','delete_pending','deleted'",
             "state=anyarray'pending','active','delete_pending','deleted'",
