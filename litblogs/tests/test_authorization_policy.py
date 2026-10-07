@@ -30,6 +30,7 @@ EXPECTED_API_ROUTES = frozenset(
     {
         ("DELETE", "/api/admin/users/{user_id}"),
         ("DELETE", "/api/classes/{class_id}"),
+        ("DELETE", "/api/classes/{class_id}/assignments/{assignment_id}"),
         ("DELETE", "/api/classes/{class_id}/posts/{post_id}"),
         ("DELETE", "/api/push/unsubscribe"),
         ("DELETE", "/api/upload/{file_path:path}"),
@@ -76,6 +77,7 @@ EXPECTED_API_ROUTES = frozenset(
         ("POST", "/api/admin/users/{user_id}/recovery"),
         ("POST", "/api/admin/users/{user_id}/verification"),
         ("POST", "/api/assignments/{assignment_id}/submit"),
+        ("POST", "/api/assignments/{assignment_id}/upload/{kind}"),
         ("POST", "/api/auth/forgot-password"),
         ("POST", "/api/auth/change-password"),
         ("POST", "/api/auth/google-login"),
@@ -90,6 +92,7 @@ EXPECTED_API_ROUTES = frozenset(
         ("POST", "/api/auth/verify-email"),
         ("POST", "/api/classes"),
         ("POST", "/api/classes/{class_id}/assignments"),
+        ("POST", "/api/classes/{class_id}/assignments/{assignment_id}/restore"),
         (
             "POST",
             "/api/classes/{class_id}/assignments/{assignment_id}/submissions/{submission_id}/replies",

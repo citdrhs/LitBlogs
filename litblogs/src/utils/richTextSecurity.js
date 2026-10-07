@@ -53,6 +53,11 @@ const ALIAS_TAGS = new Map([
   ["b", "strong"], ["i", "em"], ["del", "s"], ["strike", "s"],
 ].filter(([tag]) => IMPORT_TAGS.has(tag)));
 const LEGACY_MEDIA_TAGS = new Set(["figure", "source", "video"]);
+const LEGACY_MEDIA_ATTRIBUTES = {
+  figure: new Set(["class", "contenteditable", "data-video-type", "data-video-url"]),
+  source: new Set(["src", "type"]),
+  video: new Set(["class", "controls", "height", "preload", "src", "width"]),
+};
 const CLASS_SUFFIX_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const FONT_FAMILY_ITEM_PATTERN = /^(?:"[^"\\\r\n]+"|'[^'\\\r\n]+'|[A-Za-z][A-Za-z0-9 _-]*)$/;
 const LENGTH_PATTERN = /^(-?(?:\d+(?:\.\d+)?|\.\d+))(px|%|em|rem)?$/i;
@@ -121,11 +126,6 @@ export const normalizeRichTextUrl = (rawValue, kind = "link") => (
   kind === "link" ? normalizeLinkUrl(rawValue) : normalizeUploadUrl(rawValue)
 );
 
-const escapeHtmlText = (value) => String(value || "")
-  .replace(/&/g, "&amp;")
-  .replace(/</g, "&lt;")
-  .replace(/>/g, "&gt;");
-
 const findLegacyTagEnd = (value, startIndex) => {
   let quote = null;
   for (let index = startIndex + 1; index < value.length; index += 1) {
@@ -141,37 +141,99 @@ const findLegacyTagEnd = (value, startIndex) => {
   return -1;
 };
 
-const getLegacyTagName = (candidate) => {
-  const match = candidate.match(/^<\/?([A-Za-z]+)(?:\s|\/?>)/);
-  return match ? match[1].toLowerCase() : null;
+const parseLegacyMediaTag = (candidate) => {
+  const match = candidate.match(/^<(\/?)(figure|source|video)(?=[\s/>])/i);
+  if (!match || !LEGACY_MEDIA_TAGS.has(match[2].toLowerCase())) return null;
+  const tag = match[2].toLowerCase();
+  const closing = Boolean(match[1]);
+  const body = candidate.slice(match[0].length, -1);
+  if (closing) return /^\s*$/.test(body) ? { tag, closing } : null;
+
+  const attributes = new Map();
+  let cursor = 0;
+  while (cursor < body.length) {
+    while (/\s/.test(body[cursor] || "")) cursor += 1;
+    if (cursor >= body.length || (body[cursor] === "/" && /^\/\s*$/.test(body.slice(cursor)))) break;
+    const nameMatch = body.slice(cursor).match(/^[A-Za-z][A-Za-z0-9-]*/);
+    if (!nameMatch) return null;
+    const name = nameMatch[0].toLowerCase();
+    cursor += nameMatch[0].length;
+    while (/\s/.test(body[cursor] || "")) cursor += 1;
+    let value = "";
+    if (body[cursor] === "=") {
+      cursor += 1;
+      while (/\s/.test(body[cursor] || "")) cursor += 1;
+      const quote = body[cursor] === '"' || body[cursor] === "'" ? body[cursor] : null;
+      if (quote) {
+        const end = body.indexOf(quote, cursor + 1);
+        if (end < 0) return null;
+        value = body.slice(cursor + 1, end);
+        cursor = end + 1;
+      } else {
+        const unquoted = body.slice(cursor).match(/^[^\s"'`=<>]+/);
+        if (!unquoted) return null;
+        value = unquoted[0];
+        cursor += value.length;
+      }
+    }
+    if (LEGACY_MEDIA_ATTRIBUTES[tag].has(name) && !attributes.has(name)) {
+      attributes.set(name, value);
+    }
+  }
+  return { tag, closing, attributes, selfClosing: /\/\s*$/.test(body) };
 };
 
-const recoverLegacyTagsFromText = (value) => {
+const buildLegacyMediaElement = ({ tag, attributes }) => {
+  const element = document.createElement(tag);
+  attributes.forEach((value, name) => {
+    let normalized = null;
+    if (name === "src" || name === "data-video-url") normalized = normalizeUploadUrl(value);
+    else if (name === "type" || name === "data-video-type") normalized = normalizeVideoType(value);
+    else if (name === "width" || name === "height") normalized = normalizeDimension(value);
+    else if (name === "controls") normalized = "";
+    else if (name === "preload") normalized = value.toLowerCase() === "metadata" ? "metadata" : null;
+    else if (name === "contenteditable") normalized = value === "false" ? "false" : null;
+    else if (name === "class") normalized = safeText(value, 512);
+    if (normalized !== null) element.setAttribute(name, normalized);
+  });
+  return element;
+};
+
+const recoverLegacyMediaFromText = (value) => {
+  const fragment = document.createDocumentFragment();
+  const stack = [{ tag: null, element: fragment }];
+  const appendText = (text) => stack[stack.length - 1].element.appendChild(document.createTextNode(text));
   let cursor = 0;
-  let output = "";
   let recovered = false;
   while (cursor < value.length) {
     const tagStart = value.indexOf("<", cursor);
     if (tagStart < 0) {
-      output += escapeHtmlText(value.slice(cursor));
+      appendText(value.slice(cursor));
       break;
     }
-    output += escapeHtmlText(value.slice(cursor, tagStart));
+    appendText(value.slice(cursor, tagStart));
     const tagEnd = findLegacyTagEnd(value, tagStart);
     if (tagEnd < 0) {
-      output += escapeHtmlText(value.slice(tagStart));
+      appendText(value.slice(tagStart));
       break;
     }
     const candidate = value.slice(tagStart, tagEnd + 1);
-    if (LEGACY_MEDIA_TAGS.has(getLegacyTagName(candidate))) {
-      output += candidate;
-      recovered = true;
+    const parsed = parseLegacyMediaTag(candidate);
+    if (!parsed) {
+      appendText(candidate);
+    } else if (parsed.closing) {
+      const openIndex = stack.findLastIndex(({ tag }) => tag === parsed.tag);
+      if (openIndex < 1) appendText(candidate);
+      else stack.length = openIndex;
     } else {
-      output += escapeHtmlText(candidate);
+      const element = buildLegacyMediaElement(parsed);
+      stack[stack.length - 1].element.appendChild(element);
+      if (parsed.tag !== "source" && !parsed.selfClosing) stack.push({ tag: parsed.tag, element });
+      recovered = true;
     }
     cursor = tagEnd + 1;
   }
-  return recovered ? output : null;
+  return recovered ? fragment : null;
 };
 
 const parseInertFragment = (html) => {
@@ -202,9 +264,8 @@ const recoverLegacyEscapedMedia = (root, recoveryBudget) => {
   textNodes.forEach((textNode) => {
     if (recoveryBudget.remaining <= 0 || !textNode.parentNode) return;
     if (textNode.parentElement?.closest("pre, code")) return;
-    const recoveredHtml = recoverLegacyTagsFromText(textNode.nodeValue || "");
-    if (!recoveredHtml) return;
-    const recovered = parseInertFragment(recoveredHtml);
+    const recovered = recoverLegacyMediaFromText(textNode.nodeValue || "");
+    if (!recovered) return;
     dropDangerousSubtrees(recovered);
     textNode.replaceWith(recovered);
     recoveryBudget.remaining -= 1;
@@ -724,17 +785,19 @@ const buildSanitizedFragment = (html, { mode = "display" } = {}) => {
         ? [...HTML_CONTRACT.tags, ...["button"].filter((tag) => IMPORT_TAGS.has(tag))]
         : HTML_CONTRACT.tags,
     };
-    let current = raw;
+    let fragment = parseInertFragment(raw);
+    let previous = raw;
     const recoveryBudget = { remaining: MAX_LEGACY_MEDIA_RECOVERIES };
     for (let pass = 0; pass < MAX_CANONICALIZATION_PASSES; pass += 1) {
-      const fragment = parseInertFragment(current);
       normalizeTree(fragment, canonicalMode, recoveryBudget);
       const cleaned = DOMPurify.sanitize(fragment, purifierConfig);
       const container = document.createElement("div");
       container.appendChild(cleaned.cloneNode(true));
       const next = container.innerHTML;
-      if (next === current) return cleaned;
-      current = next;
+      if (next === previous) return cleaned;
+      previous = next;
+      // Reparse serialized content through the sanitizer, never through template.innerHTML.
+      fragment = DOMPurify.sanitize(next, purifierConfig);
     }
     return document.createDocumentFragment();
   } catch {

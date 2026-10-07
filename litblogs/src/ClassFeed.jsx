@@ -29,17 +29,19 @@ import {
 } from './utils/postRequestContract';
 import RichTextContent from './components/RichTextContent';
 import LitBlogsEditor from './components/LitBlogsEditor';
+import AssignmentResponseContent from './components/AssignmentResponseContent';
 import {
   clonePrivatePostContent,
   loadAssignmentDraft,
   saveAssignmentDraft,
   submitAssignment,
+  uploadAssignmentEditorAsset,
 } from './utils/privateDrafts';
+import { assignmentContentForEditing, assignmentContentForEditor, hasAssignmentResponse } from './utils/assignmentResponse';
 import { usePrivateDrafts } from './context/PrivateDraftContext';
 import { sanitizeRichText } from './utils/richTextSecurity';
 import {
   applyGlobalUserSettings,
-  getEditorFontSizePx,
   getLocalUserSettings,
   normalizeUserSettings,
   saveLocalUserSettings,
@@ -180,6 +182,9 @@ const ClassFeed = () => {
   const [showAssignmentModal, setShowAssignmentModal] = useState(false);
   const [activeAssignment, setActiveAssignment] = useState(null);
   const [assignmentSubmission, setAssignmentSubmission] = useState('');
+  const [assignmentContentFormat, setAssignmentContentFormat] = useState('rich');
+  const [assignmentEditorUploadBusy, setAssignmentEditorUploadBusy] = useState(false);
+  const [assignmentHtmlLength, setAssignmentHtmlLength] = useState(0);
   const [assignmentDraftSavedAt, setAssignmentDraftSavedAt] = useState(null);
   const [assignmentDraftReady, setAssignmentDraftReady] = useState(false);
   const [assignmentDraftStatus, setAssignmentDraftStatus] = useState('idle');
@@ -226,7 +231,17 @@ const ClassFeed = () => {
       }
     : null;
   const rememberDraftsEnabled = userSettings.rememberDrafts !== false;
-  const editorFontSizePx = getEditorFontSizePx(userSettings.editorFontSize);
+  const assignmentEditorTooLong = assignmentContentFormat === 'rich'
+    && assignmentHtmlLength > MAX_POST_HTML_LENGTH;
+  const hasSubmittableAssignmentResponse = assignmentContentFormat === 'plain'
+    ? Boolean(assignmentSubmission.trim())
+    : hasAssignmentResponse(assignmentSubmission);
+  const convertedPlainContent = assignmentContentFormat === 'plain'
+    && assignmentSubmission.length <= MAX_POST_HTML_LENGTH
+    ? assignmentContentForEditor(assignmentSubmission, 'plain')
+    : null;
+  const canSwitchPlainToRich = convertedPlainContent !== null
+    && convertedPlainContent.length <= MAX_POST_HTML_LENGTH;
   assignmentDraftStatusRef.current = assignmentDraftStatus;
   latestPostComposerRef.current = {
     showNewPostForm,
@@ -329,6 +344,8 @@ const ClassFeed = () => {
       || !assignmentDraftReady
       || !assignmentDraftDirty
       || !rememberDraftsEnabled
+      || assignmentEditorUploadBusy
+      || assignmentEditorTooLong
       || assignmentSubmitting
       || assignmentDraftClosing
       || assignmentDraftStatusRef.current === 'error'
@@ -350,6 +367,7 @@ const ClassFeed = () => {
       },
       {
         content: assignmentSubmission,
+        contentFormat: assignmentContentFormat,
         revision: expectedRevision,
         savedAt: assignmentDraftSavedAt,
         dirty: true,
@@ -368,6 +386,7 @@ const ClassFeed = () => {
           },
           {
             content: assignmentSubmission,
+            contentFormat: assignmentContentFormat,
             revision: expectedRevision,
             savedAt: assignmentDraftSavedAt,
             dirty: true,
@@ -381,6 +400,7 @@ const ClassFeed = () => {
             assignmentSubmission,
             expectedRevision,
             { signal: abortController.signal },
+            assignmentContentFormat,
           );
 
           if (requestVersion !== assignmentDraftRequestRef.current) return;
@@ -397,6 +417,7 @@ const ClassFeed = () => {
             },
             {
               content: serverDraft.content,
+              contentFormat: serverDraft.contentFormat,
               revision: serverDraft.revision,
               savedAt: serverDraft.savedAt,
               dirty: false,
@@ -406,6 +427,7 @@ const ClassFeed = () => {
           const nextDraft = serverDraft.hasDraft
             ? {
                 content: serverDraft.content,
+                content_format: serverDraft.contentFormat,
                 updated_at: serverDraft.savedAt,
                 revision: serverDraft.revision,
               }
@@ -440,6 +462,7 @@ const ClassFeed = () => {
               },
               {
                 content: assignmentSubmission,
+                contentFormat: assignmentContentFormat,
                 revision: expectedRevision,
                 savedAt: assignmentDraftSavedAt,
                 dirty: true,
@@ -463,6 +486,9 @@ const ClassFeed = () => {
     };
   }, [
     assignmentSubmission,
+    assignmentContentFormat,
+    assignmentEditorUploadBusy,
+    assignmentEditorTooLong,
     activeAssignmentId,
     assignmentDraftReady,
     assignmentDraftDirty,
@@ -567,6 +593,9 @@ const ClassFeed = () => {
       setShowAssignmentModal(false);
       setActiveAssignment(null);
       setAssignmentSubmission('');
+      setAssignmentContentFormat('rich');
+      setAssignmentEditorUploadBusy(false);
+      setAssignmentHtmlLength(0);
       setAssignmentDraftReady(false);
       setAssignmentDraftSavedAt(null);
       setAssignmentDraftStatus('idle');
@@ -590,6 +619,7 @@ const ClassFeed = () => {
     const hasCurrentRisk = (
       postComposerDirty
       || assignmentDraftDirty
+      || assignmentEditorUploadBusy
       || ['pending', 'saving'].includes(assignmentDraftStatus)
       || hasRiskyDrafts({ userId: postDraftUserId })
     );
@@ -603,6 +633,7 @@ const ClassFeed = () => {
     return () => window.removeEventListener('beforeunload', protectRefresh);
   }, [
     assignmentDraftDirty,
+    assignmentEditorUploadBusy,
     assignmentDraftStatus,
     hasRiskyDrafts,
     postComposerDirty,
@@ -763,15 +794,16 @@ const ClassFeed = () => {
     ));
   };
 
-  const handleAssignmentSubmissionChange = (event) => {
-    const nextContent = event.target.value;
+  const handleAssignmentSubmissionChange = (nextContent, nextFormat = assignmentContentFormat) => {
     setAssignmentSubmission(nextContent);
+    setAssignmentContentFormat(nextFormat);
     setAssignmentDraftDirty(true);
     const nextStatus = rememberDraftsEnabled ? 'pending' : 'memory-only';
     setAssignmentDraftStatus(nextStatus);
     if (activeAssignmentMemoryContext) {
       saveAssignmentMemory(activeAssignmentMemoryContext, {
         content: nextContent,
+        contentFormat: nextFormat,
         revision: assignmentDraftRevision,
         savedAt: assignmentDraftSavedAt,
         dirty: true,
@@ -810,6 +842,9 @@ const ClassFeed = () => {
     setShowAssignmentModal(false);
     setActiveAssignment(null);
     setAssignmentSubmission('');
+    setAssignmentContentFormat('rich');
+    setAssignmentEditorUploadBusy(false);
+    setAssignmentHtmlLength(0);
     setAssignmentDraftReady(false);
     setAssignmentDraftSavedAt(null);
     setAssignmentDraftStatus('idle');
@@ -827,6 +862,14 @@ const ClassFeed = () => {
   };
 
   const closeAssignmentModal = async () => {
+    if (assignmentEditorUploadBusy) return;
+    if (assignmentEditorTooLong) {
+      if (confirm('This response is too large to save. Discard unsaved changes and close?')) {
+        if (activeAssignmentMemoryContext) removeAssignmentMemory(activeAssignmentMemoryContext);
+        dismissAssignmentModal();
+      }
+      return;
+    }
     if (
       !rememberDraftsEnabled
       || !assignmentDraftReady
@@ -851,6 +894,7 @@ const ClassFeed = () => {
         assignmentSubmission,
         assignmentDraftRevision,
         { signal: abortController.signal },
+        assignmentContentFormat,
       );
       if (!isCurrentAssignmentRequest(requestContext, requestVersion)) return;
 
@@ -859,6 +903,7 @@ const ClassFeed = () => {
         serverDraft.hasDraft
           ? {
               content: serverDraft.content,
+              content_format: serverDraft.contentFormat,
               updated_at: serverDraft.savedAt,
               revision: serverDraft.revision,
             }
@@ -877,6 +922,7 @@ const ClassFeed = () => {
       setAssignmentDraftStatus('error');
       saveAssignmentMemory(requestContext, {
         content: assignmentSubmission,
+        contentFormat: assignmentContentFormat,
         revision: assignmentDraftRevision,
         savedAt: assignmentDraftSavedAt,
         dirty: true,
@@ -908,6 +954,8 @@ const ClassFeed = () => {
     assignmentDraftAbortRef.current = null;
     const requestVersion = ++assignmentDraftRequestRef.current;
     const fallbackContent = assignment.my_draft?.content || assignment.my_submission?.content || '';
+    const fallbackFormat = assignment.my_draft?.content_format
+      || assignment.my_submission?.content_format || 'plain';
     const fallbackSavedAt = assignment.my_draft?.updated_at || null;
     const fallbackRevision = assignment.my_draft?.revision ?? assignment.my_draft_revision ?? 0;
     const memoryContext = {
@@ -929,7 +977,14 @@ const ClassFeed = () => {
     );
 
     setActiveAssignment(assignment);
-    setAssignmentSubmission(remembered?.content ?? fallbackContent);
+    const initialEditingContent = assignmentContentForEditing(
+      remembered?.content ?? fallbackContent,
+      remembered?.contentFormat ?? fallbackFormat,
+    );
+    setAssignmentSubmission(initialEditingContent.content);
+    setAssignmentContentFormat(initialEditingContent.contentFormat);
+    setAssignmentEditorUploadBusy(false);
+    setAssignmentHtmlLength(0);
     setAssignmentDraftSavedAt(remembered?.savedAt ?? fallbackSavedAt);
     setAssignmentDraftRevision(remembered?.revision ?? fallbackRevision);
     setShowAssignmentModal(true);
@@ -961,13 +1016,19 @@ const ClassFeed = () => {
       const recoveredContent = serverDraft.hasDraft
         ? serverDraft.content
         : (assignment.my_submission?.content || '');
-      setAssignmentSubmission(recoveredContent);
+      const recoveredFormat = serverDraft.hasDraft
+        ? serverDraft.contentFormat
+        : (assignment.my_submission?.content_format || 'plain');
+      const recoveredEditingContent = assignmentContentForEditing(recoveredContent, recoveredFormat);
+      setAssignmentSubmission(recoveredEditingContent.content);
+      setAssignmentContentFormat(recoveredEditingContent.contentFormat);
       setAssignmentDraftSavedAt(serverDraft.savedAt);
       setAssignmentDraftRevision(serverDraft.revision);
       setAssignmentDraftDirty(false);
       setAssignmentDraftStatus(serverDraft.hasDraft ? 'saved' : 'idle');
       saveAssignmentMemory(memoryContext, {
-        content: recoveredContent,
+        content: recoveredEditingContent.content,
+        contentFormat: recoveredEditingContent.contentFormat,
         revision: serverDraft.revision,
         savedAt: serverDraft.savedAt,
         dirty: false,
@@ -978,6 +1039,7 @@ const ClassFeed = () => {
         serverDraft.hasDraft
           ? {
               content: serverDraft.content,
+              content_format: serverDraft.contentFormat,
               updated_at: serverDraft.savedAt,
               revision: serverDraft.revision,
             }
@@ -987,8 +1049,10 @@ const ClassFeed = () => {
     } catch {
       if (requestVersion === assignmentDraftRequestRef.current) {
         setAssignmentDraftStatus('error');
+        const fallbackEditingContent = assignmentContentForEditing(fallbackContent, fallbackFormat);
         saveAssignmentMemory(memoryContext, {
-          content: fallbackContent,
+          content: fallbackEditingContent.content,
+          contentFormat: fallbackEditingContent.contentFormat,
           revision: fallbackRevision,
           savedAt: fallbackSavedAt,
           dirty: false,
@@ -1011,7 +1075,12 @@ const ClassFeed = () => {
   };
 
   const handleSubmitAssignment = async () => {
-    if (!activeAssignment) return;
+    if (
+      !activeAssignment
+      || assignmentEditorUploadBusy
+      || assignmentEditorTooLong
+      || !hasSubmittableAssignmentResponse
+    ) return;
     assignmentDraftAbortRef.current?.abort();
     const requestVersion = ++assignmentDraftRequestRef.current;
     const requestContext = assignmentRequestContext(activeAssignment.id);
@@ -1027,6 +1096,7 @@ const ClassFeed = () => {
         assignmentSubmission,
         assignmentDraftRevision,
         { signal: abortController.signal },
+        assignmentContentFormat,
       );
     } catch (error) {
       const requestIsCurrent = isCurrentAssignmentRequest(
@@ -1047,6 +1117,7 @@ const ClassFeed = () => {
       setAssignmentDraftDirty(true);
       saveAssignmentMemory(requestContext, {
         content: assignmentSubmission,
+        contentFormat: assignmentContentFormat,
         revision: assignmentDraftRevision,
         savedAt: assignmentDraftSavedAt,
         dirty: true,
@@ -1905,6 +1976,14 @@ const ClassFeed = () => {
                           </span>
                         </div>
                       )}
+                      {submission?.content && (
+                        <div className="mt-3 rounded-lg border border-gray-100 p-3 text-sm">
+                          <AssignmentResponseContent
+                            content={submission.content}
+                            contentFormat={submission.content_format}
+                          />
+                        </div>
+                      )}
 
                     </div>
                   );
@@ -2275,7 +2354,7 @@ const ClassFeed = () => {
                 initial={{ scale: 0.9, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1 }}
                 exit={{ scale: 0.9, opacity: 0 }}
-                className="bg-white rounded-lg p-6 max-w-5xl w-full shadow-xl text-gray-900"
+                className="bg-white rounded-lg p-6 max-w-5xl w-full shadow-xl max-h-[90vh] overflow-y-auto text-gray-900"
               >
                 <div className="mb-4">
                   <h3 className="text-xl font-semibold">{activeAssignment.title}</h3>
@@ -2303,7 +2382,7 @@ const ClassFeed = () => {
                       </div>
                     </div>
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <div className="mb-2 flex items-center justify-between text-sm">
                       <span className="font-medium text-gray-700">Your Response</span>
                       <span className="text-xs text-gray-500">
@@ -2324,31 +2403,76 @@ const ClassFeed = () => {
                           : 'Draft autosaves securely to your account'}
                       </span>
                     </div>
-                    <textarea
-                      value={assignmentSubmission}
-                      onChange={handleAssignmentSubmissionChange}
-                      disabled={!assignmentDraftReady || assignmentDraftClosing || assignmentSubmitting}
-                      rows={14}
-                      placeholder="Write your submission..."
-                      className="w-full min-h-[320px] p-3 rounded-lg border bg-white border-gray-300 text-gray-900"
-                      style={{ fontSize: `${editorFontSizePx}px` }}
-                    />
+                    {assignmentContentFormat === 'plain' ? (
+                      <>
+                        <textarea
+                          aria-label="Assignment response"
+                          value={assignmentSubmission}
+                          onChange={(event) => handleAssignmentSubmissionChange(event.target.value, 'plain')}
+                          disabled={!assignmentDraftReady || assignmentDraftClosing || assignmentSubmitting}
+                          maxLength={1_000_000}
+                          rows={14}
+                          className="w-full min-h-[320px] rounded-lg border border-gray-300 bg-white p-3 text-gray-900"
+                        />
+                        <p className="mt-2 text-sm text-amber-800">
+                          This older response is too long for the formatted editor. You can keep editing,
+                          saving, and submitting it as plain text. Shorten it to use formatting and media.
+                        </p>
+                        {canSwitchPlainToRich && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAssignmentHtmlLength(convertedPlainContent.length);
+                              handleAssignmentSubmissionChange(convertedPlainContent, 'rich');
+                            }}
+                            disabled={!assignmentDraftReady || assignmentDraftClosing || assignmentSubmitting}
+                            className="mt-2 rounded-lg bg-blue-50 px-3 py-2 text-sm font-medium text-blue-700"
+                          >
+                            Use formatted editor
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <LitBlogsEditor
+                          key={activeAssignment.id}
+                          value={assignmentSubmission}
+                          onChange={handleAssignmentSubmissionChange}
+                          disabled={!assignmentDraftReady || assignmentDraftClosing || assignmentSubmitting}
+                          editorFontSize={userSettings.editorFontSize}
+                          ariaLabel="Assignment response"
+                          allowExistingImages={false}
+                          uploadAsset={(options) => uploadAssignmentEditorAsset(axios, activeAssignment.id, options)}
+                          onUploadStateChange={setAssignmentEditorUploadBusy}
+                          onContentLimitChange={({ length }) => setAssignmentHtmlLength(length)}
+                        />
+                        <p className="mt-2 text-xs text-gray-500">
+                          Format your response and add images, videos, links, or PDFs using the toolbar.
+                        </p>
+                      </>
+                    )}
+                    {assignmentEditorTooLong && (
+                      <p role="alert" className="mt-2 text-sm text-rose-700">
+                        This response is too large. Remove some content before saving or submitting,
+                        or use Cancel to discard unsaved changes and close.
+                      </p>
+                    )}
                   </div>
                 </div>
                 <div className="mt-4 flex justify-end gap-3">
                   {assignmentDraftStatus === 'error' && !assignmentDraftDirty && (
                     <button
                       onClick={retryAssignmentDraftLoad}
-                      disabled={assignmentDraftClosing || assignmentSubmitting}
+                      disabled={assignmentDraftClosing || assignmentSubmitting || assignmentEditorUploadBusy}
                       className="px-4 py-2 rounded-lg bg-amber-100 text-amber-700"
                     >
                       Retry loading
                     </button>
                   )}
-                  {assignmentDraftStatus === 'error' && assignmentDraftDirty && (
+                  {(assignmentDraftStatus === 'error' && assignmentDraftDirty || assignmentEditorTooLong) && (
                     <button
                       onClick={discardUnsavedAssignmentChanges}
-                      disabled={assignmentDraftClosing || assignmentSubmitting}
+                      disabled={assignmentDraftClosing || assignmentSubmitting || assignmentEditorUploadBusy}
                       className="px-4 py-2 rounded-lg bg-rose-100 text-rose-700"
                     >
                       Discard unsaved changes
@@ -2356,14 +2480,14 @@ const ClassFeed = () => {
                   )}
                   <button
                     onClick={closeAssignmentModal}
-                    disabled={assignmentDraftClosing || assignmentSubmitting}
+                    disabled={assignmentDraftClosing || assignmentSubmitting || assignmentEditorUploadBusy}
                     className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700"
                   >
                     {assignmentDraftClosing ? 'Saving...' : 'Cancel'}
                   </button>
                   <button
                     onClick={handleSubmitAssignment}
-                    disabled={assignmentSubmitting || assignmentDraftClosing || !assignmentDraftReady}
+                    disabled={assignmentSubmitting || assignmentDraftClosing || assignmentEditorUploadBusy || assignmentEditorTooLong || !assignmentDraftReady || !hasSubmittableAssignmentResponse}
                     className="px-4 py-2 rounded-lg text-white bg-blue-600 hover:bg-blue-500"
                   >
                     {assignmentSubmitting ? 'Submitting...' : 'Submit'}

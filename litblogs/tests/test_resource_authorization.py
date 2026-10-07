@@ -1091,6 +1091,54 @@ def test_private_assignment_is_not_sent_to_enrolled_student_push_subscriptions(
     assert all("Teacher planning notes" not in payload["body"] for payload in delivered_payloads)
 
 
+def test_archived_assignment_does_not_send_student_reminders(
+    client,
+    authorization_scenario,
+    monkeypatch,
+):
+    scenario = authorization_scenario
+    with SessionLocal() as db:
+        db.add(models.UserSettings(
+            user_id=scenario["student_a"],
+            email_notifications=True,
+            assignment_reminders=True,
+        ))
+        db.add(models.PushSubscription(
+            user_id=scenario["student_a"],
+            endpoint="https://fcm.googleapis.com/fcm/send/archived-assignment",
+            p256dh="student-key",
+            auth="student-auth",
+        ))
+        assignment = models.Assignment(
+            class_id=scenario["class_a"],
+            title="Soon to be hidden",
+            due_date=datetime.now(UTC) + timedelta(hours=1),
+            created_by=scenario["teacher_a"],
+            allow_late=True,
+            visibility="class",
+        )
+        db.add(assignment)
+        db.commit()
+        db.refresh(assignment)
+        assignment_id = assignment.id
+
+    response = client.delete(
+        f"/api/classes/{scenario['class_a']}/assignments/{assignment_id}",
+        headers=scenario["teacher_a_headers"],
+    )
+    assert response.status_code == 200
+
+    delivered_payloads = []
+    monkeypatch.setattr(main, "WEB_PUSH_ENABLED", True)
+    monkeypatch.setattr(
+        main,
+        "_send_web_push",
+        lambda _subscription, payload: delivered_payloads.append(payload) or True,
+    )
+    assert main._dispatch_assignment_push_reminders_once() is True
+    assert delivered_payloads == []
+
+
 def test_push_subscription_endpoint_cannot_be_taken_over_by_another_user(
     client,
     authorization_scenario,
@@ -1574,6 +1622,133 @@ def test_student_and_teacher_assignment_journey(client, authorization_scenario):
     assert teacher_reply.status_code == 200
     assert student_replies.status_code == 200
     assert student_replies.json()[0]["content"] == "Private teacher response"
+
+
+def test_teacher_can_hide_and_restore_assignment_without_erasing_student_work(
+    client,
+    authorization_scenario,
+):
+    scenario = authorization_scenario
+    class_id = scenario["class_a"]
+    assignment_id = scenario["assignment_a"]
+    assignment_url = f"/api/classes/{class_id}/assignments/{assignment_id}"
+    list_url = f"/api/classes/{class_id}/assignments"
+
+    with SessionLocal() as db:
+        db.add(models.AssignmentDraft(
+            assignment_id=assignment_id,
+            student_id=scenario["student_a"],
+            content="Unsubmitted private schoolwork",
+            revision=1,
+        ))
+        db.commit()
+
+    remove_response = client.delete(
+        assignment_url,
+        headers=scenario["teacher_a_headers"],
+    )
+    assert remove_response.status_code == 200
+    assert remove_response.json()["archived_at"]
+
+    for headers in (scenario["student_a_headers"], scenario["teacher_a_headers"]):
+        response = client.get(list_url, headers=headers)
+        assert response.status_code == 200
+        assert assignment_id not in {item["id"] for item in response.json()}
+
+    archived = client.get(
+        f"{list_url}?include_archived=true",
+        headers=scenario["teacher_a_headers"],
+    )
+    assert archived.status_code == 200
+    assert assignment_id in {item["id"] for item in archived.json() if item["archived_at"]}
+    analytics = client.get(
+        f"/api/classes/{class_id}/analytics",
+        headers=scenario["teacher_a_headers"],
+    )
+    assert analytics.status_code == 200
+    assert assignment_id not in {item["id"] for item in analytics.json()["assignment_stats"]}
+
+    student_archived = client.get(
+        f"{list_url}?include_archived=true",
+        headers=scenario["student_a_headers"],
+    )
+    assert student_archived.status_code == 403
+
+    student_draft = client.get(
+        f"/api/assignments/{assignment_id}/draft",
+        headers=scenario["student_a_headers"],
+    )
+    student_save = client.put(
+        f"/api/assignments/{assignment_id}/draft",
+        headers=scenario["student_a_headers"],
+        json={"content": "Attempted edit", "expected_revision": 1},
+    )
+    student_submit = client.post(
+        f"/api/assignments/{assignment_id}/submit",
+        headers=scenario["student_a_headers"],
+        json={"content": "Attempted submission", "expected_draft_revision": 1},
+    )
+    student_submissions = client.get(
+        f"{assignment_url}/submissions",
+        headers=scenario["student_a_headers"],
+    )
+    assert [response.status_code for response in (
+        student_draft, student_save, student_submit, student_submissions,
+    )] == [404] * 4
+
+    teacher_submissions = client.get(
+        f"{assignment_url}/submissions",
+        headers=scenario["teacher_a_headers"],
+    )
+    assert teacher_submissions.status_code == 200
+    assert {item["id"] for item in teacher_submissions.json()} == {
+        scenario["submission_a"], scenario["submission_b"],
+    }
+
+    with SessionLocal() as db:
+        assignment = db.get(models.Assignment, assignment_id)
+        draft = db.query(models.AssignmentDraft).filter_by(
+            assignment_id=assignment_id,
+            student_id=scenario["student_a"],
+        ).one()
+        assert assignment is not None
+        assert draft.content == "Unsubmitted private schoolwork"
+        assert db.get(models.AssignmentSubmission, scenario["submission_a"]) is not None
+
+    restore_response = client.post(
+        f"{assignment_url}/restore",
+        headers=scenario["teacher_a_headers"],
+    )
+    assert restore_response.status_code == 200
+    assert restore_response.json()["archived_at"] is None
+    visible = client.get(list_url, headers=scenario["student_a_headers"])
+    assert assignment_id in {item["id"] for item in visible.json()}
+    recovered_draft = client.get(
+        f"/api/assignments/{assignment_id}/draft",
+        headers=scenario["student_a_headers"],
+    )
+    assert recovered_draft.status_code == 200
+    assert recovered_draft.json()["content"] == "Unsubmitted private schoolwork"
+
+
+def test_only_class_owner_or_admin_can_remove_assignment(client, authorization_scenario):
+    scenario = authorization_scenario
+    url = (
+        f"/api/classes/{scenario['class_a']}/assignments/"
+        f"{scenario['assignment_a']}"
+    )
+    for headers in (scenario["student_a_headers"], scenario["teacher_b_headers"]):
+        response = client.delete(url, headers=headers)
+        assert response.status_code in {403, 404}
+
+    wrong_class = client.delete(
+        f"/api/classes/{scenario['class_b']}/assignments/{scenario['assignment_a']}",
+        headers=scenario["admin_headers"],
+    )
+    assert wrong_class.status_code == 404
+
+    admin = client.delete(url, headers=scenario["admin_headers"])
+    assert admin.status_code == 200
 
 
 def _create_private_assignment(client, scenario):

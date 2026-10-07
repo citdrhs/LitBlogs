@@ -57,7 +57,7 @@ UTC_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
 IDENTITY_RESULT = re.compile(r"^ok:([0-9]+)$")
 PSQL_VARIABLE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 MAX_MANIFEST_BYTES = 16 * 1024
-EXPECTED_ALEMBIC_HEAD = "c8f21d9a6b70"
+EXPECTED_ALEMBIC_HEAD = "e6f8c2d1a904"
 BACKEND_ROOT = Path(__file__).resolve().parents[2] / "litblogs"
 OPERATOR_ROUTINE_MIGRATIONS = (
     (
@@ -429,7 +429,8 @@ expected_foreign_keys(
         ('comment_likes', 'comment_id', 'comments', 'id'),
         ('comment_likes', 'user_id', 'users', 'id'),
         ('upload_assets', 'owner_user_id', 'users', 'id'),
-        ('upload_assets', 'blog_id', 'blogs', 'id')
+        ('upload_assets', 'blog_id', 'blogs', 'id'),
+        ('upload_assets', 'assignment_id', 'assignments', 'id')
 ),
 actual_foreign_keys AS (
     SELECT

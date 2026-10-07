@@ -88,6 +88,34 @@ describe("sanitizeRichText", () => {
     expect(fragment.querySelector("[onplay], [onerror]")).toBeNull();
   });
 
+  it("keeps non-media markup inert inside recovered legacy media", () => {
+    const fragment = parse(sanitizeRichText(`
+      &lt;figure class=&quot;video-container&quot;&gt;
+        &lt;video controls preload=&quot;metadata&quot; width=&quot;640&quot; onplay=&quot;window.__xss=true&quot;&gt;
+          &lt;img src=&quot;${IMAGE_URL}&quot; onerror=&quot;window.__xss=true&quot;&gt;
+          &lt;source src=&quot;${VIDEO_URL}&quot; type=&quot;video/mp4&quot;&gt;
+        &lt;/video&gt;
+      &lt;/figure&gt;
+    `));
+
+    expect(fragment.querySelector("figure.video-container video source")?.getAttribute("src")).toBe(VIDEO_URL);
+    expect(fragment.querySelector("video")?.getAttribute("width")).toBe("640");
+    expect(fragment.querySelector("video")?.getAttribute("preload")).toBe("metadata");
+    expect(fragment.querySelector("img, [onplay], [onerror]")).toBeNull();
+    expect(fragment.textContent).toContain("<img src=");
+  });
+
+  it("leaves malformed encoded media as text", () => {
+    const fragment = parse(sanitizeRichText(`
+      &lt;video src=&quot;${VIDEO_URL}&quot; &lt;img onerror=&quot;window.__xss=true&quot;&gt;
+      &lt;/video&gt;
+    `));
+
+    expect(fragment.querySelector("video, img, [onerror]")).toBeNull();
+    expect(fragment.textContent).toContain("<video src=");
+    expect(fragment.textContent).toContain("<img onerror=");
+  });
+
   it("stays non-executable across repeated legacy entity normalization", () => {
     let normalized = `
       &lt;video controls&gt;&lt;source src=&quot;${VIDEO_URL}&quot; type=&quot;video/mp4&quot;&gt;&lt;/video&gt;

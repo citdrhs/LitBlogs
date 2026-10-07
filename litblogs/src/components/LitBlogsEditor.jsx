@@ -76,6 +76,9 @@ const LitBlogsEditor = ({
   disabled = false,
   onUploadStateChange,
   onContentLimitChange,
+  uploadAsset = uploadEditorAsset,
+  allowExistingImages = true,
+  ariaLabel = "Post content",
   onInsertImage,
   onInsertVideo,
   onInsertPdf,
@@ -83,6 +86,7 @@ const LitBlogsEditor = ({
   const onChangeRef = useRef(onChange);
   const onUploadStateChangeRef = useRef(onUploadStateChange);
   const onContentLimitChangeRef = useRef(onContentLimitChange);
+  const uploadAssetRef = useRef(uploadAsset);
   const editorRef = useRef(null);
   const editorRootRef = useRef(null);
   const imageInputRef = useRef(null);
@@ -129,6 +133,7 @@ const LitBlogsEditor = ({
 
   onUploadStateChangeRef.current = onUploadStateChange;
   onContentLimitChangeRef.current = onContentLimitChange;
+  uploadAssetRef.current = uploadAsset;
   disabledRef.current = disabled;
 
   const reportContentLimit = useCallback((rawHtml) => {
@@ -161,7 +166,7 @@ const LitBlogsEditor = ({
     editable: !disabled,
     editorProps: {
       attributes: {
-        "aria-label": "Post content",
+        "aria-label": ariaLabel,
         "aria-multiline": "true",
         class: "litblogs-editor__document rich-text-content",
         role: "textbox",
@@ -198,7 +203,7 @@ const LitBlogsEditor = ({
     onUploadStateChangeRef.current?.(true);
     setUploadState({ kind, progress: 0 });
     try {
-      const asset = await uploadEditorAsset({
+      const asset = await uploadAssetRef.current({
         file,
         kind,
         signal: controller.signal,
@@ -212,7 +217,7 @@ const LitBlogsEditor = ({
       });
       if (!mountedRef.current || controller.signal.aborted || disabledRef.current) return false;
       if (!insertEditorAsset(editorRef.current, asset)) {
-        setUploadError("The uploaded file could not be added to the post.");
+        setUploadError("The uploaded file could not be added to the editor.");
         return false;
       }
       return true;
@@ -305,6 +310,10 @@ const LitBlogsEditor = ({
 
   const editorFontSizePx = getEditorFontSizePx(editorFontSize);
   const chooseImage = onInsertImage || (() => {
+    if (!allowExistingImages) {
+      imageInputRef.current?.click();
+      return;
+    }
     imageDialogInvokerRef.current = document.activeElement;
     setUploadError("");
     setImageUrl("");

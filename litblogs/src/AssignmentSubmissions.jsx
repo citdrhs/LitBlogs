@@ -1,15 +1,30 @@
 import { storageKey } from "./utils/browserStorage";
 import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import axios from 'axios';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
 import Loader from './components/Loader';
+import AssignmentResponseContent from './components/AssignmentResponseContent';
 import { logoutBrowserSession } from './utils/auth';
 
 const AssignmentSubmissions = () => {
   const { classId, assignmentId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  const handleBack = () => {
+    if (location.state?.selectedClass) {
+      navigate('/teacher-dashboard', {
+        state: {
+          selectedClass: location.state.selectedClass,
+          classDetailsTab: location.state.classDetailsTab || 'Assignments',
+        },
+      });
+      return;
+    }
+    navigate(`/class-feed/${classId}`);
+  };
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -31,7 +46,7 @@ const AssignmentSubmissions = () => {
       }
 
       const [assignmentsResponse, submissionsResponse] = await Promise.all([
-        axios.get(`/classes/${classId}/assignments`),
+        axios.get(`/classes/${classId}/assignments?include_archived=true`),
         axios.get(`/classes/${classId}/assignments/${assignmentId}/submissions`)
       ]);
 
@@ -116,7 +131,7 @@ const AssignmentSubmissions = () => {
             )}
           </div>
           <button
-            onClick={() => navigate(`/class-feed/${classId}`)}
+            onClick={handleBack}
             className={`px-4 py-2 rounded-lg ${darkMode ? 'bg-gray-700 text-gray-200' : 'bg-white text-gray-700 border border-gray-300'}`}
           >
             Back to Class
@@ -149,7 +164,15 @@ const AssignmentSubmissions = () => {
                   </div>
                 </div>
 
-                <p className="text-sm whitespace-pre-wrap mb-3">{submission.content || 'No content provided.'}</p>
+                <div className="text-sm mb-3">
+                  {submission.content ? (
+                    <AssignmentResponseContent
+                      content={submission.content}
+                      contentFormat={submission.content_format}
+                      dark={darkMode}
+                    />
+                  ) : 'No content provided.'}
+                </div>
 
                 <div className="space-y-2 mb-3">
                   {(submission.replies || []).map((reply) => (

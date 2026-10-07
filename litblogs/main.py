@@ -138,8 +138,10 @@ from upload_assets import (
     open_verified_registered_object,
     post_asset_keys,
     queue_assets,
+    queue_assignment_assets,
     queue_blog_assets,
     queue_owner_assets,
+    sync_assignment_assets,
     validate_structured_upload_references,
 )
 from upload_assets import (
@@ -437,6 +439,15 @@ def _upload_request_body_limit(scope: dict) -> int | None:
         "/api/user/upload-cover-image": MAX_IMAGE_UPLOAD_BYTES,
     }
     file_limit = upload_limits.get(path)
+    assignment_upload = re.fullmatch(
+        r"/api/assignments/[0-9]+/upload/(image|video|file)", path,
+    )
+    if assignment_upload:
+        file_limit = {
+            "image": MAX_IMAGE_UPLOAD_BYTES,
+            "video": MAX_VIDEO_UPLOAD_BYTES,
+            "file": MAX_PDF_UPLOAD_BYTES,
+        }[assignment_upload.group(1)]
     if file_limit is None:
         return None
     return file_limit + UPLOAD_REQUEST_OVERHEAD_BYTES
@@ -1417,6 +1428,7 @@ def _dispatch_assignment_push_reminders_once() -> bool:
                 .filter(
                     models.Assignment.class_id.in_(class_ids),
                     models.Assignment.visibility == "class",
+                    models.Assignment.archived_at.is_(None),
                 )
                 .all()
             )
@@ -2932,7 +2944,13 @@ def _rollback_upload_session(db: Session) -> None:
         pass
 
 
-def _pending_upload_commit_is_visible(stored: StoredUpload, owner_user_id: int) -> bool:
+def _pending_upload_commit_is_visible(
+    stored: StoredUpload,
+    owner_user_id: int,
+    *,
+    purpose: str = "POST",
+    assignment_id: int | None = None,
+) -> bool:
     try:
         with SessionLocal() as verification_db:
             asset = (
@@ -2943,7 +2961,8 @@ def _pending_upload_commit_is_visible(stored: StoredUpload, owner_user_id: int) 
             return bool(
                 asset is not None
                 and asset.owner_user_id == owner_user_id
-                and asset.purpose == "POST"
+                and asset.purpose == purpose
+                and asset.assignment_id == assignment_id
                 and asset.state in {"PENDING", "ACTIVE"}
                 and asset.media_type == stored.spec.media_type
                 and asset.size_bytes == stored.size
@@ -3010,6 +3029,8 @@ async def _register_pending_upload(
     allowed_kinds: set[str],
     db: Session,
     current_user: models.User,
+    purpose: str = "POST",
+    assignment_id: int | None = None,
 ) -> StoredUpload:
     prepared = None
     stored = None
@@ -3017,6 +3038,18 @@ async def _register_pending_upload(
         prepared = await _save_validated_upload(file, allowed_kinds=allowed_kinds)
         now = _utc_now_aware()
         configure_upload_transaction(db)
+        if purpose == "ASSIGNMENT_MEDIA":
+            # Match draft/submit lock order. The assignment foreign key also
+            # takes a key-share lock when the pending registry row is inserted.
+            assignment = db.query(models.Assignment).filter(
+                models.Assignment.id == assignment_id,
+            ).with_for_update().first()
+            if assignment is None:
+                raise HTTPException(status_code=404, detail="Assignment not found")
+            if current_user.role != models.UserRole.STUDENT:
+                raise HTTPException(status_code=403, detail="Only students can attach assignment media")
+            _ensure_assignment_visible_to_student(current_user, assignment)
+            _ensure_active_class_access(db, current_user, assignment.class_id)
         _lock_upload_owner(db, current_user.id)
         enforce_rate_limit(db, current_user.id, now=now)
         enforce_quota(db, current_user.id, prepared.size)
@@ -3026,6 +3059,8 @@ async def _register_pending_upload(
             owner_user_id=current_user.id,
             stored=stored,
             now=now,
+            purpose=purpose,
+            assignment_id=assignment_id,
         )
         db.commit()
         return stored
@@ -3036,6 +3071,8 @@ async def _register_pending_upload(
             _pending_upload_commit_is_visible,
             stored,
             current_user.id,
+            purpose=purpose,
+            assignment_id=assignment_id,
         ):
             return stored
         if stored is not None or (
@@ -3058,6 +3095,38 @@ async def upload_image(
         current_user=current_user,
     )
     return {"url": stored.url}
+
+@app.post("/api/assignments/{assignment_id}/upload/{kind}")
+async def upload_assignment_media(
+    assignment_id: int,
+    kind: Literal["image", "video", "file"],
+    response: Response,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """Stage scanned media for the student's private assignment response."""
+    _set_private_no_store(response)
+    if current_user.role != models.UserRole.STUDENT:
+        raise HTTPException(status_code=403, detail="Only students can attach assignment media")
+    assignment = db.query(models.Assignment).filter(
+        models.Assignment.id == assignment_id,
+        models.Assignment.archived_at.is_(None),
+    ).first()
+    if assignment is None:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    _ensure_assignment_visible_to_student(current_user, assignment)
+    _ensure_active_class_access(db, current_user, assignment.class_id)
+    stored = await _register_pending_upload(
+        file,
+        allowed_kinds={"file": {"pdf"}, "image": {"image"}, "video": {"video"}}[kind],
+        db=db,
+        current_user=current_user,
+        purpose="ASSIGNMENT_MEDIA",
+        assignment_id=assignment_id,
+    )
+    return {"url": stored.url}
+
 
 @app.post("/api/upload/video")
 async def upload_video(
@@ -3309,9 +3378,11 @@ async def update_assignment(
     db_assignment = db.query(models.Assignment).filter(
         models.Assignment.id == assignment_id,
         models.Assignment.class_id == class_id
-    ).first()
+    ).with_for_update().first()
     if not db_assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
+    if db_assignment.archived_at is not None:
+        raise HTTPException(status_code=409, detail="Restore this assignment before editing it")
 
     visibility = assignment.visibility or db_assignment.visibility or "class"
     if visibility not in ["class", "private"]:
@@ -3337,6 +3408,46 @@ async def update_assignment(
         "allow_late": db_assignment.allow_late,
         "visibility": db_assignment.visibility
     }
+
+
+@app.delete("/api/classes/{class_id}/assignments/{assignment_id}")
+async def archive_assignment(
+    class_id: int,
+    assignment_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    _ensure_active_class_owner(db, current_user, class_id)
+    db_assignment = db.query(models.Assignment).filter(
+        models.Assignment.id == assignment_id,
+        models.Assignment.class_id == class_id,
+    ).with_for_update().first()
+    if db_assignment is None:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    if db_assignment.archived_at is None:
+        db_assignment.archived_at = _utc_now_aware()
+        db.commit()
+    return {"id": db_assignment.id, "archived_at": db_assignment.archived_at}
+
+
+@app.post("/api/classes/{class_id}/assignments/{assignment_id}/restore")
+async def restore_assignment(
+    class_id: int,
+    assignment_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    _ensure_active_class_owner(db, current_user, class_id)
+    db_assignment = db.query(models.Assignment).filter(
+        models.Assignment.id == assignment_id,
+        models.Assignment.class_id == class_id,
+    ).with_for_update().first()
+    if db_assignment is None:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    if db_assignment.archived_at is not None:
+        db_assignment.archived_at = None
+        db.commit()
+    return {"id": db_assignment.id, "archived_at": db_assignment.archived_at}
 
 _PRIVATE_ASSIGNMENT_MUTATION_PATH = re.compile(
     r"^/api/assignments/[^/]+/(?P<operation>draft|submit)/?$"
@@ -3376,11 +3487,13 @@ def _advance_assignment_draft_tombstone(
             assignment_id=assignment_id,
             student_id=student_id,
             content=None,
+            content_format="plain",
             revision=1,
         )
         db.add(draft)
     else:
         draft.content = None
+        draft.content_format = "plain"
         draft.revision += 1
     draft.updated_at = _utc_now_naive()
     return draft
@@ -3390,14 +3503,19 @@ def _advance_assignment_draft_tombstone(
 async def list_assignments(
     class_id: int,
     response: Response,
+    include_archived: bool = Query(default=False),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     _set_private_no_store(response)
     _ensure_class_access(db, current_user, class_id)
+    if include_archived:
+        _ensure_class_owner(db, current_user, class_id)
     assignments_query = db.query(models.Assignment).filter(
         models.Assignment.class_id == class_id
     )
+    if not include_archived:
+        assignments_query = assignments_query.filter(models.Assignment.archived_at.is_(None))
     if current_user.role == models.UserRole.STUDENT:
         assignments_query = assignments_query.filter(
             models.Assignment.visibility == "class"
@@ -3431,18 +3549,21 @@ async def list_assignments(
             "created_by": assignment.created_by,
             "allow_late": assignment.allow_late,
             "visibility": assignment.visibility,
+            "archived_at": assignment.archived_at,
             "stats": stats,
             "my_submission": {
                 "id": submission.id,
                 "submitted_at": submission.submitted_at,
                 "is_late": submission.is_late,
                 "content": submission.content,
+                "content_format": submission.content_format,
                 "ai_percentage": submission.ai_percentage,
                 "ai_highlighted_html": submission.ai_highlighted_html,
                 "ai_sentence_analysis": submission.ai_sentence_analysis
             } if submission else None,
             "my_draft": {
                 "content": draft.content,
+                "content_format": draft.content_format,
                 "updated_at": draft.updated_at,
                 "revision": draft.revision
             } if draft and draft.content else None,
@@ -3458,9 +3579,31 @@ def _ensure_assignment_visible_to_student(
 ) -> None:
     if (
         current_user.role == models.UserRole.STUDENT
-        and assignment.visibility != "class"
+        and (assignment.visibility != "class" or assignment.archived_at is not None)
     ):
         raise HTTPException(status_code=404, detail="Assignment not found")
+
+
+def _assignment_content_and_assets(
+    content: str | None,
+    content_format: Literal["plain", "rich"],
+) -> tuple[str | None, list[str]]:
+    """Keep historical plain responses literal and bind only sanitized rich media."""
+    if content_format == "plain":
+        return content or None, []
+    canonical = sanitize_html(content or "")
+    if len(canonical) > schemas.MAX_RICH_TEXT_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Rich text exceeds the allowed size",
+        )
+    return canonical or None, post_asset_keys(canonical)
+
+
+def _assignment_asset_keys(content: str | None, content_format: str) -> list[str]:
+    if content_format != "rich" or not content:
+        return []
+    return post_asset_keys(content)
 
 @app.get("/api/assignments/{assignment_id}/draft")
 async def get_assignment_draft(
@@ -3487,6 +3630,7 @@ async def get_assignment_draft(
 
     return {
         "content": draft.content if draft and draft.content else "",
+        "content_format": draft.content_format if draft else "plain",
         "saved_at": draft.updated_at if draft and draft.content else None,
         "has_draft": bool(draft and draft.content),
         "revision": draft.revision if draft else 0
@@ -3504,7 +3648,9 @@ async def save_assignment_draft(
     if current_user.role != models.UserRole.STUDENT:
         raise HTTPException(status_code=403, detail="Only students can save assignment drafts")
 
-    assignment = db.query(models.Assignment).filter(models.Assignment.id == assignment_id).first()
+    assignment = db.query(models.Assignment).filter(
+        models.Assignment.id == assignment_id,
+    ).with_for_update().first()
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
@@ -3526,26 +3672,47 @@ async def save_assignment_draft(
     if payload.expected_revision != current_revision:
         raise _draft_revision_conflict()
 
-    content = payload.content if payload.content else None
-
+    content, draft_keys = _assignment_content_and_assets(
+        payload.content, payload.content_format,
+    )
+    existing_submission = db.query(models.AssignmentSubmission).filter(
+        models.AssignmentSubmission.assignment_id == assignment_id,
+        models.AssignmentSubmission.student_id == current_user.id,
+    ).first()
     if not draft:
         draft = models.AssignmentDraft(
             assignment_id=assignment_id,
             student_id=current_user.id,
             content=content,
+            content_format=payload.content_format,
             revision=1,
         )
         db.add(draft)
     else:
         draft.content = content
+        draft.content_format = payload.content_format
         draft.revision += 1
 
     draft.updated_at = _utc_now_naive()
+    sync_assignment_assets(
+        db,
+        assignment_id=assignment_id,
+        student_id=current_user.id,
+        draft_keys=draft_keys,
+        submission_keys=(
+            _assignment_asset_keys(
+                existing_submission.content, existing_submission.content_format,
+            ) if existing_submission else []
+        ),
+        upload_root=UPLOAD_DIR,
+        now=_utc_now_aware(),
+    )
     db.commit()
     db.refresh(draft)
 
     return {
         "content": draft.content or "",
+        "content_format": draft.content_format,
         "saved_at": draft.updated_at if draft.content else None,
         "has_draft": bool(draft.content),
         "revision": draft.revision,
@@ -3563,7 +3730,9 @@ async def submit_assignment(
     if current_user.role != models.UserRole.STUDENT:
         raise HTTPException(status_code=403, detail="Only students can submit assignments")
 
-    assignment = db.query(models.Assignment).filter(models.Assignment.id == assignment_id).first()
+    assignment = db.query(models.Assignment).filter(
+        models.Assignment.id == assignment_id,
+    ).with_for_update().first()
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
@@ -3601,9 +3770,13 @@ async def submit_assignment(
         models.AssignmentSubmission.assignment_id == assignment_id,
         models.AssignmentSubmission.student_id == current_user.id
     ).first()
+    content, submission_keys = _assignment_content_and_assets(
+        submission.content, submission.content_format,
+    )
 
     if existing:
-        existing.content = submission.content
+        existing.content = content
+        existing.content_format = submission.content_format
         existing.submitted_at = submitted_at
         existing.is_late = is_late
         draft = _advance_assignment_draft_tombstone(
@@ -3611,6 +3784,15 @@ async def submit_assignment(
             draft=draft,
             assignment_id=assignment_id,
             student_id=current_user.id,
+        )
+        sync_assignment_assets(
+            db,
+            assignment_id=assignment_id,
+            student_id=current_user.id,
+            draft_keys=[],
+            submission_keys=submission_keys,
+            upload_root=UPLOAD_DIR,
+            now=_utc_now_aware(),
         )
         db.commit()
         db.refresh(existing)
@@ -3622,6 +3804,7 @@ async def submit_assignment(
             "student_id": existing.student_id,
             "submitted_at": existing.submitted_at,
             "content": existing.content,
+            "content_format": existing.content_format,
             "is_late": existing.is_late,
             "ai_percentage": existing.ai_percentage,
             "ai_highlighted_html": existing.ai_highlighted_html,
@@ -3633,7 +3816,8 @@ async def submit_assignment(
         assignment_id=assignment_id,
         student_id=current_user.id,
         submitted_at=submitted_at,
-        content=submission.content,
+        content=content,
+        content_format=submission.content_format,
         is_late=is_late
     )
     db.add(new_submission)
@@ -3642,6 +3826,15 @@ async def submit_assignment(
         draft=draft,
         assignment_id=assignment_id,
         student_id=current_user.id,
+    )
+    sync_assignment_assets(
+        db,
+        assignment_id=assignment_id,
+        student_id=current_user.id,
+        draft_keys=[],
+        submission_keys=submission_keys,
+        upload_root=UPLOAD_DIR,
+        now=_utc_now_aware(),
     )
     db.commit()
     db.refresh(new_submission)
@@ -3653,6 +3846,7 @@ async def submit_assignment(
         "student_id": new_submission.student_id,
         "submitted_at": new_submission.submitted_at,
         "content": new_submission.content,
+        "content_format": new_submission.content_format,
         "is_late": new_submission.is_late,
         "ai_percentage": new_submission.ai_percentage,
         "ai_highlighted_html": new_submission.ai_highlighted_html,
@@ -3664,9 +3858,11 @@ async def submit_assignment(
 async def list_assignment_submissions(
     class_id: int,
     assignment_id: int,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    _set_private_no_store(response)
     _db_class, assignment = _ensure_assignment_for_class(
         db,
         current_user,
@@ -3694,6 +3890,7 @@ async def list_assignment_submissions(
             "student_id": submission.student_id,
             "submitted_at": submission.submitted_at,
             "content": submission.content,
+            "content_format": submission.content_format,
             "is_late": submission.is_late,
             "ai_percentage": submission.ai_percentage,
             "ai_highlighted_html": submission.ai_highlighted_html,
@@ -3830,7 +4027,10 @@ async def get_class_analytics(
         models.Blog.created_at >= start_of_day
     ).distinct().count()
 
-    assignments = db.query(models.Assignment).filter(models.Assignment.class_id == class_id).all()
+    assignments = db.query(models.Assignment).filter(
+        models.Assignment.class_id == class_id,
+        models.Assignment.archived_at.is_(None),
+    ).all()
     assignments_total = len(assignments)
     submissions_total = 0
     on_time_total = 0
@@ -3925,7 +4125,10 @@ async def get_teacher_analytics(
     for class_ in classes:
         total_students = _get_class_student_count(db, class_.id)
         total_posts = db.query(models.Blog).filter(models.Blog.class_id == class_.id).count()
-        assignments = db.query(models.Assignment).filter(models.Assignment.class_id == class_.id).all()
+        assignments = db.query(models.Assignment).filter(
+            models.Assignment.class_id == class_.id,
+            models.Assignment.archived_at.is_(None),
+        ).all()
         start_of_day = datetime.combine(_utc_now_naive().date(), datetime.min.time())
         active_today = db.query(models.Blog.owner_id).filter(
             models.Blog.class_id == class_.id,
@@ -4406,6 +4609,18 @@ def _delete_blogs_with_dependencies(db: Session, blog_ids: List[int]) -> None:
 def _delete_assignments_with_dependencies(db: Session, assignment_ids: List[int]) -> None:
     if not assignment_ids:
         return
+
+    # Draft/submit transactions lock the Assignment before upload assets.
+    # Keep the same lock order when a class or account deletion removes work.
+    assignment_ids = sorted(set(assignment_ids))
+    (
+        db.query(models.Assignment)
+        .filter(models.Assignment.id.in_(assignment_ids))
+        .order_by(models.Assignment.id)
+        .with_for_update(of=models.Assignment)
+        .all()
+    )
+    queue_assignment_assets(db, assignment_ids, now=_utc_now_aware())
 
     db.query(models.AssignmentDraft).filter(
         models.AssignmentDraft.assignment_id.in_(assignment_ids)
@@ -5350,6 +5565,37 @@ def _can_read_upload_asset(
     current_user: models.User,
     asset: models.UploadAsset,
 ) -> bool:
+    if asset.purpose == "ASSIGNMENT_MEDIA":
+        if asset.owner_user_id == current_user.id:
+            return asset.state in {"PENDING", "ACTIVE"}
+        if asset.state != "ACTIVE" or asset.assignment_id is None:
+            return False
+        submitted = db.query(models.AssignmentSubmission).filter(
+            models.AssignmentSubmission.assignment_id == asset.assignment_id,
+            models.AssignmentSubmission.student_id == asset.owner_user_id,
+        ).first()
+        if (
+            submitted is None
+            or asset.storage_key not in _assignment_asset_keys(
+                submitted.content, submitted.content_format,
+            )
+        ):
+            return False
+        if _is_admin_role(current_user.role):
+            return True
+        assignment = db.query(models.Assignment).filter(
+            models.Assignment.id == asset.assignment_id,
+        ).first()
+        if assignment is None:
+            return False
+        db_class = db.query(models.Class).filter(
+            models.Class.id == assignment.class_id,
+            models.Class.status != "deleted",
+        ).first()
+        return (
+            db_class is not None
+            and _teacher_owns_class(db, current_user, db_class)
+        )
     if _is_admin_role(current_user.role):
         return asset.state in {"PENDING", "ACTIVE"}
     if asset.owner_user_id == current_user.id:
@@ -5414,9 +5660,7 @@ async def delete_file(
             )
         if asset.state != "PENDING":
             raise HTTPException(status_code=404, detail="File not found")
-        asset.state = "DELETE_PENDING"
-        asset.expires_at = None
-        asset.delete_after = _utc_now_aware()
+        queue_assets([asset], now=_utc_now_aware())
         db.commit()
         return {"message": "File deletion queued"}
     except Exception as e:

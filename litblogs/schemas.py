@@ -321,6 +321,7 @@ class AssignmentSubmissionCreate(StrictRequest):
         default=None,
         max_length=MAX_ASSIGNMENT_CONTENT_LENGTH,
     )
+    content_format: Literal["plain", "rich"] = "plain"
     expected_draft_revision: int = Field(ge=0, le=2_147_483_646)
 
 class AssignmentDraftUpdate(StrictRequest):
@@ -328,6 +329,7 @@ class AssignmentDraftUpdate(StrictRequest):
         default=None,
         max_length=MAX_ASSIGNMENT_CONTENT_LENGTH,
     )
+    content_format: Literal["plain", "rich"] = "plain"
     expected_revision: int = Field(ge=0, le=2_147_483_646)
 
 class AssignmentSubmissionResponse(BaseModel):
@@ -338,6 +340,7 @@ class AssignmentSubmissionResponse(BaseModel):
     student_id: int
     submitted_at: datetime
     content: str | None = None
+    content_format: Literal["plain", "rich"] = "plain"
     is_late: bool
     
     # AI Detection fields

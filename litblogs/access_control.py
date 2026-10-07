@@ -256,7 +256,7 @@ def require_assignment_for_class(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignment not found")
     if (
         _role_value(user) == models.UserRole.STUDENT.value
-        and assignment.visibility != "class"
+        and (assignment.visibility != "class" or assignment.archived_at is not None)
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assignment not found")
     return db_class, assignment

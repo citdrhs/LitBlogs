@@ -59,7 +59,8 @@ vi.mock("./utils/timeUtils", () => ({
   setupTimeUpdater: () => undefined,
 }));
 vi.mock("./components/LitBlogsEditor", () => ({
-  default: (props) => {
+  default: function MockLitBlogsEditor(props) {
+    const [uploadError, setUploadError] = React.useState("");
     mocks.editorProps = props;
     return (
       <>
@@ -68,17 +69,39 @@ vi.mock("./components/LitBlogsEditor", () => ({
             contentEditable
             data-testid="litblogs-editor-double"
             role="textbox"
-            aria-label="Post content"
+            aria-label={props.ariaLabel || "Post content"}
             suppressContentEditableWarning
           />
         ) : (
           <textarea
             data-testid="litblogs-editor-double"
-            aria-label="Post content"
+            aria-label={props.ariaLabel || "Post content"}
             value={props.value}
             onChange={(event) => props.onChange(event.target.value)}
           />
         )}
+        {props.ariaLabel === "Assignment response" && (
+          <input
+            aria-label="Upload assignment image"
+            type="file"
+            disabled={props.disabled}
+            onChange={async (event) => {
+              const file = event.target.files?.[0];
+              if (!file) return;
+              setUploadError("");
+              props.onUploadStateChange?.(true);
+              try {
+                const asset = await props.uploadAsset({ kind: "image", file, signal: new AbortController().signal });
+                props.onChange(`<p><img src="${asset.url}" alt="Drawing"></p>`);
+              } catch (error) {
+                setUploadError(error.message);
+              } finally {
+                props.onUploadStateChange?.(false);
+              }
+            }}
+          />
+        )}
+        {uploadError && <p role="alert">{uploadError}</p>}
         {mocks.editorPopupOpen && (
           <div role="dialog" aria-label="Editor popup">
             <button
@@ -128,6 +151,7 @@ vi.mock("framer-motion", async () => {
 
 
 const PRIVATE_CANARY = "private route-switch response attachment.pdf";
+const ASSIGNMENT_IMAGE_URL = `/api/uploads/objects/ab/${"ab".repeat(16)}.png`;
 const ASSIGNMENT = {
   id: 17,
   title: "Close reading response",
@@ -213,6 +237,7 @@ const renderFeed = () => render(
 const assignmentServerPayload = (content = "", revision = 0) => ({
   has_draft: Boolean(content),
   content,
+  content_format: "rich",
   saved_at: content ? "2026-08-22T11:00:00Z" : null,
   revision,
 });
@@ -526,6 +551,158 @@ describe("ClassFeed private draft lifecycle", () => {
     expect(screen.queryByText("Public Submissions")).not.toBeInTheDocument();
   });
 
+  it("waits for private image scanning, then submits an image-only response", async () => {
+    let finishUpload;
+    mocks.axios.post.mockImplementation((url) => {
+      if (url === "/assignments/17/upload/image") {
+        return new Promise((resolve) => { finishUpload = resolve; });
+      }
+      if (url === "/assignments/17/submit") {
+        return Promise.resolve({ data: {
+          id: 41,
+          content: `<p><img src="${ASSIGNMENT_IMAGE_URL}" alt="Drawing"></p>`,
+          content_format: "rich",
+          draft_revision: 1,
+        } });
+      }
+      return Promise.resolve({ data: {} });
+    });
+    renderFeed();
+    await flushPromises();
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    await flushPromises();
+
+    const file = new File(["image bytes"], "drawing.png", { type: "image/png" });
+    fireEvent.change(screen.getByLabelText("Upload assignment image"), {
+      target: { files: [file] },
+    });
+    await flushPromises();
+    expect(mocks.axios.post).toHaveBeenCalledWith(
+      "/assignments/17/upload/image",
+      expect.any(FormData),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(screen.getAllByRole("button", { name: "Submit" }).at(-1)).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+
+    await act(async () => finishUpload({ data: { url: ASSIGNMENT_IMAGE_URL } }));
+    await flushPromises();
+    expect(screen.getByLabelText("Assignment response")).toHaveValue(
+      `<p><img src="${ASSIGNMENT_IMAGE_URL}" alt="Drawing"></p>`,
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: "Submit" }).at(-1));
+    await flushPromises();
+    expect(mocks.axios.post).toHaveBeenCalledWith(
+      "/assignments/17/submit",
+      {
+        content: `<p><img src="${ASSIGNMENT_IMAGE_URL}" alt="Drawing"></p>`,
+        content_format: "rich",
+        expected_draft_revision: 0,
+      },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("restores an image-only draft and keeps typed text after a failed upload", async () => {
+    const defaultGet = mocks.axios.get.getMockImplementation();
+    mocks.axios.get.mockImplementation(async (url, config) => {
+      if (url === "/assignments/17/draft") {
+        return { data: {
+          has_draft: true,
+          content: `<p><img src="${ASSIGNMENT_IMAGE_URL}" alt="Drawing"></p>`,
+          content_format: "rich",
+          saved_at: "2026-08-22T11:00:00Z",
+          revision: 2,
+        } };
+      }
+      return defaultGet(url, config);
+    });
+    mocks.axios.post.mockRejectedValueOnce(new Error("private provider response"));
+    renderFeed();
+    await flushPromises();
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    await flushPromises();
+    expect(screen.getByLabelText("Assignment response")).toHaveValue(
+      `<p><img src="${ASSIGNMENT_IMAGE_URL}" alt="Drawing"></p>`,
+    );
+
+    fireEvent.change(screen.getByLabelText("Assignment response"), {
+      target: { value: PRIVATE_CANARY },
+    });
+    fireEvent.change(screen.getByLabelText("Upload assignment image"), {
+      target: { files: [new File(["image"], "replacement.png", { type: "image/png" })] },
+    });
+    await flushPromises();
+    expect(screen.getByDisplayValue(PRIVATE_CANARY)).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Upload failed. Please try again.");
+    expect(screen.getByRole("alert")).not.toHaveTextContent("private provider response");
+  });
+
+  it("keeps a long legacy plain draft editable and saves it without truncation", async () => {
+    const legacyContent = "a".repeat(100_000);
+    const updatedContent = `${legacyContent}b`;
+    const defaultGet = mocks.axios.get.getMockImplementation();
+    mocks.axios.get.mockImplementation(async (url, config) => {
+      if (url === "/assignments/17/draft") {
+        return { data: {
+          has_draft: true,
+          content: legacyContent,
+          content_format: "plain",
+          saved_at: "2026-08-22T11:00:00Z",
+          revision: 2,
+        } };
+      }
+      return defaultGet(url, config);
+    });
+    mocks.axios.put.mockImplementation(async (_url, payload) => ({ data: {
+      has_draft: true,
+      content: payload.content,
+      content_format: payload.content_format,
+      saved_at: "2026-08-22T11:01:00Z",
+      revision: payload.expected_revision + 1,
+    } }));
+
+    renderFeed();
+    await flushPromises();
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    await flushPromises();
+
+    const response = screen.getByRole("textbox", { name: "Assignment response" });
+    expect(response).toHaveValue(legacyContent);
+    expect(screen.getByText(/older response is too long for the formatted editor/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    expect(screen.getAllByRole("button", { name: "Submit" }).at(-1)).toBeEnabled();
+
+    vi.useFakeTimers();
+    fireEvent.change(response, { target: { value: updatedContent } });
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    await flushPromises();
+    expect(mocks.axios.put).toHaveBeenCalledWith(
+      "/assignments/17/draft",
+      { content: updatedContent, content_format: "plain", expected_revision: 2 },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(screen.getByRole("textbox", { name: "Assignment response" })).toHaveValue(updatedContent);
+  });
+
+  it("allows an over-limit rich response to exit through Cancel with explicit discard", async () => {
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    renderFeed();
+    await flushPromises();
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    await flushPromises();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Assignment response" }), {
+      target: { value: PRIVATE_CANARY },
+    });
+    act(() => mocks.editorProps.onContentLimitChange({ length: 100_001 }));
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("too large to save"));
+    expect(screen.queryByRole("textbox", { name: "Assignment response" })).not.toBeInTheDocument();
+    expect(mocks.axios.put).not.toHaveBeenCalled();
+  });
+
   it("does not autosave a programmatic assignment load, then guards and debounces a user edit", async () => {
     renderFeed();
     await flushPromises();
@@ -537,7 +714,7 @@ describe("ClassFeed private draft lifecycle", () => {
     expect(mocks.axios.put).not.toHaveBeenCalled();
 
     const storageWrite = vi.spyOn(Storage.prototype, "setItem");
-    fireEvent.change(screen.getByPlaceholderText("Write your submission..."), {
+    fireEvent.change(screen.getByLabelText("Assignment response"), {
       target: { value: PRIVATE_CANARY },
     });
     await flushPromises();
@@ -552,7 +729,7 @@ describe("ClassFeed private draft lifecycle", () => {
     await flushPromises();
     expect(mocks.axios.put).toHaveBeenCalledWith(
       "/assignments/17/draft",
-      { content: PRIVATE_CANARY, expected_revision: 0 },
+      { content: PRIVATE_CANARY, content_format: "rich", expected_revision: 0 },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(storageWrite.mock.calls.flat().join(" ")).not.toContain(PRIVATE_CANARY);
@@ -569,7 +746,7 @@ describe("ClassFeed private draft lifecycle", () => {
     fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     await flushPromises();
 
-    fireEvent.change(screen.getByPlaceholderText("Write your submission..."), {
+    fireEvent.change(screen.getByLabelText("Assignment response"), {
       target: { value: PRIVATE_CANARY },
     });
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -605,7 +782,7 @@ describe("ClassFeed private draft lifecycle", () => {
     await flushPromises();
 
     vi.useFakeTimers();
-    fireEvent.change(screen.getByPlaceholderText("Write your submission..."), {
+    fireEvent.change(screen.getByLabelText("Assignment response"), {
       target: { value: PRIVATE_CANARY },
     });
     await act(async () => vi.advanceTimersByTimeAsync(500));
@@ -617,6 +794,7 @@ describe("ClassFeed private draft lifecycle", () => {
     await flushPromises();
     expect(mocks.axios.post).toHaveBeenCalledWith("/assignments/17/submit", {
       content: PRIVATE_CANARY,
+      content_format: "rich",
       expected_draft_revision: 0,
     }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(screen.getByDisplayValue(PRIVATE_CANARY)).toBeInTheDocument();
@@ -695,7 +873,7 @@ describe("ClassFeed private draft lifecycle", () => {
     await flushPromises();
     fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     await flushPromises();
-    fireEvent.change(screen.getByPlaceholderText("Write your submission..."), {
+    fireEvent.change(screen.getByLabelText("Assignment response"), {
       target: { value: PRIVATE_CANARY },
     });
 
@@ -779,7 +957,7 @@ describe("ClassFeed private draft lifecycle", () => {
     await flushPromises();
     fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     await flushPromises();
-    fireEvent.change(screen.getByPlaceholderText("Write your submission..."), {
+    fireEvent.change(screen.getByLabelText("Assignment response"), {
       target: { value: PRIVATE_CANARY },
     });
     mocks.axios.post.mockResolvedValueOnce({
@@ -796,7 +974,7 @@ describe("ClassFeed private draft lifecycle", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Submit" }).at(-1));
     await flushPromises();
 
-    expect(screen.queryByPlaceholderText("Write your submission...")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Assignment response")).not.toBeInTheDocument();
     expect(screen.getByTestId("assignment-draft-probe")).toHaveTextContent("1:none");
     expect(mocks.toast.success).toHaveBeenCalledWith("Assignment submitted successfully!");
     expect(mocks.toast.error).not.toHaveBeenCalledWith("Failed to submit assignment");
@@ -811,7 +989,7 @@ describe("ClassFeed private draft lifecycle", () => {
     await flushPromises();
     fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     await flushPromises();
-    fireEvent.change(screen.getByPlaceholderText("Write your submission..."), {
+    fireEvent.change(screen.getByLabelText("Assignment response"), {
       target: { value: PRIVATE_CANARY },
     });
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -840,7 +1018,7 @@ describe("ClassFeed private draft lifecycle", () => {
     await flushPromises();
     fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     await flushPromises();
-    fireEvent.change(screen.getByPlaceholderText("Write your submission..."), {
+    fireEvent.change(screen.getByLabelText("Assignment response"), {
       target: { value: PRIVATE_CANARY },
     });
     fireEvent.click(screen.getAllByRole("button", { name: "Submit" }).at(-1));

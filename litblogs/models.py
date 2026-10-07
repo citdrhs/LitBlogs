@@ -414,6 +414,7 @@ class Assignment(Base):
     created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     allow_late = Column(Boolean, default=True)
     visibility = Column(String, default="class")  # 'class' or 'private'
+    archived_at = Column(DateTime(timezone=True), nullable=True)
 
     class_ = relationship("Class", back_populates="assignments")
     submissions = relationship("AssignmentSubmission", back_populates="assignment", cascade="all, delete-orphan")
@@ -425,6 +426,7 @@ class AssignmentDraft(Base):
     assignment_id = Column(Integer, ForeignKey("assignments.id", ondelete="CASCADE"), nullable=False)
     student_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     content = Column(Text, nullable=True)
+    content_format = Column(String(8), nullable=False, default="plain", server_default="plain")
     revision = Column(Integer, default=0, server_default="0", nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -446,6 +448,7 @@ class AssignmentSubmission(Base):
     student_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     submitted_at = Column(DateTime(timezone=True), server_default=func.now())
     content = Column(Text, nullable=True)
+    content_format = Column(String(8), nullable=False, default="plain", server_default="plain")
     is_late = Column(Boolean, default=False)
     
     # AI Detection fields
@@ -536,6 +539,15 @@ class UploadAsset(Base):
         ),
         nullable=True,
     )
+    assignment_id = Column(
+        Integer,
+        ForeignKey(
+            "assignments.id",
+            ondelete="SET NULL",
+            name="fk_upload_assets_assignment",
+        ),
+        nullable=True,
+    )
     purpose = Column(String(20), nullable=False)
     state = Column(String(20), nullable=False)
     original_filename = Column(String(255), nullable=True)
@@ -559,7 +571,7 @@ class UploadAsset(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "purpose IN ('POST', 'PROFILE_IMAGE', 'COVER_IMAGE')",
+            "purpose IN ('POST', 'PROFILE_IMAGE', 'COVER_IMAGE', 'ASSIGNMENT_MEDIA')",
             name="ck_upload_assets_purpose",
         ),
         CheckConstraint(
@@ -585,8 +597,10 @@ class UploadAsset(Base):
             name="ck_upload_assets_storage_key_format",
         ).ddl_if(dialect="postgresql"),
         CheckConstraint(
-            "(state = 'PENDING' AND purpose = 'POST' "
+            "(state = 'PENDING' AND purpose IN ('POST', 'ASSIGNMENT_MEDIA') "
             "AND owner_user_id IS NOT NULL AND blog_id IS NULL "
+            "AND ((purpose = 'POST' AND assignment_id IS NULL) OR "
+            "(purpose = 'ASSIGNMENT_MEDIA' AND assignment_id IS NOT NULL)) "
             "AND expires_at IS NOT NULL AND bound_at IS NULL "
             "AND delete_after IS NULL AND deleted_at IS NULL "
             "AND scan_completed_at IS NOT NULL) OR "
@@ -594,12 +608,16 @@ class UploadAsset(Base):
             "AND expires_at IS NULL AND bound_at IS NOT NULL "
             "AND delete_after IS NULL AND deleted_at IS NULL "
             "AND scan_completed_at IS NOT NULL AND "
-            "((purpose = 'POST' AND blog_id IS NOT NULL) OR "
-            "(purpose IN ('PROFILE_IMAGE', 'COVER_IMAGE') AND blog_id IS NULL))) OR "
+            "((purpose = 'POST' AND blog_id IS NOT NULL AND assignment_id IS NULL) OR "
+            "(purpose IN ('PROFILE_IMAGE', 'COVER_IMAGE') "
+            "AND blog_id IS NULL AND assignment_id IS NULL) OR "
+            "(purpose = 'ASSIGNMENT_MEDIA' AND blog_id IS NULL "
+            "AND assignment_id IS NOT NULL))) OR "
             "(state = 'DELETE_PENDING' AND delete_after IS NOT NULL "
-            "AND blog_id IS NULL AND expires_at IS NULL "
+            "AND blog_id IS NULL AND assignment_id IS NULL AND expires_at IS NULL "
             "AND deleted_at IS NULL AND scan_completed_at IS NOT NULL) OR "
-            "(state = 'DELETED' AND blog_id IS NULL AND expires_at IS NULL "
+            "(state = 'DELETED' AND blog_id IS NULL AND assignment_id IS NULL "
+            "AND expires_at IS NULL "
             "AND delete_after IS NULL AND deleted_at IS NOT NULL "
             "AND original_filename IS NULL AND scan_completed_at IS NOT NULL)",
             name="ck_upload_assets_state_shape",
@@ -611,6 +629,7 @@ class UploadAsset(Base):
             "created_at",
         ),
         Index("ix_upload_assets_blog_id", "blog_id"),
+        Index("ix_upload_assets_assignment_id", "assignment_id"),
         Index("ix_upload_assets_expires_at", "expires_at"),
         Index("ix_upload_assets_state_delete_after", "state", "delete_after"),
         Index(

@@ -5,6 +5,7 @@ import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import Loader from './Loader';
 import RichTextContent from './RichTextContent';
+import AssignmentResponseContent from './AssignmentResponseContent';
 
 // Format relative time (e.g., "2 hours ago")
 const formatRelativeTime = (dateString) => {
@@ -84,6 +85,7 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
   const [assignmentForm, setAssignmentForm] = useState(EMPTY_ASSIGNMENT_FORM);
   const [assignmentSubmissions, setAssignmentSubmissions] = useState({});
   const [savingAssignment, setSavingAssignment] = useState(false);
+  const [changingAssignmentId, setChangingAssignmentId] = useState(null);
   const [expandedAssignmentId, setExpandedAssignmentId] = useState(null);
   const [editingAssignmentId, setEditingAssignmentId] = useState(null);
   const navigate = useNavigate();
@@ -108,7 +110,7 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
   }, [classData.id, initialTab]);
 
   const refreshAssignments = async () => {
-    const assignmentsResponse = await axios.get(`/classes/${classData.id}/assignments`);
+    const assignmentsResponse = await axios.get(`/classes/${classData.id}/assignments?include_archived=true`);
     setAssignments(assignmentsResponse.data || []);
   };
 
@@ -155,7 +157,7 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
         setPostCount(postsResponse.data.length);
 
         const [assignmentsResponse, analyticsResponse] = await Promise.all([
-          axios.get(`/classes/${classData.id}/assignments`),
+          axios.get(`/classes/${classData.id}/assignments?include_archived=true`),
           axios.get(`/classes/${classData.id}/analytics`)
         ]);
         setAssignments(assignmentsResponse.data || []);
@@ -200,6 +202,39 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
       setError(error.response?.data?.detail || 'Failed to save assignment');
     } finally {
       setSavingAssignment(false);
+    }
+  };
+
+  const handleArchiveAssignment = async (assignment) => {
+    if (!window.confirm(
+      `Hide "${assignment.title}" from students and the active assignment list? Student work will be kept, and you can restore the assignment later.`
+    )) return;
+
+    try {
+      setChangingAssignmentId(assignment.id);
+      setError(null);
+      await axios.delete(`/classes/${classData.id}/assignments/${assignment.id}`);
+      await refreshAssignments();
+      if (editingAssignmentId === assignment.id) resetAssignmentForm();
+      setExpandedAssignmentId(null);
+    } catch (requestError) {
+      setError(requestError.response?.data?.detail || 'Failed to hide assignment');
+    } finally {
+      setChangingAssignmentId(null);
+    }
+  };
+
+  const handleRestoreAssignment = async (assignment) => {
+    try {
+      setChangingAssignmentId(assignment.id);
+      setError(null);
+      await axios.post(`/classes/${classData.id}/assignments/${assignment.id}/restore`);
+      await refreshAssignments();
+      setExpandedAssignmentId(null);
+    } catch (requestError) {
+      setError(requestError.response?.data?.detail || 'Failed to restore assignment');
+    } finally {
+      setChangingAssignmentId(null);
     }
   };
 
@@ -586,7 +621,7 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
                 )}
 
                 <div className="grid gap-4">
-                  {assignments.map((assignment) => (
+                  {assignments.filter((assignment) => !assignment.archived_at).map((assignment) => (
                     <div
                       key={assignment.id}
                       className={`p-6 rounded-lg border ${panelCardClasses} shadow-lg`}
@@ -606,6 +641,15 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
                             }`}
                           >
                             Edit Assignment
+                          </button>
+                          <button
+                            onClick={() => handleArchiveAssignment(assignment)}
+                            disabled={changingAssignmentId === assignment.id}
+                            className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                              darkMode ? 'bg-rose-900/40 text-rose-200' : 'bg-rose-50 text-rose-700'
+                            }`}
+                          >
+                            Hide Assignment
                           </button>
                           <button
                             onClick={() => {
@@ -685,7 +729,13 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
                                     Submitted: {new Date(submission.submitted_at).toLocaleString()}
                                   </div>
                                   <div className="mt-2 text-sm text-gray-600 dark:text-gray-300">
-                                    {submission.content || 'No content provided.'}
+                                    {submission.content ? (
+                                      <AssignmentResponseContent
+                                        content={submission.content}
+                                        contentFormat={submission.content_format}
+                                        dark={darkMode}
+                                      />
+                                    ) : 'No content provided.'}
                                   </div>
                                 </div>
                               ))}
@@ -696,12 +746,54 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
                     </div>
                   ))}
 
-                  {assignments.length === 0 && (
+                  {assignments.every((assignment) => assignment.archived_at) && (
                     <div className="text-center text-gray-500 dark:text-gray-400 py-8">
-                      No assignments yet. Create one to start tracking submissions.
+                      No active assignments. Create one to start tracking submissions.
                     </div>
                   )}
                 </div>
+
+                {assignments.some((assignment) => assignment.archived_at) && (
+                  <div className="space-y-3">
+                    <div>
+                      <h4 className="text-lg font-semibold">Archived Assignments</h4>
+                      <p className="text-sm text-gray-500 dark:text-gray-400">
+                        Hidden from students. Existing drafts and submissions are kept.
+                      </p>
+                    </div>
+                    {assignments.filter((assignment) => assignment.archived_at).map((assignment) => (
+                      <div key={assignment.id} className={`p-4 rounded-lg border ${panelCardClasses}`}>
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <h5 className="font-semibold">{assignment.title}</h5>
+                            <p className="text-sm text-gray-500 dark:text-gray-400">
+                              {assignment.stats?.submitted ?? 0} submissions kept
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              onClick={() => navigate(`/class/${classData.id}/assignment/${assignment.id}/submissions`, {
+                                state: { selectedClass: classData, classDetailsTab: 'Assignments' },
+                              })}
+                              className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                                darkMode ? 'bg-gray-700 text-gray-200' : 'bg-gray-100 text-gray-700'
+                              }`}
+                            >
+                              View Submissions
+                            </button>
+                            <button
+                              onClick={() => handleRestoreAssignment(assignment)}
+                              disabled={changingAssignmentId === assignment.id}
+                              className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-blue-600 hover:bg-blue-500"
+                            >
+                              Restore Assignment
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </motion.div>
             )}
 
