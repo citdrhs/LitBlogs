@@ -785,17 +785,19 @@ const buildSanitizedFragment = (html, { mode = "display" } = {}) => {
         ? [...HTML_CONTRACT.tags, ...["button"].filter((tag) => IMPORT_TAGS.has(tag))]
         : HTML_CONTRACT.tags,
     };
-    let current = raw;
+    let fragment = parseInertFragment(raw);
+    let previous = raw;
     const recoveryBudget = { remaining: MAX_LEGACY_MEDIA_RECOVERIES };
     for (let pass = 0; pass < MAX_CANONICALIZATION_PASSES; pass += 1) {
-      const fragment = parseInertFragment(current);
       normalizeTree(fragment, canonicalMode, recoveryBudget);
       const cleaned = DOMPurify.sanitize(fragment, purifierConfig);
       const container = document.createElement("div");
       container.appendChild(cleaned.cloneNode(true));
       const next = container.innerHTML;
-      if (next === current) return cleaned;
-      current = next;
+      if (next === previous) return cleaned;
+      previous = next;
+      // Reparse serialized content through the sanitizer, never through template.innerHTML.
+      fragment = DOMPurify.sanitize(next, purifierConfig);
     }
     return document.createDocumentFragment();
   } catch {
