@@ -1030,6 +1030,7 @@ test('the LitBlogs editor preserves one rich post across every author and course
   checkpoint('post-view-ready');
 
   await teacher.page.setViewportSize({ width: 1440, height: 900 });
+  checkpoint('teacher-desktop-viewport-ready');
   await teacher.page.evaluate(() => {
     localStorage.setItem('darkMode', 'true');
     let settings = {};
@@ -1040,20 +1041,29 @@ test('the LitBlogs editor preserves one rich post across every author and course
     }
     localStorage.setItem('litblogs_settings', JSON.stringify({ ...settings, darkMode: true }));
   });
+  checkpoint('teacher-dark-preference-ready');
   await teacher.page.reload();
+  checkpoint('teacher-dashboard-reloaded');
   await teacher.page.getByRole('button', { name: 'Classes', exact: true }).click();
+  checkpoint('teacher-classes-tab-open');
   await teacher.page.getByRole('heading', { name: className, exact: true }).click();
+  checkpoint('teacher-class-open');
   await teacher.page.getByRole('button', { name: 'Blogs', exact: true }).click();
+  checkpoint('teacher-blogs-tab-open');
   const classDetailsPreview = teacher.page.getByTestId(
     `class-details-post-preview-${published.id}`,
   );
   await expectRichText(classDetailsPreview, media, { wide: true });
+  checkpoint('teacher-class-preview-rich-ready');
   await expect(classDetailsPreview).not.toHaveClass(/rich-text-content--dark/);
+  checkpoint('teacher-class-preview-white-card-ready');
   expect(await classDetailsPreview.evaluate((node) => getComputedStyle(node).color))
     .toBe('rgb(75, 85, 99)');
+  checkpoint('teacher-class-preview-color-ready');
   expect(await classDetailsPreview.evaluate(
     (node) => getComputedStyle(node).getPropertyValue('--rich-text-surface').trim(),
   )).toBe('#ffffff');
+  checkpoint('teacher-class-preview-surface-ready');
   await takeLocalVisual(teacher.page, 'class-details-dark-dashboard-white-card');
   checkpoint('class-details-ready');
 
