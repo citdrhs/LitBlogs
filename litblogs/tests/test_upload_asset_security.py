@@ -21,12 +21,14 @@ from test_auth_security import _production_settings_data
 from test_content_security import PDF_BYTES, PNG_BYTES
 
 import config
+import database
 import main
 import models
 import schemas
 import upload_assets
 from config import Settings
-from database import SessionLocal
+
+SessionLocal = database.SessionLocal
 
 GIB = 1024 * 1024 * 1024
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -1934,8 +1936,6 @@ def test_legacy_inventory_reads_one_stable_file_and_excludes_only_registry_names
 
 
 def test_production_database_startup_never_uses_metadata_create_all():
-    import database
-
     database_source = inspect.getsource(database)
     lifespan_source = inspect.getsource(main.lifespan)
     assert not hasattr(database, "initialize_database")
@@ -2074,8 +2074,6 @@ def test_production_schema_guard_rejects_named_but_semantically_wrong_ddl(
     monkeypatch,
     defect,
 ):
-    import database
-
     schema = _UploadSchemaInspector()
     if defect == "wrong_type":
         next(column for column in schema.columns if column["name"] == "size_bytes")[
@@ -2173,8 +2171,6 @@ def test_production_schema_guard_rejects_named_but_semantically_wrong_ddl(
 
 
 def test_production_schema_guard_accepts_the_exact_upload_registry_shape(monkeypatch):
-    import database
-
     schema = _UploadSchemaInspector()
     monkeypatch.setattr(database, "inspect", lambda _engine: schema)
     monkeypatch.setattr(
@@ -2190,8 +2186,6 @@ def test_production_schema_guard_accepts_the_exact_upload_registry_shape(monkeyp
     ("ck_upload_assets_purpose", "ck_upload_assets_state_shape"),
 )
 def test_production_schema_guard_accepts_postgres_rendered_assignment_media_checks(name):
-    import database
-
     rendered = database._APPROVED_CHECK_SQL[name]
     for values in (
         "'POST', 'PROFILE_IMAGE', 'COVER_IMAGE', 'ASSIGNMENT_MEDIA'",
