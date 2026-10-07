@@ -161,7 +161,7 @@ beforeEach(() => {
     }
     if (url === "/classes/4/students") return { data: [] };
     if (url === "/classes/4/posts") return { data: [CLASS_DETAILS_POST] };
-    if (url === "/classes/4/assignments") return { data: [] };
+    if (url === "/classes/4/assignments?include_archived=true") return { data: [] };
     if (url === "/classes/4/analytics") return { data: {} };
     if (url === "/classes/4/students/7") {
       return {

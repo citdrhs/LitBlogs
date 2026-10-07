@@ -7,7 +7,6 @@ import {
   useRef,
   useState,
 } from "react";
-
 import {
   findPostDraft,
   removePostDraft as removePostDraftFromCollection,
@@ -32,6 +31,7 @@ const assignmentDraftKey = ({ userId, classId, assignmentId } = {}) => {
 
 const normalizeAssignmentMemory = (snapshot = {}) => ({
   content: typeof snapshot.content === "string" ? snapshot.content : "",
+  contentFormat: snapshot.contentFormat === "rich" ? "rich" : "plain",
   revision: Number.isSafeInteger(snapshot.revision) && snapshot.revision >= 0
     ? snapshot.revision
     : 0,

@@ -57,6 +57,7 @@ describe("App-level private draft memory", () => {
       });
       mounted.drafts.saveAssignmentMemory(assignmentContext, {
         content: "unsent assignment response",
+        contentFormat: "rich",
         revision: 3,
         dirty: true,
         status: "error",
@@ -68,6 +69,7 @@ describe("App-level private draft memory", () => {
     });
     expect(mounted.drafts.getAssignmentMemory(assignmentContext)).toEqual({
       content: "unsent assignment response",
+      contentFormat: "rich",
       revision: 3,
       savedAt: null,
       dirty: true,
@@ -122,6 +124,28 @@ describe("App-level private draft memory", () => {
       ...postContext,
       userId: 8,
     })).toBeNull();
+  });
+
+  it("keeps an image-only assignment draft in account-scoped tab memory", () => {
+    const imageUrl = `/api/uploads/objects/ab/${"ab".repeat(16)}.png`;
+    const html = `<p><img src="${imageUrl}" alt="Drawing"></p>`;
+    const mounted = mountProvider();
+    act(() => mounted.drafts.saveAssignmentMemory(assignmentContext, {
+      content: html,
+      contentFormat: "rich",
+      revision: 2,
+      dirty: true,
+      status: "pending",
+    }));
+
+    expect(mounted.drafts.getAssignmentMemory(assignmentContext)).toMatchObject({
+      content: html,
+      contentFormat: "rich",
+      revision: 2,
+    });
+    expect(mounted.drafts.getAssignmentMemory({ ...assignmentContext, userId: 8 })).toBeNull();
+    expect(JSON.stringify(localStorage)).not.toContain(imageUrl);
+    expect(JSON.stringify(sessionStorage)).not.toContain(imageUrl);
   });
 
   it("clears naturally with a fresh provider/full refresh", () => {

@@ -396,6 +396,7 @@ def test_upload_asset_registry_has_exact_contract_and_indexes(client):
         "storage_key",
         "owner_user_id",
         "blog_id",
+        "assignment_id",
         "purpose",
         "state",
         "original_filename",
@@ -416,15 +417,19 @@ def test_upload_asset_registry_has_exact_contract_and_indexes(client):
     assert columns["storage_key"].unique is True
     owner_fk = next(iter(columns["owner_user_id"].foreign_keys))
     blog_fk = next(iter(columns["blog_id"].foreign_keys))
+    assignment_fk = next(iter(columns["assignment_id"].foreign_keys))
     assert owner_fk.ondelete == "SET NULL"
     assert blog_fk.ondelete == "SET NULL"
+    assert assignment_fk.ondelete == "SET NULL"
     assert owner_fk.constraint.name == "fk_upload_assets_owner_user"
     assert blog_fk.constraint.name == "fk_upload_assets_blog"
+    assert assignment_fk.constraint.name == "fk_upload_assets_assignment"
 
     indexes = {index.name: index for index in table.indexes}
     assert {
         "ix_upload_assets_owner_state_created",
         "ix_upload_assets_blog_id",
+        "ix_upload_assets_assignment_id",
         "ix_upload_assets_expires_at",
         "ix_upload_assets_state_delete_after",
         "uq_upload_assets_active_profile_purpose",
@@ -443,6 +448,7 @@ def test_upload_asset_registry_has_exact_contract_and_indexes(client):
         "DELETED",
         "PROFILE_IMAGE",
         "COVER_IMAGE",
+        "ASSIGNMENT_MEDIA",
         "size_bytes > 0",
         "length(sha256_digest) = 64",
         "substr(storage_key, 9, 2) = substr(storage_key, 12, 2)",
@@ -2013,6 +2019,14 @@ class _UploadSchemaInspector:
                 "referred_columns": ["id"],
                 "options": {"ondelete": "SET NULL"},
             },
+            {
+                "name": "fk_upload_assets_assignment",
+                "constrained_columns": ["assignment_id"],
+                "referred_schema": None,
+                "referred_table": "assignments",
+                "referred_columns": ["id"],
+                "options": {"ondelete": "SET NULL"},
+            },
         ]
 
     def has_table(self, table_name):
@@ -2105,12 +2119,16 @@ def test_production_schema_guard_rejects_named_but_semantically_wrong_ddl(
             if check["name"] == "ck_upload_assets_state_shape"
         )
         approved_group = (
-            "((purpose = 'POST' AND blog_id IS NOT NULL) OR "
-            "(purpose IN ('PROFILE_IMAGE', 'COVER_IMAGE') AND blog_id IS NULL))"
+            "((purpose = 'POST' AND blog_id IS NOT NULL AND assignment_id IS NULL) OR "
+            "(purpose IN ('PROFILE_IMAGE', 'COVER_IMAGE') "
+            "AND blog_id IS NULL AND assignment_id IS NULL) OR "
+            "(purpose = 'ASSIGNMENT_MEDIA' AND blog_id IS NULL "
+            "AND assignment_id IS NOT NULL))"
         )
         weakened_group = (
             "(purpose = 'POST' AND (blog_id IS NOT NULL OR "
-            "purpose IN ('PROFILE_IMAGE', 'COVER_IMAGE')) AND blog_id IS NULL)"
+            "purpose IN ('PROFILE_IMAGE', 'COVER_IMAGE', 'ASSIGNMENT_MEDIA')) "
+            "AND assignment_id IS NULL)"
         )
         assert approved_group in shape["sqltext"]
         shape["sqltext"] = shape["sqltext"].replace(approved_group, weakened_group)

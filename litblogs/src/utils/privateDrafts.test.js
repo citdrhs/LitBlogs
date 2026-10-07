@@ -8,6 +8,7 @@ import {
   removePostDraft,
   saveAssignmentDraft,
   submitAssignment,
+  uploadAssignmentEditorAsset,
   upsertPostDraft,
 } from "./privateDrafts.js";
 
@@ -31,6 +32,7 @@ describe("private assignment drafts", () => {
         serverDraft = {
           has_draft: Boolean(payload.content),
           content: payload.content,
+          content_format: payload.content_format,
           saved_at: "2026-08-22T05:25:00Z",
           revision: payload.expected_revision + 1,
         };
@@ -42,6 +44,7 @@ describe("private assignment drafts", () => {
     await expect(saveAssignmentDraft(client, 17, PRIVATE_CANARY, 0)).resolves.toEqual({
       hasDraft: true,
       content: PRIVATE_CANARY,
+      contentFormat: "rich",
       savedAt: "2026-08-22T05:25:00Z",
       revision: 1,
     });
@@ -52,12 +55,14 @@ describe("private assignment drafts", () => {
 
     expect(client.put).toHaveBeenCalledWith("/assignments/17/draft", {
       content: PRIVATE_CANARY,
+      content_format: "rich",
       expected_revision: 0,
     });
     expect(client.get).toHaveBeenCalledWith("/assignments/17/draft");
     expect(recovered).toEqual({
       hasDraft: true,
       content: PRIVATE_CANARY,
+      contentFormat: "rich",
       savedAt: "2026-08-22T05:25:00Z",
       revision: 1,
     });
@@ -101,7 +106,7 @@ describe("private assignment drafts", () => {
 
     expect(client.put).toHaveBeenCalledWith(
       "/assignments/17/draft",
-      { content: PRIVATE_CANARY, expected_revision: 4 },
+      { content: PRIVATE_CANARY, content_format: "rich", expected_revision: 4 },
       { signal: controller.signal },
     );
   });
@@ -119,8 +124,85 @@ describe("private assignment drafts", () => {
     });
     expect(client.post).toHaveBeenCalledWith("/assignments/17/submit", {
       content: PRIVATE_CANARY,
+      content_format: "rich",
       expected_draft_revision: 5,
     });
+  });
+
+  it("saves and submits an image-only rich response with the same draft revision contract", async () => {
+    const imageUrl = `/api/uploads/objects/ab/${"ab".repeat(16)}.png`;
+    const html = `<p><img src="${imageUrl}" alt="Drawing"></p>`;
+    const client = {
+      put: vi.fn(async () => ({ data: {
+        has_draft: true,
+        content: html,
+        content_format: "rich",
+        saved_at: "2026-08-22T05:25:00Z",
+        revision: 2,
+      } })),
+      post: vi.fn(async () => ({ data: { id: 9, content: html, content_format: "rich", draft_revision: 3 } })),
+    };
+
+    await expect(saveAssignmentDraft(client, 17, html, 1)).resolves.toMatchObject({
+      hasDraft: true,
+      content: html,
+      contentFormat: "rich",
+      revision: 2,
+    });
+    expect(client.put).toHaveBeenCalledWith("/assignments/17/draft", {
+      content: html,
+      content_format: "rich",
+      expected_revision: 1,
+    });
+
+    await submitAssignment(client, 17, html, 2);
+    expect(client.post).toHaveBeenCalledWith("/assignments/17/submit", {
+      content: html,
+      content_format: "rich",
+      expected_draft_revision: 2,
+    });
+  });
+
+  it("uploads scoped editor media and rejects a noncanonical returned URL", async () => {
+    const imageUrl = `/api/uploads/objects/ab/${"ab".repeat(16)}.png`;
+    const file = new File(["png data"], "drawing.png", { type: "image/png" });
+    const client = { post: vi.fn(async () => ({ data: { url: imageUrl } })) };
+
+    await expect(uploadAssignmentEditorAsset(client, 17, { kind: "image", file })).resolves.toMatchObject({
+      kind: "image",
+      url: imageUrl,
+    });
+    expect(client.post).toHaveBeenCalledWith(
+      "/assignments/17/upload/image",
+      expect.any(FormData),
+      expect.any(Object),
+    );
+    expect(client.post.mock.calls[0][1].get("file")).toBe(file);
+
+    client.post.mockResolvedValueOnce({ data: { url: "https://elsewhere.invalid/private.png" } });
+    await expect(uploadAssignmentEditorAsset(client, 17, { kind: "image", file })).rejects.toThrow("invalid upload response");
+    await expect(uploadAssignmentEditorAsset(client, 17, { kind: "image", file: new File(["bad"], "work.pdf", { type: "application/pdf" }) }))
+      .rejects.toThrow("supported file type");
+    expect(client.post).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["video", "lesson.mp4", "video/mp4", "video", "mp4"],
+    ["pdf", "reading.pdf", "application/pdf", "file", "pdf"],
+  ])("routes %s to the matching private assignment endpoint", async (kind, name, type, endpointKind, extension) => {
+    const file = new File(["media"], name, { type });
+    const url = `/api/uploads/objects/ab/${"ab".repeat(16)}.${extension}`;
+    const client = { post: vi.fn(async () => ({ data: { url } })) };
+
+    await expect(uploadAssignmentEditorAsset(client, 17, { kind, file })).resolves.toMatchObject({
+      kind,
+      url,
+    });
+    expect(client.post).toHaveBeenCalledWith(
+      `/assignments/17/upload/${endpointKind}`,
+      expect.any(FormData),
+      expect.any(Object),
+    );
   });
 
   it("rejects missing, negative, and unbounded revisions before any request", async () => {

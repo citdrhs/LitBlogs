@@ -43,6 +43,8 @@ EXPECTED_REVISIONS = (
     "a82f8f2b1d7c",
     "b64a9c2e7d31",
     "c8f21d9a6b70",
+    "d93c5e8a41b2",
+    "e6f8c2d1a904",
 )
 EXPECTED_TABLES = (
     "assignment_drafts",
@@ -926,6 +928,158 @@ def test_email_verification_sqlite_complete_model_metadata_is_adopted_and_backfi
         engine.dispose()
 
 
+def test_assignment_archive_sqlite_complete_model_metadata_is_adopted(tmp_path):
+    from base import Base
+
+    engine = sa.create_engine(
+        f"sqlite:///{(tmp_path / 'assignment-archive-adoption.db').as_posix()}"
+    )
+    try:
+        Base.metadata.create_all(bind=engine)
+        _stamp(engine, "c8f21d9a6b70")
+
+        _upgrade(engine, "d93c5e8a41b2")
+
+        assert _current_revision(engine) == "d93c5e8a41b2"
+        columns = {column["name"] for column in sa.inspect(engine).get_columns("assignments")}
+        assert "archived_at" in columns
+    finally:
+        engine.dispose()
+
+
+def test_assignment_archive_sqlite_partial_adoption_is_rejected_before_ddl(tmp_path):
+    engine = sa.create_engine(
+        f"sqlite:///{(tmp_path / 'assignment-archive-partial.db').as_posix()}"
+    )
+    try:
+        _upgrade(engine, "c8f21d9a6b70")
+        with engine.begin() as connection:
+            connection.exec_driver_sql("ALTER TABLE assignments ADD COLUMN archived_at TEXT")
+        columns_before = {
+            column["name"]: str(column["type"])
+            for column in sa.inspect(engine).get_columns("assignments")
+        }
+
+        with pytest.raises(RuntimeError, match="partial SQLite schema for d93c5e8a41b2"):
+            _upgrade(engine, "d93c5e8a41b2")
+
+        assert _current_revision(engine) == "c8f21d9a6b70"
+        assert {
+            column["name"]: str(column["type"])
+            for column in sa.inspect(engine).get_columns("assignments")
+        } == columns_before
+    finally:
+        engine.dispose()
+
+
+def test_assignment_media_upgrade_preserves_existing_accounts_and_student_work(tmp_path):
+    engine = sa.create_engine(
+        f"sqlite:///{(tmp_path / 'assignment-media-existing-work.db').as_posix()}"
+    )
+    account_query = (
+        "SELECT id, username, email, password, first_name, last_name, role, "
+        "email_verified_at FROM users ORDER BY id"
+    )
+    assignment_query = (
+        "SELECT id, class_id, title, description, due_date, created_by, "
+        "allow_late, visibility FROM assignments ORDER BY id"
+    )
+    draft_query = (
+        "SELECT id, assignment_id, student_id, content, revision, updated_at "
+        "FROM assignment_drafts ORDER BY id"
+    )
+    submission_query = (
+        "SELECT id, assignment_id, student_id, content, is_late, "
+        "submitted_at FROM assignment_submissions ORDER BY id"
+    )
+    reply_query = (
+        "SELECT id, submission_id, user_id, content FROM "
+        "assignment_submission_replies ORDER BY id"
+    )
+    try:
+        _upgrade(engine, "c8f21d9a6b70")
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "INSERT INTO users "
+                "(id, username, email, password, first_name, last_name, role, "
+                "email_verified_at) VALUES "
+                "(1, 'teacher', 'teacher@example.com', 'teacher-hash', 'Ava', "
+                "'Teacher', 'TEACHER', '2026-01-01 12:00:00'), "
+                "(2, 'drafting', 'drafting@example.com', 'draft-hash', 'Ben', "
+                "'Draft', 'STUDENT', '2026-01-02 12:00:00'), "
+                "(3, 'submitted', 'submitted@example.com', 'submit-hash', "
+                "'Cara', 'Submit', 'STUDENT', '2026-01-03 12:00:00')"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO teachers (id, name, email, user_id) "
+                "VALUES (1, 'Ava Teacher', 'teacher@example.com', 1)"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO classes (id, name, access_code, teacher_id, status) "
+                "VALUES (1, 'Literature', 'ABC123', 1, 'active')"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO assignments "
+                "(id, class_id, title, description, due_date, created_by, "
+                "allow_late, visibility) VALUES "
+                "(1, 1, 'Read and respond', 'Original instructions', "
+                "'2026-12-01 12:00:00', 1, 1, 'class')"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO assignment_drafts "
+                "(id, assignment_id, student_id, content, revision, updated_at) "
+                "VALUES (1, 1, 2, 'My unfinished plain-text response', 3, "
+                "'2026-01-04 12:00:00')"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO assignment_submissions "
+                "(id, assignment_id, student_id, content, is_late, submitted_at) "
+                "VALUES (1, 1, 3, 'My submitted plain-text response', 0, "
+                "'2026-01-05 12:00:00')"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO assignment_submission_replies "
+                "(id, submission_id, user_id, content) "
+                "VALUES (1, 1, 1, 'Original teacher feedback')"
+            )
+
+        with engine.connect() as connection:
+            before = tuple(
+                connection.exec_driver_sql(query).all()
+                for query in (
+                    account_query, assignment_query, draft_query,
+                    submission_query, reply_query,
+                )
+            )
+
+        _upgrade(engine)
+
+        with engine.connect() as connection:
+            after = tuple(
+                connection.exec_driver_sql(query).all()
+                for query in (
+                    account_query, assignment_query, draft_query,
+                    submission_query, reply_query,
+                )
+            )
+            assert after == before
+            assert connection.exec_driver_sql(
+                "SELECT archived_at FROM assignments WHERE id = 1"
+            ).scalar_one() is None
+            assert connection.exec_driver_sql(
+                "SELECT content_format FROM assignment_drafts WHERE id = 1"
+            ).scalar_one() == "plain"
+            assert connection.exec_driver_sql(
+                "SELECT content_format FROM assignment_submissions WHERE id = 1"
+            ).scalar_one() == "plain"
+            assert connection.exec_driver_sql(
+                "SELECT id, name, email, user_id FROM teachers WHERE id = 1"
+            ).one() == (1, "Ava Teacher", "teacher@example.com", 1)
+        assert _current_revision(engine) == EXPECTED_REVISIONS[-1]
+    finally:
+        engine.dispose()
+
+
 def test_email_verification_sqlite_partial_adoption_is_rejected_and_retryable(
     tmp_path,
 ):
@@ -954,7 +1108,9 @@ def test_email_verification_sqlite_partial_adoption_is_rejected_and_retryable(
         engine.dispose()
 
 
-@pytest.mark.parametrize("starting_revision", EXPECTED_REVISIONS[3:-1])
+@pytest.mark.parametrize(
+    "starting_revision", EXPECTED_REVISIONS[3:EXPECTED_REVISIONS.index("c8f21d9a6b70")]
+)
 def test_invalidated_password_reset_secrets_block_downgrade_before_schema_changes(
     tmp_path,
     starting_revision,
@@ -1004,7 +1160,7 @@ def test_invalidated_password_reset_secrets_block_downgrade_before_schema_change
 def test_admin_audit_migration_downgrade_preserves_active_reset(tmp_path):
     engine = sa.create_engine(f"sqlite:///{(tmp_path / 'admin-audit-downgrade.db').as_posix()}")
     try:
-        _upgrade(engine)
+        _upgrade(engine, "c8f21d9a6b70")
         with engine.begin() as connection:
             connection.exec_driver_sql(
                 "INSERT INTO users (id, username, email, password, role) "
@@ -1033,7 +1189,7 @@ def test_admin_audit_migration_downgrade_preserves_active_reset(tmp_path):
 def test_admin_audit_migration_preserves_new_history_on_refused_downgrade(tmp_path, action):
     engine = sa.create_engine(f"sqlite:///{(tmp_path / 'admin-audit-history.db').as_posix()}")
     try:
-        _upgrade(engine)
+        _upgrade(engine, "c8f21d9a6b70")
         with engine.begin() as connection:
             connection.execute(sa.text(
                 "INSERT INTO operator_audit_events (actor_identifier,action,outcome,resource_digest) "
@@ -1090,7 +1246,7 @@ def _assert_runtime_manual_account_verification(runtime_engine, migrator_engine)
             ), {"actor": f"admin-user:{actor_id}"}).scalar_one() == 2
         with pytest.raises(RuntimeError, match="Cannot downgrade while new administrator audit events exist"):
             _downgrade(migrator_engine, "b64a9c2e7d31")
-        assert _current_revision(migrator_engine) == "c8f21d9a6b70"
+        assert _current_revision(migrator_engine) == EXPECTED_REVISIONS[-1]
     finally:
         # Remove only this synthetic fixture's history before other downgrade tests.
         with migrator_engine.begin() as connection:

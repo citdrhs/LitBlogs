@@ -32,7 +32,7 @@ beforeEach(() => {
     }
     if (url === '/classes/4/students') return { data: [] };
     if (url === '/classes/4/posts') return { data: [] };
-    if (url === '/classes/4/assignments') {
+    if (url === '/classes/4/assignments?include_archived=true') {
       return {
         data: [{
           id: 12,
@@ -68,4 +68,39 @@ it('describes class visibility as assignment audience rather than peer submissio
   fireEvent.click(screen.getByRole('button', { name: 'Create Assignment' }));
   expect(screen.getByText('Assignment Audience')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Visible to Students' })).toBeInTheDocument();
+});
+
+it('shows rich student media only in the teacher submission view', async () => {
+  const imageUrl = `/api/uploads/objects/ab/${'ab'.repeat(16)}.png`;
+  const defaultGet = mocks.axios.get.getMockImplementation();
+  mocks.axios.get.mockImplementation(async (url) => {
+    if (url === '/classes/4/assignments/12/submissions') {
+      return { data: [{
+        id: 31,
+        content: `<p>Diagram</p><img src="${imageUrl}" alt="Student diagram">`,
+        content_format: 'rich',
+        submitted_at: '2026-10-06T14:00:00Z',
+        student: { first_name: 'Test', last_name: 'Student' },
+      }] };
+    }
+    return defaultGet(url);
+  });
+
+  render(
+    <MemoryRouter>
+      <ClassDetails
+        classData={{ id: 4, name: 'Literature', access_code: 'READ42' }}
+        darkMode={false}
+        onBack={() => undefined}
+        initialTab="Assignments"
+      />
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByText('Close reading')).toBeInTheDocument();
+  expect(screen.queryByRole('img', { name: 'Student diagram' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'View Submissions' }));
+  expect(await screen.findByRole('img', { name: 'Student diagram' }))
+    .toHaveAttribute('src', imageUrl);
+  expect(screen.getByText('Diagram')).toBeInTheDocument();
 });

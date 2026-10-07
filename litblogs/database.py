@@ -53,6 +53,7 @@ UPLOAD_ASSET_COLUMN_SHAPE = {
     "storage_key": ("VARCHAR(255)", False),
     "owner_user_id": ("INTEGER", True),
     "blog_id": ("INTEGER", True),
+    "assignment_id": ("INTEGER", True),
     "purpose": ("VARCHAR(20)", False),
     "state": ("VARCHAR(20)", False),
     "original_filename": ("VARCHAR(255)", True),
@@ -72,6 +73,7 @@ UPLOAD_ASSET_INDEX_SHAPE = {
         False,
     ),
     "ix_upload_assets_blog_id": (("blog_id",), False),
+    "ix_upload_assets_assignment_id": (("assignment_id",), False),
     "ix_upload_assets_expires_at": (("expires_at",), False),
     "ix_upload_assets_state_delete_after": (("state", "delete_after"), False),
     "uq_upload_assets_active_profile_purpose": (
@@ -202,7 +204,7 @@ def _boolean_sql_ast(sqltext):
 
 _APPROVED_CHECK_SQL = {
     "ck_upload_assets_purpose": (
-        "purpose IN ('POST', 'PROFILE_IMAGE', 'COVER_IMAGE')"
+        "purpose IN ('POST', 'PROFILE_IMAGE', 'COVER_IMAGE', 'ASSIGNMENT_MEDIA')"
     ),
     "ck_upload_assets_state": (
         "state IN ('PENDING', 'ACTIVE', 'DELETE_PENDING', 'DELETED')"
@@ -220,8 +222,10 @@ _APPROVED_CHECK_SQL = {
         "storage_key ~ '^objects/[0-9a-f]{2}/[0-9a-f]{32}\\.[a-z0-9]{1,10}$'"
     ),
     "ck_upload_assets_state_shape": (
-        "(state = 'PENDING' AND purpose = 'POST' "
+        "(state = 'PENDING' AND purpose IN ('POST', 'ASSIGNMENT_MEDIA') "
         "AND owner_user_id IS NOT NULL AND blog_id IS NULL "
+        "AND ((purpose = 'POST' AND assignment_id IS NULL) OR "
+        "(purpose = 'ASSIGNMENT_MEDIA' AND assignment_id IS NOT NULL)) "
         "AND expires_at IS NOT NULL AND bound_at IS NULL "
         "AND delete_after IS NULL AND deleted_at IS NULL "
         "AND scan_completed_at IS NOT NULL) OR "
@@ -229,12 +233,16 @@ _APPROVED_CHECK_SQL = {
         "AND expires_at IS NULL AND bound_at IS NOT NULL "
         "AND delete_after IS NULL AND deleted_at IS NULL "
         "AND scan_completed_at IS NOT NULL AND "
-        "((purpose = 'POST' AND blog_id IS NOT NULL) OR "
-        "(purpose IN ('PROFILE_IMAGE', 'COVER_IMAGE') AND blog_id IS NULL))) OR "
+        "((purpose = 'POST' AND blog_id IS NOT NULL AND assignment_id IS NULL) OR "
+        "(purpose IN ('PROFILE_IMAGE', 'COVER_IMAGE') "
+        "AND blog_id IS NULL AND assignment_id IS NULL) OR "
+        "(purpose = 'ASSIGNMENT_MEDIA' AND blog_id IS NULL "
+        "AND assignment_id IS NOT NULL))) OR "
         "(state = 'DELETE_PENDING' AND delete_after IS NOT NULL "
-        "AND blog_id IS NULL AND expires_at IS NULL "
+        "AND blog_id IS NULL AND assignment_id IS NULL AND expires_at IS NULL "
         "AND deleted_at IS NULL AND scan_completed_at IS NOT NULL) OR "
-        "(state = 'DELETED' AND blog_id IS NULL AND expires_at IS NULL "
+        "(state = 'DELETED' AND blog_id IS NULL AND assignment_id IS NULL "
+        "AND expires_at IS NULL "
         "AND delete_after IS NULL AND deleted_at IS NOT NULL "
         "AND original_filename IS NULL AND scan_completed_at IS NOT NULL)"
     ),
@@ -370,6 +378,7 @@ def verify_database_schema(candidate_engine: Engine | None = None):
     expected_foreign_keys = {
         ("owner_user_id",): ("fk_upload_assets_owner_user", "users"),
         ("blog_id",): ("fk_upload_assets_blog", "blogs"),
+        ("assignment_id",): ("fk_upload_assets_assignment", "assignments"),
     }
     if set(foreign_keys) != set(expected_foreign_keys):
         _schema_not_ready()

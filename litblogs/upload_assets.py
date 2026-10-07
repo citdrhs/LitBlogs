@@ -463,13 +463,26 @@ def configure_upload_transaction(db: Session) -> None:
         db.execute(text(statement))
 
 
-def add_pending_asset(db: Session, *, owner_user_id: int, stored, now: datetime) -> models.UploadAsset:
+def add_pending_asset(
+    db: Session,
+    *,
+    owner_user_id: int,
+    stored,
+    now: datetime,
+    purpose: str = "POST",
+    assignment_id: int | None = None,
+) -> models.UploadAsset:
     now = _as_aware_utc(now)
+    if (purpose == "POST" and assignment_id is not None) or (
+        purpose == "ASSIGNMENT_MEDIA" and assignment_id is None
+    ) or purpose not in {"POST", "ASSIGNMENT_MEDIA"}:
+        raise ValueError("Invalid pending upload purpose")
     asset = models.UploadAsset(
         storage_key=stored.storage_key,
         owner_user_id=owner_user_id,
         blog_id=None,
-        purpose="POST",
+        assignment_id=assignment_id,
+        purpose=purpose,
         state="PENDING",
         original_filename=stored.original_filename[:255],
         media_type=stored.spec.media_type,
@@ -533,6 +546,7 @@ def queue_assets(assets: Iterable[models.UploadAsset], *, now: datetime) -> None
             continue
         asset.state = "DELETE_PENDING"
         asset.blog_id = None
+        asset.assignment_id = None
         asset.expires_at = None
         asset.delete_after = now
 
@@ -617,6 +631,88 @@ def bind_post_assets(
     db.flush()
 
 
+def sync_assignment_assets(
+    db: Session,
+    *,
+    assignment_id: int,
+    student_id: int,
+    draft_keys: list[str],
+    submission_keys: list[str],
+    upload_root: Path,
+    now: datetime,
+) -> None:
+    """Keep only media referenced by this student's draft or submitted work."""
+    now = _as_aware_utc(now)
+    try:
+        requested_keys = sorted(set(draft_keys) | set(submission_keys))
+        for key in requested_keys:
+            object_url(key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid assignment media") from exc
+
+    asset_filters = [
+        and_(
+            models.UploadAsset.assignment_id == assignment_id,
+            models.UploadAsset.owner_user_id == student_id,
+            models.UploadAsset.purpose == "ASSIGNMENT_MEDIA",
+            models.UploadAsset.state == "ACTIVE",
+        )
+    ]
+    if requested_keys:
+        asset_filters.append(models.UploadAsset.storage_key.in_(requested_keys))
+    locked = (
+        db.query(models.UploadAsset)
+        .filter(or_(*asset_filters))
+        .order_by(models.UploadAsset.storage_key)
+        .with_for_update(of=models.UploadAsset)
+        .all()
+    )
+    by_key = {asset.storage_key: asset for asset in locked}
+    if any(key not in by_key for key in requested_keys):
+        raise HTTPException(status_code=400, detail="Invalid assignment media")
+
+    for key in requested_keys:
+        asset = by_key[key]
+        if (
+            asset.owner_user_id != student_id
+            or asset.assignment_id != assignment_id
+            or asset.purpose != "ASSIGNMENT_MEDIA"
+            or asset.blog_id is not None
+            or not (
+                asset.media_type.startswith("image/")
+                or asset.media_type.startswith("video/")
+                or asset.media_type == "application/pdf"
+            )
+            or asset.scan_completed_at is None
+        ):
+            raise HTTPException(status_code=400, detail="Invalid assignment media")
+        if asset.state == "PENDING":
+            if (
+                asset.expires_at is None
+                or _as_aware_utc(asset.expires_at) <= now
+                or not _registered_object_is_file(upload_root, key)
+            ):
+                raise HTTPException(status_code=409, detail="Assignment media is unavailable")
+            asset.state = "ACTIVE"
+            asset.expires_at = None
+            asset.bound_at = now
+        elif asset.state != "ACTIVE":
+            raise HTTPException(status_code=409, detail="Assignment media is unavailable")
+
+    queue_assets(
+        (
+            asset for asset in locked
+            if asset.state == "ACTIVE"
+            and asset.purpose == "ASSIGNMENT_MEDIA"
+            and asset.owner_user_id == student_id
+            and asset.assignment_id == assignment_id
+            and asset.storage_key not in requested_keys
+        ),
+        now=now,
+    )
+    db.flush()
+
+
 def queue_blog_assets(db: Session, blog_ids: Iterable[int], *, now: datetime) -> None:
     ids = sorted(set(blog_ids))
     if not ids:
@@ -626,6 +722,24 @@ def queue_blog_assets(db: Session, blog_ids: Iterable[int], *, now: datetime) ->
         .filter(
             models.UploadAsset.blog_id.in_(ids),
             models.UploadAsset.state == "ACTIVE",
+        )
+        .order_by(models.UploadAsset.storage_key)
+        .with_for_update(of=models.UploadAsset)
+        .all()
+    )
+    queue_assets(assets, now=now)
+    db.flush()
+
+
+def queue_assignment_assets(db: Session, assignment_ids: Iterable[int], *, now: datetime) -> None:
+    ids = sorted(set(assignment_ids))
+    if not ids:
+        return
+    assets = (
+        db.query(models.UploadAsset)
+        .filter(
+            models.UploadAsset.assignment_id.in_(ids),
+            models.UploadAsset.state.in_(("PENDING", "ACTIVE")),
         )
         .order_by(models.UploadAsset.storage_key)
         .with_for_update(of=models.UploadAsset)
@@ -735,6 +849,7 @@ def reconcile(db: Session, *, upload_root: Path, now: datetime) -> dict[str, int
             continue
         asset.state = "DELETED"
         asset.blog_id = None
+        asset.assignment_id = None
         asset.expires_at = None
         asset.delete_after = None
         asset.original_filename = None
@@ -765,9 +880,11 @@ __all__ = [
     "object_matches_registration",
     "post_asset_keys",
     "queue_blog_assets",
+    "queue_assignment_assets",
     "queue_owner_assets",
     "queue_assets",
     "registered_object_path",
     "reconcile",
+    "sync_assignment_assets",
     "validate_structured_upload_references",
 ]

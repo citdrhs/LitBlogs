@@ -5,6 +5,7 @@ import axios from 'axios';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
 import Loader from './components/Loader';
+import AssignmentResponseContent from './components/AssignmentResponseContent';
 import { logoutBrowserSession } from './utils/auth';
 
 const AssignmentSubmissions = () => {
@@ -31,7 +32,7 @@ const AssignmentSubmissions = () => {
       }
 
       const [assignmentsResponse, submissionsResponse] = await Promise.all([
-        axios.get(`/classes/${classId}/assignments`),
+        axios.get(`/classes/${classId}/assignments?include_archived=true`),
         axios.get(`/classes/${classId}/assignments/${assignmentId}/submissions`)
       ]);
 
@@ -149,7 +150,15 @@ const AssignmentSubmissions = () => {
                   </div>
                 </div>
 
-                <p className="text-sm whitespace-pre-wrap mb-3">{submission.content || 'No content provided.'}</p>
+                <div className="text-sm mb-3">
+                  {submission.content ? (
+                    <AssignmentResponseContent
+                      content={submission.content}
+                      contentFormat={submission.content_format}
+                      dark={darkMode}
+                    />
+                  ) : 'No content provided.'}
+                </div>
 
                 <div className="space-y-2 mb-3">
                   {(submission.replies || []).map((reply) => (

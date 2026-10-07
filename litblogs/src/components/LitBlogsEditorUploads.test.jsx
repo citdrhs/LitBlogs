@@ -86,6 +86,49 @@ beforeEach(() => {
 });
 
 describe("LitBlogsEditor uploads", () => {
+  it("routes assignment toolbar and pasted media through its private upload transport", async () => {
+    const scopedUpload = vi.fn(async ({ kind, file }) => ({
+      kind,
+      mimeType: file.type,
+      name: file.name,
+      size: file.size,
+      url: `/api/uploads/objects/aa/${"a".repeat(32)}.${kind === "pdf" ? "pdf" : "png"}`,
+    }));
+    render(
+      <LitBlogsEditor
+        value=""
+        onChange={vi.fn()}
+        ariaLabel="Assignment response"
+        allowExistingImages={false}
+        uploadAsset={scopedUpload}
+      />,
+    );
+    expect(mocks.options.editorProps.attributes["aria-label"]).toBe("Assignment response");
+
+    const imageInput = screen.getByTestId("editor-image-input");
+    const imageClick = vi.spyOn(imageInput, "click");
+    fireEvent.click(screen.getByRole("button", { name: "Choose image" }));
+    expect(imageClick).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog", { name: "Insert image" })).not.toBeInTheDocument();
+
+    const image = makeFile("diagram.png", "image/png");
+    fireEvent.change(imageInput, { target: { files: [image] } });
+    await waitFor(() => expect(scopedUpload).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "image",
+      file: image,
+      signal: expect.any(AbortSignal),
+    })));
+
+    const video = makeFile("lesson.mp4", "video/mp4");
+    const paste = { clipboardData: { files: [video], items: [] }, preventDefault: vi.fn() };
+    expect(mocks.options.editorProps.handlePaste(null, paste)).toBe(true);
+    await waitFor(() => expect(scopedUpload).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "video",
+      file: video,
+    })));
+    expect(mocks.uploadEditorAsset).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["image", "Choose image", "image-accept", "diagram.png", "image/png"],
     ["video", "Choose video", "video-accept", "lesson.mp4", "video/mp4"],

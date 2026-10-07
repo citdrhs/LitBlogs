@@ -6,6 +6,15 @@ test.describe.configure({ mode: 'serial', retries: 0 });
 
 const state = {};
 
+const ASSIGNMENT_IMAGE = Object.freeze({
+  name: 'assignment-journey.png',
+  mimeType: 'image/png',
+  buffer: Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZC6wAAAAASUVORK5CYII=',
+    'base64',
+  ),
+});
+
 const REMOVABLE_PDF = Object.freeze({
   name: 'removable-journey.pdf',
   mimeType: 'application/pdf',
@@ -432,7 +441,7 @@ test('students join, autosave and submit, while private work stays concealed', a
   );
   await card.getByRole('button', { name: 'Submit', exact: true }).click();
   expect((await draftLoaded).status()).toBe(200);
-  const responseEditor = student.page.getByPlaceholder('Write your submission...');
+  const responseEditor = student.page.getByRole('textbox', { name: 'Assignment response' });
   await expect(responseEditor).toBeEnabled();
   const draftSaved = waitForApiResponse(
     student.page,
@@ -443,7 +452,8 @@ test('students join, autosave and submit, while private work stays concealed', a
   const draftSaveResponse = await draftSaved;
   expect(draftSaveResponse.status()).toBe(200);
   const draftPayload = await draftSaveResponse.json();
-  expect(draftPayload).toMatchObject({ has_draft: true, content: draftContent });
+  expect(draftPayload).toMatchObject({ has_draft: true, content_format: 'rich' });
+  expect(draftPayload.content).toContain(draftContent);
   const persistenceAudit = await student.page.evaluate(async (canary) => {
     const textContainsCanary = (value) => String(value || '').includes(canary);
     const storageSnapshot = (storage) => Object.fromEntries(
@@ -562,14 +572,40 @@ test('students join, autosave and submit, while private work stays concealed', a
     indexedDbContains: false,
   });
 
+  const assignmentModal = responseEditor.locator(
+    'xpath=ancestor::div[contains(@class,"fixed inset-0")][1]',
+  );
+  const imageChooserPromise = student.page.waitForEvent('filechooser');
+  await assignmentModal.getByRole('toolbar', { name: 'Rich text formatting' })
+    .getByRole('button', { name: 'Insert image' }).click();
+  const imageChooser = await imageChooserPromise;
+  const imageUploaded = waitForApiResponse(
+    student.page,
+    'POST',
+    `/api/assignments/${state.visibleAssignment.id}/upload/image`,
+  );
+  const imageDraftSaved = waitForApiResponse(
+    student.page,
+    'PUT',
+    `/api/assignments/${state.visibleAssignment.id}/draft`,
+  );
+  await imageChooser.setFiles(ASSIGNMENT_IMAGE);
+  const assignmentImage = await responseJson(await imageUploaded);
+  await expect(responseEditor.getByRole('img', { name: ASSIGNMENT_IMAGE.name })).toBeVisible();
+  const savedWithImage = await responseJson(await imageDraftSaved);
+  expect(savedWithImage.content).toContain(assignmentImage.url);
+  expect(savedWithImage.content_format).toBe('rich');
+  expect((await student.api(assignmentImage.url)).status()).toBe(200);
+
   const modal = responseEditor.locator('xpath=ancestor::div[contains(@class,"fixed inset-0")][1]');
   await modal.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(responseEditor).toHaveCount(0);
   await assignmentCard(student.page, state.visibleTitle)
     .getByRole('button', { name: 'Resume Draft', exact: true })
     .click();
-  const resumedEditor = student.page.getByPlaceholder('Write your submission...');
-  await expect(resumedEditor).toHaveValue(draftContent);
+  const resumedEditor = student.page.getByRole('textbox', { name: 'Assignment response' });
+  await expect(resumedEditor).toContainText(draftContent);
+  await expect(resumedEditor.getByRole('img', { name: ASSIGNMENT_IMAGE.name })).toBeVisible();
   const resumedModal = resumedEditor.locator(
     'xpath=ancestor::div[contains(@class,"fixed inset-0")][1]',
   );
@@ -580,6 +616,8 @@ test('students join, autosave and submit, while private work stays concealed', a
   );
   await resumedModal.getByRole('button', { name: 'Submit', exact: true }).click();
   state.submission = await responseJson(await submitted);
+  expect(state.submission.content_format).toBe('rich');
+  expect(state.submission.content).toContain(assignmentImage.url);
   await expect(assignmentCard(student.page, state.visibleTitle)
     .getByRole('button', { name: 'View Submission', exact: true })).toBeVisible();
 
@@ -592,6 +630,7 @@ test('students join, autosave and submit, while private work stays concealed', a
     `/classes/${state.classroom.id}/assignments/${state.visibleAssignment.id}/submissions`,
   ));
   expect(peerSubmissions).toEqual([]);
+  expect((await student2.api(assignmentImage.url)).status()).toBe(404);
 
   const teacher = await journey.openRole('teacher');
   const madePrivate = await teacher.api(
@@ -632,6 +671,7 @@ test('students join, autosave and submit, while private work stays concealed', a
   expect((await admin.api(
     `/classes/${state.classroom.id}/assignments/${state.visibleAssignment.id}/submissions`,
   )).status()).toBe(200);
+  expect((await teacher.api(assignmentImage.url)).status()).toBe(200);
 });
 
 test('pending uploads bind to a class post without escaping class ACLs', async ({ journey }) => {

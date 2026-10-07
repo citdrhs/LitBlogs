@@ -1,3 +1,6 @@
+import { isCanonicalUploadUrl } from "../editor/editorContract.js";
+import { validateEditorAsset } from "../editor/editorUploads.js";
+
 const emptyPostContent = () => ({
   text: "",
   media: [],
@@ -29,6 +32,7 @@ const normalizeAssignmentDraft = (payload = {}) => ({
   content: payload.has_draft && typeof payload.content === "string"
     ? payload.content
     : "",
+  contentFormat: payload.content_format === "rich" ? "rich" : "plain",
   savedAt: payload.has_draft ? (payload.saved_at || null) : null,
   revision: Number.isSafeInteger(payload.revision) && payload.revision >= 0
     ? payload.revision
@@ -64,12 +68,14 @@ export const saveAssignmentDraft = async (
   content,
   expectedRevision,
   requestConfig,
+  contentFormat = "rich",
 ) => {
   assertDraftRevision(expectedRevision);
   const request = [
     assignmentDraftEndpoint(assignmentId),
     {
       content: typeof content === "string" ? content : "",
+      content_format: contentFormat,
       expected_revision: expectedRevision,
     },
   ];
@@ -87,18 +93,62 @@ export const submitAssignment = async (
   content,
   expectedDraftRevision,
   requestConfig,
+  contentFormat = "rich",
 ) => {
   assertDraftRevision(expectedDraftRevision);
   const request = [
     assignmentDraftEndpoint(assignmentId).replace(/\/draft$/, "/submit"),
     {
       content: typeof content === "string" ? content : "",
+      content_format: contentFormat,
       expected_draft_revision: expectedDraftRevision,
     },
   ];
   if (requestConfig) request.push(requestConfig);
   const response = await httpClient.post(...request);
   return response.data;
+};
+
+export const uploadAssignmentEditorAsset = async (
+  httpClient,
+  assignmentId,
+  { kind, file, signal, onProgress },
+) => {
+  assignmentDraftEndpoint(assignmentId);
+  const validated = validateEditorAsset({ kind, file });
+  const endpointKind = kind === "pdf" ? "file" : kind;
+  const body = new FormData();
+  body.append("file", file);
+  let response;
+  try {
+    response = await httpClient.post(
+      `/assignments/${assignmentId}/upload/${endpointKind}`,
+      body,
+      {
+        signal,
+        onUploadProgress: typeof onProgress === "function"
+          ? ({ loaded, total }) => {
+              if (Number.isFinite(loaded) && Number.isFinite(total) && total > 0) {
+                onProgress(Math.max(0, Math.min(100, (loaded / total) * 100)));
+              }
+            }
+          : undefined,
+      },
+    );
+  } catch (error) {
+    if (error?.name === "AbortError" || error?.code === "ERR_CANCELED") throw error;
+    throw new Error("Upload failed. Please try again.");
+  }
+  if (!isCanonicalUploadUrl(response?.data?.url)) {
+    throw new Error("The server returned an invalid upload response.");
+  }
+  return Object.freeze({
+    kind: validated.kind,
+    mimeType: validated.mimeType,
+    name: validated.name,
+    size: validated.size,
+    url: response.data.url,
+  });
 };
 
 const postDraftScope = (editingPostId) => (

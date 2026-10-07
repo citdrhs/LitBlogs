@@ -305,6 +305,7 @@ def test_absent_draft_and_assignment_list_expose_revision_zero_with_no_store(
     assert draft_response.status_code == 200
     assert draft_response.json() == {
         "content": "",
+        "content_format": "plain",
         "saved_at": None,
         "has_draft": False,
         "revision": 0,
@@ -356,6 +357,7 @@ def test_empty_save_creates_persistent_revision_tombstone(assignment_student):
     assert cleared.status_code == 200
     assert cleared.json() == {
         "content": "",
+        "content_format": "plain",
         "saved_at": None,
         "has_draft": False,
         "revision": 1,
