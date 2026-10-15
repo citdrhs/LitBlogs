@@ -23,6 +23,7 @@ EXPECTED_PUBLIC_API_ROUTES = frozenset(
         ("POST", "/api/auth/resend-verification"),
         ("POST", "/api/auth/reset-password"),
         ("POST", "/api/auth/verify-email"),
+        ("POST", "/api/auth/verify-student-code"),
     }
 )
 
@@ -90,6 +91,9 @@ EXPECTED_API_ROUTES = frozenset(
         ("POST", "/api/auth/resend-verification"),
         ("POST", "/api/auth/reset-password"),
         ("POST", "/api/auth/verify-email"),
+        ("POST", "/api/auth/verify-student-code"),
+        ("POST", "/api/teacher/student-verifications/lookup"),
+        ("POST", "/api/teacher/student-verifications/codes"),
         ("POST", "/api/classes"),
         ("POST", "/api/classes/{class_id}/assignments"),
         ("POST", "/api/classes/{class_id}/assignments/{assignment_id}/restore"),

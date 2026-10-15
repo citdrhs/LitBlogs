@@ -126,6 +126,13 @@ from identity_controls import (
 from oauth_security import verify_google_id_token, verify_microsoft_id_token
 from observability import RequestObservabilityMiddleware
 from rich_text_security import sanitize_rich_text_html
+from student_verification import (
+    INVALID_CODE_DETAIL,
+    consume_student_verification_code,
+    create_student_verification_codes,
+    lookup_pending_students,
+    pending_login_detail,
+)
 from upload_assets import (
     add_active_profile_asset,
     add_pending_asset,
@@ -247,6 +254,7 @@ SENSITIVE_CREDENTIAL_AUTH_PATHS = frozenset(
         "/api/auth/forgot-password",
         "/api/auth/reset-password",
         "/api/auth/verify-email",
+        "/api/auth/verify-student-code",
     }
 )
 GOOGLE_IDENTITY_ISSUER = "https://accounts.google.com"
@@ -275,6 +283,8 @@ async def safe_auth_request_validation_error(request: Request, exc: RequestValid
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"detail": INVALID_VERIFICATION_DETAIL},
         )
+    if request.url.path == "/api/auth/verify-student-code":
+        return JSONResponse(status_code=400, content={"detail": INVALID_CODE_DETAIL})
     if request.url.path in SENSITIVE_CREDENTIAL_AUTH_PATHS:
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -1866,7 +1876,7 @@ def verify_email(
 ):
     """Consume one delivered verification capability and activate its account."""
 
-    now = _utc_now_naive()
+    now = _utc_now_aware()
     token_digest = email_verification_delivery.email_verification_token_digest(
         request.token
     )
@@ -2019,6 +2029,40 @@ async def get_browser_session(current_user: models.User = Depends(get_current_us
     return _session_metadata(current_user)
 
 
+@app.post("/api/teacher/student-verifications/lookup", response_model=schemas.StudentVerificationLookupResponse)
+def lookup_teacher_student_verifications(
+    payload: schemas.StudentVerificationLookupRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    return lookup_pending_students(
+        db, actor_id=current_user.id, session_id=getattr(request.state, "browser_session_id", None),
+        emails=payload.emails, settings=settings,
+    )
+
+
+@app.post("/api/teacher/student-verifications/codes", response_model=schemas.StudentVerificationCodesResponse)
+def issue_teacher_student_verification_codes(
+    payload: schemas.StudentVerificationLookupRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    return create_student_verification_codes(
+        db, actor_id=current_user.id, session_id=getattr(request.state, "browser_session_id", None),
+        emails=payload.emails, settings=settings,
+    )
+
+
+@app.post("/api/auth/verify-student-code", response_model=RegistrationAcceptedResponse)
+def verify_teacher_student_code(payload: schemas.VerifyStudentCodeRequest, db: Session = Depends(get_db)):
+    consume_student_verification_code(
+        db, verification_challenge=payload.verification_challenge, code=payload.code, settings=settings,
+    )
+    return EMAIL_VERIFIED_RESPONSE
+
+
 @app.post(
     "/api/admin/teacher-invitations",
     response_model=schemas.TeacherInvitationResponse,
@@ -2167,6 +2211,10 @@ async def update_user_status(
             revoke_all_sessions(db, user_id=target_user.id)
             invalidate_password_reset_requests(db, user_id=target_user.id)
             invalidate_email_verification_requests(db, user_id=target_user.id)
+            db.execute(update(models.StudentVerificationCode).where(
+                or_(models.StudentVerificationCode.student_id == target_user.id,
+                    models.StudentVerificationCode.issuer_id == target_user.id),
+            ).values(code_digest=None).execution_options(synchronize_session=False))
             audit_action = "ACCOUNT_DISABLED"
         else:
             target_user.disabled_at = None
@@ -2242,8 +2290,10 @@ async def login(
         )
     if user.email_verified_at is None:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=pending_login_detail(
+                db, user_id=user.id, expected_password_hash=verified_password_hash, settings=settings,
+            ),
         )
     if upgraded_password_hash is not None:
         if not _persist_password_upgrade_if_current(

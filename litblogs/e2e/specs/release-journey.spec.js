@@ -115,11 +115,19 @@ test('login uses runtime config, HttpOnly sessions, CSRF, and role guards', asyn
     method: 'POST',
     data: { email: registrationEmail, password: registrationPassword },
   });
-  expect(await responseJson(preVerificationApiLogin, 401)).toEqual({
-    detail: 'Invalid email or password',
-  });
+  const preVerificationApiBody = await preVerificationApiLogin.json();
+  journey.redact(preVerificationApiBody.detail?.verification_challenge);
+  expect(preVerificationApiLogin.status()).toBe(403);
+  expect(preVerificationApiBody).toEqual({ detail: {
+    code: 'email_verification_required',
+    email: registrationEmail,
+    verification_challenge: expect.any(String),
+    expires_at: expect.any(String),
+    teacher_code_allowed: true,
+  } });
+  expect(Date.parse(preVerificationApiBody.detail.expires_at)).toBeGreaterThan(Date.now());
   expect(preVerificationApiLogin.headers()).not.toHaveProperty('set-cookie');
-  checkpoint('unverified-api-login-rejected');
+  checkpoint('unverified-api-login-pending-without-session');
 
   await registrationDialog.getByRole('link', { name: 'Sign In', exact: true }).click();
   await expect(anonymous.page).toHaveURL(/\/sign-in$/);
@@ -138,13 +146,27 @@ test('login uses runtime config, HttpOnly sessions, CSRF, and role guards', asyn
   await anonymous.page.getByRole('button', { name: 'Sign In', exact: true }).click();
   const rejectedUiLogin = await preVerificationUiLogin;
   const rejectedUiBody = await rejectedUiLogin.json();
-  expect(rejectedUiLogin.status()).toBe(401);
-  expect(rejectedUiBody).toEqual({
-    detail: 'Invalid email or password',
-  });
+  journey.redact(rejectedUiBody.detail?.verification_challenge);
+  expect(rejectedUiLogin.status()).toBe(403);
+  expect(rejectedUiBody).toEqual({ detail: {
+    code: 'email_verification_required',
+    email: registrationEmail,
+    verification_challenge: expect.any(String),
+    expires_at: expect.any(String),
+    teacher_code_allowed: true,
+  } });
   expect(rejectedUiLogin.headers()).not.toHaveProperty('set-cookie');
-  await expect(anonymous.page.getByText('Invalid email or password', { exact: true }))
-    .toBeVisible();
+  await expect(anonymous.page).toHaveURL(/\/verify-email\?pending=1$/);
+  await expect(anonymous.page.getByRole('heading', { name: 'Check your school email', exact: true })).toBeVisible();
+  await expect(anonymous.page.getByRole('button', { name: 'Resend email', exact: true })).toBeVisible();
+  await anonymous.page.getByRole('button', { name: 'Enter a teacher code', exact: true }).click();
+  await expect(anonymous.page.getByLabel('Six-digit teacher code', { exact: true })).toBeVisible();
+  expect(await anonymous.page.evaluate((challenge) => (
+    document.body.textContent.includes(challenge)
+    || window.location.href.includes(challenge)
+    || [...Object.values(localStorage), ...Object.values(sessionStorage)]
+      .some((value) => String(value).includes(challenge))
+  ), rejectedUiBody.detail.verification_challenge)).toBe(false);
   const unauthenticatedState = await anonymous.page.evaluate(() => ({
     cookieNames: document.cookie
       .split(';')
@@ -163,7 +185,7 @@ test('login uses runtime config, HttpOnly sessions, CSRF, and role guards', asyn
     sessionUser: null,
   });
   expect(await anonymous.context.cookies()).toEqual([]);
-  checkpoint('unverified-login-rejected');
+  checkpoint('unverified-login-pending-without-session');
 
   const verificationToken = await journey.captureVerificationEmail(registrationEmail);
   journey.redact(verificationToken, `#token=${verificationToken}`);

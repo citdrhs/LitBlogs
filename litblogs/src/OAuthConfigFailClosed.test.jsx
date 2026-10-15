@@ -47,7 +47,7 @@ afterAll(() => {
   vi.unstubAllEnvs();
 });
 
-it("keeps password sign-in and resend help while disabled providers ignore stale valid IDs", () => {
+it("keeps password sign-in while verification help stays on its separate page", () => {
   render(
     <MemoryRouter>
       <SignIn />
@@ -58,10 +58,7 @@ it("keeps password sign-in and resend help while disabled providers ignore stale
   expect(screen.queryByRole("button", { name: "Sign in with Microsoft" })).not.toBeInTheDocument();
   expect(screen.getByLabelText("Password")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Sign In" })).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: /request another verification email/i })).toHaveAttribute(
-    "href",
-    "/verify-email?resend=1",
-  );
+  expect(screen.queryByRole("link", { name: /request another verification email/i })).not.toBeInTheDocument();
 });
 
 it("does not invoke Microsoft hooks or show OAuth controls on password signup", () => {

@@ -135,15 +135,16 @@ describe("password registration privacy contract", () => {
     expect(screen.getByTestId("signup-background")).toHaveAttribute("inert");
 
     const signInLink = within(dialog).getByRole("link", { name: "Sign In" });
-    const resendLink = within(dialog).getByRole("link", {
-      name: /request another verification email/i,
+    const teacherCodeLink = within(dialog).getByRole("link", {
+      name: "Sign in to enter a teacher code",
     });
-    resendLink.focus();
+    expect(teacherCodeLink).toHaveAttribute("href", "/sign-in");
+    teacherCodeLink.focus();
     fireEvent.keyDown(dialog, { key: "Tab" });
     expect(signInLink).toHaveFocus();
     signInLink.focus();
     fireEvent.keyDown(dialog, { key: "Tab", shiftKey: true });
-    expect(resendLink).toHaveFocus();
+    expect(teacherCodeLink).toHaveFocus();
     expect(screen.getByLabelText("First Name")).toHaveValue("");
     expect(screen.getByLabelText("Last Name")).toHaveValue("");
     expect(screen.getByLabelText("Email Address")).toHaveValue("");

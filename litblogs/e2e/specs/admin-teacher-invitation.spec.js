@@ -65,9 +65,19 @@ test('an administrator invites a teacher who verifies email and creates a class'
   expect((await registered).status()).toBe(202);
   checkpoint('teacher-signup-accepted');
   await expect(invitee.page.getByRole('dialog', { name: 'Check your school email' })).toBeVisible();
-  expect((await invitee.api('/auth/login', {
+  const pendingTeacherLogin = await invitee.api('/auth/login', {
     method: 'POST', data: { email, password },
-  })).status()).toBe(401);
+  });
+  expect(pendingTeacherLogin.status()).toBe(403);
+  expect(await pendingTeacherLogin.json()).toEqual({ detail: {
+    code: 'email_verification_required',
+    email,
+    verification_challenge: null,
+    expires_at: null,
+    teacher_code_allowed: false,
+  } });
+  expect(pendingTeacherLogin.headers()).not.toHaveProperty('set-cookie');
+  expect((await invitee.api('/auth/session')).status()).toBe(401);
 
   // The existing guarded helper captures delivery only in the disposable E2E
   // database. It never contacts a real SMTP provider or school recipient.

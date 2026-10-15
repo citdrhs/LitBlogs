@@ -1723,8 +1723,9 @@ def test_pending_password_account_cannot_login_until_email_is_verified(client):
     )
 
     assert registered.status_code == 202
-    assert pending_login.status_code == 401
-    assert pending_login.json() == {"detail": "Invalid email or password"}
+    assert pending_login.status_code == 403
+    assert pending_login.json()["detail"]["code"] == "email_verification_required"
+    assert pending_login.json()["detail"]["teacher_code_allowed"] is True
     assert pending_login.headers.get_list("set-cookie") == []
     with SessionLocal() as db:
         assert db.query(models.BrowserSession).count() == 0

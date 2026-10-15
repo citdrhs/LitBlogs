@@ -1143,7 +1143,7 @@ def test_restore_acl_probe_is_catalog_wide_and_checks_fixed_security_boundary():
 
 
 def test_restore_email_verification_schema_data_and_acl_inventory_is_exact():
-    assert restore_verify_postgres.EXPECTED_ALEMBIC_HEAD == "e6f8c2d1a904"
+    assert restore_verify_postgres.EXPECTED_ALEMBIC_HEAD == "f7a9d2c4e610"
 
     schema_probe = restore_verify_postgres.SCHEMA_INTEGRITY_SQL
     for fragment in (
@@ -1286,6 +1286,48 @@ def test_restore_email_verification_schema_data_and_acl_inventory_is_exact():
     assert "email_verifications_id_seq" not in identity_sequence_inventory
 
 
+def test_restore_student_verification_schema_data_and_acl_inventory_is_exact():
+    schema_probe = restore_verify_postgres.SCHEMA_INTEGRITY_SQL
+    for fragment in (
+        "('student_verification_codes')",
+        "('student_verification_codes', 'student_id', 'users', 'id')",
+        "('student_verification_codes', 'issuer_id', 'users', 'id')",
+        "'ck_student_verification_code_attempts'",
+        "'ck_student_verification_code_digest_length'",
+        "'ck_student_verification_code_digest_lower_hex'",
+        "'student_verification_codes_pkey'",
+        "'ix_student_verification_codes_id'",
+        "'ix_student_verification_codes_student_id'",
+        "'public.student_verification_codes_id_seq'",
+        "'fk_student_verification_code_student'",
+        "'fk_student_verification_code_issuer'",
+        "student_fk.confdeltype = 'c'",
+        "issuer_fk.confdeltype = 'n'",
+        "column_name = 'attempts' AND column_default = '0'",
+    ):
+        assert fragment in schema_probe
+    normalized = " ".join(schema_probe.split())
+    for expected, actual in (
+        ("expected_student_verification_checks", "actual_student_verification_checks"),
+        ("expected_student_verification_indexes", "actual_student_verification_indexes"),
+    ):
+        assert f"SELECT * FROM {expected} EXCEPT SELECT * FROM {actual}" in normalized
+        assert f"SELECT * FROM {actual} EXCEPT SELECT * FROM {expected}" in normalized
+    assert "FROM public.student_verification_codes" in restore_verify_postgres.CORE_DATA_INTEGRITY_SQL
+    identity_probe = restore_verify_postgres.IDENTITY_DATA_INTEGRITY_SQL
+    for fragment in (
+        "('student_verification_codes')",
+        "('student_verification_codes_id_seq')",
+        "('litblog_identity_owner', 'student_verification_codes', 'student_id', 'SELECT', FALSE)",
+        "('litblog_identity_owner', 'student_verification_codes', 'issuer_id', 'SELECT', FALSE)",
+        "('litblog_identity_owner', 'student_verification_codes', 'code_digest', 'UPDATE', FALSE)",
+    ):
+        assert fragment in identity_probe
+    signature = "operator_set_account_status(character varying, boolean, character varying, character varying)"
+    assert "UPDATE public.student_verification_codes" in restore_verify_postgres.EXPECTED_OPERATOR_ROUTINE_CONTRACT[signature]["source"]
+    assert "WHERE student_id = v_user_id OR issuer_id = v_user_id" in restore_verify_postgres.EXPECTED_OPERATOR_ROUTINE_CONTRACT[signature]["source"]
+
+
 def test_restore_pins_exact_reviewed_operator_routine_bodies_and_metadata():
     contract = restore_verify_postgres._load_expected_operator_routine_contract(
         ROOT_DIR / "litblogs"
@@ -1311,7 +1353,7 @@ def test_restore_pins_exact_reviewed_operator_routine_bodies_and_metadata():
     ).read_text(encoding="utf-8")
     latest_path = (
         ROOT_DIR
-        / "litblogs/migrations/versions/a82f8f2b1d7c_email_verification.py"
+        / "litblogs/migrations/versions/f7a9d2c4e610_student_verification_codes.py"
     )
     assert latest_path.is_file()
     latest_source = latest_path.read_text(encoding="utf-8")
@@ -1392,7 +1434,7 @@ def test_restore_accepts_only_exact_operator_argument_metadata():
 def test_restore_rejects_ambiguous_latest_migration_routine_sources(tmp_path, mutation):
     source_path = (
         ROOT_DIR
-        / "litblogs/migrations/versions/a82f8f2b1d7c_email_verification.py"
+        / "litblogs/migrations/versions/f7a9d2c4e610_student_verification_codes.py"
     )
     assert source_path.is_file()
     migration_source = source_path.read_text(encoding="utf-8")
@@ -1407,7 +1449,7 @@ def test_restore_rejects_ambiguous_latest_migration_routine_sources(tmp_path, mu
 
     backend_root = tmp_path / "litblogs"
     candidate = (
-        backend_root / "migrations/versions/a82f8f2b1d7c_email_verification.py"
+        backend_root / "migrations/versions/f7a9d2c4e610_student_verification_codes.py"
     )
     candidate.parent.mkdir(parents=True)
     candidate.write_text(migration_source, encoding="utf-8")
@@ -1448,11 +1490,11 @@ def test_restore_rejects_decoy_routines_outside_the_reviewed_migration_constant(
     candidate.parent.mkdir(parents=True)
     candidate.write_text(migration_source, encoding="utf-8")
     latest_candidate = (
-        backend_root / "migrations/versions/a82f8f2b1d7c_email_verification.py"
+        backend_root / "migrations/versions/f7a9d2c4e610_student_verification_codes.py"
     )
     latest_source_path = (
         ROOT_DIR
-        / "litblogs/migrations/versions/a82f8f2b1d7c_email_verification.py"
+        / "litblogs/migrations/versions/f7a9d2c4e610_student_verification_codes.py"
     )
     assert latest_source_path.is_file()
     latest_candidate.write_text(

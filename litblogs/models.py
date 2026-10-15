@@ -254,7 +254,9 @@ class OperatorAuditEvent(Base):
             "'ACCOUNT_DELETED', "
             "'ACCOUNT_RECOVERY_LINK_CREATED', "
             "'ACCOUNT_RECOVERY_EMAIL_QUEUED', "
-            "'ACCOUNT_VERIFICATION_LINK_CREATED'"
+            "'ACCOUNT_VERIFICATION_LINK_CREATED', "
+            "'STUDENT_VERIFICATION_CODE_CREATED', "
+            "'STUDENT_VERIFICATION_CODE_CONSUMED'"
             ")",
             name="ck_operator_audit_action",
         ),
@@ -760,6 +762,39 @@ class PasswordReset(Base):
         CheckConstraint(
             "token IS NULL OR token ~ '^[0-9a-f]{64}$'",
             name="ck_password_reset_token_lower_hex",
+        ).ddl_if(dialect="postgresql"),
+    )
+
+
+class StudentVerificationCode(Base):
+    __tablename__ = "student_verification_codes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE", name="fk_student_verification_code_student"),
+        nullable=False, unique=True, index=True,
+    )
+    issuer_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_student_verification_code_issuer"),
+        nullable=True,
+    )
+    code_digest = Column(String(64), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    consumed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("attempts >= 0 AND attempts <= 5", name="ck_student_verification_code_attempts"),
+        CheckConstraint(
+            "code_digest IS NULL OR length(code_digest) = 64",
+            name="ck_student_verification_code_digest_length",
+        ),
+        CheckConstraint(
+            "code_digest IS NULL OR code_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_student_verification_code_digest_lower_hex",
         ).ddl_if(dialect="postgresql"),
     )
 

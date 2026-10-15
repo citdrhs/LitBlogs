@@ -279,6 +279,7 @@ const SignUp = ({
       });
       setSuccessData({
         requiresVerification: true,
+        role,
       });
       setShowSuccessModal(true);
 
@@ -781,6 +782,12 @@ const SignUp = ({
                   >
                     Request another verification email
                   </Link>
+                  {successData?.role === 'STUDENT' && <p className="mt-4 text-center text-sm">
+                    Still no email? Your teacher can help you verify with a code.{' '}
+                    <Link to="/sign-in" className="font-semibold underline underline-offset-4">
+                      Sign in to enter a teacher code
+                    </Link>
+                  </p>}
                 </>
               ) : successData?.role === 'STUDENT' ? (
                 <>

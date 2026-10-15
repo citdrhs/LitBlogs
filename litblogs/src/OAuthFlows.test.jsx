@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { clearPendingVerification, getPendingVerification } from "./utils/pendingVerification";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const doubles = vi.hoisted(() => ({
@@ -62,6 +63,7 @@ afterAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  clearPendingVerification();
   window.matchMedia = vi.fn().mockReturnValue({ matches: false });
   doubles.post.mockResolvedValue({ data: {} });
   doubles.get.mockResolvedValue({ data: {} });
@@ -73,6 +75,32 @@ beforeEach(() => {
       name: "Raw Profile",
       localAccountId: "raw-profile-id",
     },
+  });
+});
+
+describe("pending local-password sign in", () => {
+  it("redirects after a correct-password pending response without starting a session", async () => {
+    doubles.post.mockRejectedValue({ response: { status: 403, data: { detail: {
+      code: "email_verification_required",
+      email: "student@example.com",
+      verification_challenge: "synthetic-private-challenge",
+      expires_at: new Date(Date.now() + 900_000).toISOString(),
+      teacher_code_allowed: true,
+    } } } });
+    render(<MemoryRouter initialEntries={["/sign-in"]}><Routes>
+      <Route path="/sign-in" element={<SignIn />} />
+      <Route path="/verify-email" element={<h1>Pending verification page</h1>} />
+    </Routes></MemoryRouter>);
+    expect(screen.queryByRole("link", { name: /request another verification email/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /teacher code/i })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Email Address"), { target: { value: "student@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "Synthetic-password-15!" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign In" }));
+    expect(await screen.findByRole("heading", { name: "Pending verification page" })).toBeInTheDocument();
+    expect(getPendingVerification()?.challenge).toBe("synthetic-private-challenge");
+    expect(doubles.fetchBrowserSession).not.toHaveBeenCalled();
+    expect(doubles.get).not.toHaveBeenCalled();
+    expect(JSON.stringify({ ...localStorage, ...sessionStorage })).not.toContain("synthetic-private-challenge");
   });
 });
 

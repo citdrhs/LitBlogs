@@ -82,6 +82,7 @@ REQUIRED_RELEASE_FILES = (
     "litblogs/runtime_database_identity.py",
     "litblogs/schemas.py",
     "litblogs/security_utils.py",
+    "litblogs/student_verification.py",
     "litblogs/upload_assets.py",
     "litblogs/upload_legacy_inventory.py",
     "litblogs/upload_reconciliation_job.py",

@@ -372,5 +372,41 @@ class ResendVerificationRequest(StrictRequest):
 class VerifyEmailRequest(StrictRequest):
     token: str = Field(min_length=1, max_length=128)
 
+
+class StudentVerificationLookupRequest(StrictRequest):
+    emails: list[Annotated[EmailStr, Field(max_length=100)]] = Field(min_length=1, max_length=25)
+
+
+class PendingStudentResponse(BaseModel):
+    id: int
+    email: EmailStr
+    first_name: str | None
+    last_name: str | None
+    username: str
+
+
+class StudentVerificationLookupResponse(BaseModel):
+    students: list[PendingStudentResponse]
+    unmatched_count: int
+
+
+class StudentVerificationCodeResponse(BaseModel):
+    student_id: int
+    email: EmailStr
+    first_name: str | None
+    last_name: str | None
+    code: str
+    expires_at: datetime
+
+
+class StudentVerificationCodesResponse(BaseModel):
+    codes: list[StudentVerificationCodeResponse]
+
+
+class VerifyStudentCodeRequest(StrictRequest):
+    verification_challenge: str = Field(min_length=1, max_length=2_048)
+    code: str = Field(min_length=6, max_length=6, pattern=r"^[0-9]{6}$")
+
+
 class Teacher(TeacherBase):
     model_config = ConfigDict(from_attributes=True)

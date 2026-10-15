@@ -87,6 +87,8 @@ def test_runtime_database_identity_accepts_only_the_exact_runtime_boundary():
         "email_verifications",
         "runtime_sequences",
         "email_verifications_id_seq",
+        "student_verification_codes",
+        "student_verification_codes_id_seq",
         "expected_schema_acl",
         "actual_schema_acl",
         "expected_table_acl",

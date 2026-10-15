@@ -1,6 +1,10 @@
 # Local worktrees
 .worktrees/
 
+# Local browser review screenshots and disposable review harnesses
+output/playwright/
+.playwright-cli/
+
 # Environment files (commit only sanitized examples)
 *.env
 .env.*
