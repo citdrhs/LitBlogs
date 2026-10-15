@@ -13,6 +13,7 @@ import { FaMicrosoft } from 'react-icons/fa';
 import { resolveAppAsset } from './utils/urlUtils';
 import { applyGlobalUserSettings, saveLocalUserSettings } from './utils/userSettings';
 import { fetchBrowserSession, persistSessionMetadata } from './utils/auth';
+import { clearPendingVerification, rememberPendingVerification } from './utils/pendingVerification';
 
 const MicrosoftSignInButton = ({ onAuthenticate }) => {
   const { instance } = useMsal();
@@ -120,6 +121,7 @@ const SignIn = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    clearPendingVerification();
     setIsLoading(true);
     setErrorMessage("");
     
@@ -138,6 +140,11 @@ const SignIn = () => {
 
       await persistSessionAndNavigate();
     } catch (error) {
+      if (error.response?.status === 403 && rememberPendingVerification(error.response?.data?.detail)) {
+        setPassword("");
+        navigate('/verify-email?pending=1');
+        return;
+      }
       console.error('Login failed');
       
       // Check if the error is related to Google authentication
@@ -145,7 +152,8 @@ const SignIn = () => {
           error.response?.data?.detail?.includes('Google')) {
         setErrorMessage("This account uses Google authentication. Please sign in with the Google button below.");
       } else {
-        setErrorMessage(error.response?.data?.detail || "Login failed. Please check your email and password.");
+        const detail = error.response?.data?.detail;
+        setErrorMessage(typeof detail === 'string' ? detail : "Login failed. Please check your email and password.");
       }
     } finally {
       setIsLoading(false);
@@ -382,15 +390,6 @@ return (
             className={`text-sm text-blue-500 hover:text-blue-700 transition duration-300 ${darkMode ? 'hover:text-blue-400' : 'hover:text-blue-600'}`}
           >
             Forgot Password?
-          </Link>
-        </div>
-
-        <div className="mt-3 text-center">
-          <Link
-            to="/verify-email?resend=1"
-            className={`text-sm text-blue-500 hover:text-blue-700 transition duration-300 ${darkMode ? 'hover:text-blue-400' : 'hover:text-blue-600'}`}
-          >
-            Request another verification email
           </Link>
         </div>
 

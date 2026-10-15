@@ -21,6 +21,7 @@ PUBLIC_API_ROUTES = frozenset(
         ("POST", "/api/auth/resend-verification"),
         ("POST", "/api/auth/reset-password"),
         ("POST", "/api/auth/verify-email"),
+        ("POST", "/api/auth/verify-student-code"),
     }
 )
 

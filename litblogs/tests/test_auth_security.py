@@ -738,8 +738,11 @@ def test_pending_legacy_password_login_never_upgrades_hash_or_issues_session(cli
         json={"email": "pending-legacy@example.test", "password": LEGACY_PASSWORD},
     )
 
-    assert response.status_code == 401
-    assert response.json() == {"detail": "Invalid email or password"}
+    assert response.status_code == 403
+    detail = response.json()["detail"]
+    assert detail["code"] == "email_verification_required"
+    assert detail["teacher_code_allowed"] is True
+    assert detail["verification_challenge"]
     assert response.headers.get_list("set-cookie") == []
     with SessionLocal() as db:
         assert db.get(models.User, user_id).password == LEGACY_BCRYPT_HASH

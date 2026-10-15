@@ -45,6 +45,7 @@ EXPECTED_REVISIONS = (
     "c8f21d9a6b70",
     "d93c5e8a41b2",
     "e6f8c2d1a904",
+    "f7a9d2c4e610",
 )
 EXPECTED_TABLES = (
     "assignment_drafts",
@@ -65,6 +66,7 @@ EXPECTED_TABLES = (
     "post_likes",
     "push_subscriptions",
     "saved_posts",
+    "student_verification_codes",
     "teacher_invitations",
     "teachers",
     "upload_assets",
@@ -72,7 +74,8 @@ EXPECTED_TABLES = (
     "users",
 )
 HISTORICAL_F1_TABLES = tuple(
-    table_name for table_name in EXPECTED_TABLES if table_name != "email_verifications"
+    table_name for table_name in EXPECTED_TABLES
+    if table_name not in {"email_verifications", "student_verification_codes"}
 )
 
 EXPECTED_PRODUCTION_MIGRATOR_BOUNDARY = (
@@ -947,6 +950,154 @@ def test_assignment_archive_sqlite_complete_model_metadata_is_adopted(tmp_path):
         engine.dispose()
 
 
+def test_student_verification_upgrade_preserves_existing_accounts_and_work(tmp_path):
+    engine = sa.create_engine(f"sqlite:///{(tmp_path / 'student-verification-preservation.db').as_posix()}")
+    try:
+        _upgrade(engine, "e6f8c2d1a904")
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "INSERT INTO users (id, username, email, password, role, email_verified_at) VALUES "
+                "(1, 'teacher', 'teacher@example.com', 'teacher-hash', 'TEACHER', '2026-10-01 12:00:00'), "
+                "(2, 'student', 'student@example.com', 'student-hash', 'STUDENT', NULL)"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO teachers (id, name, email, user_id) VALUES (1, 'Teacher', 'teacher@example.com', 1)"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO classes (id, name, access_code, teacher_id, status) "
+                "VALUES (1, 'English', 'READ123', 1, 'active')"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO class_enrollments (id, class_id, student_id) VALUES (1, 1, 2)"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO assignments (id, class_id, title, description, due_date, created_by) "
+                "VALUES (1, 1, 'Reading', 'Keep these instructions', '2026-12-01 12:00:00', 1)"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO assignment_drafts (id, assignment_id, student_id, content, revision, content_format) "
+                "VALUES (1, 1, 2, '<p>Keep my draft</p>', 7, 'html')"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO assignment_submissions (id, assignment_id, student_id, content, content_format) "
+                "VALUES (1, 1, 2, '<p>Keep my submission</p>', 'html')"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO email_verifications (user_id, token_digest, expires_at, delivery_status) "
+                "VALUES (2, :digest, '2026-12-01 12:00:00', 'DELIVERED')",
+                {"digest": "a" * 64},
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO operator_audit_events (actor_identifier, action, outcome, resource_digest) "
+                "VALUES ('admin-user:1', 'ACCOUNT_ENABLED', 'SUCCEEDED', :digest)",
+                {"digest": "b" * 64},
+            )
+            previous_rows = {
+                table_name: connection.exec_driver_sql(f'SELECT * FROM "{table_name}" ORDER BY id').all()
+                for table_name in sa.inspect(connection).get_table_names()
+                if table_name != "alembic_version"
+            }
+
+        _upgrade(engine)
+
+        with engine.connect() as connection:
+            for table_name, expected_rows in previous_rows.items():
+                assert connection.exec_driver_sql(f'SELECT * FROM "{table_name}" ORDER BY id').all() == expected_rows
+            assert connection.exec_driver_sql("SELECT count(*) FROM student_verification_codes").scalar_one() == 0
+            command.check(_alembic_config(connection))
+        assert _current_revision(engine) == "f7a9d2c4e610"
+    finally:
+        engine.dispose()
+
+
+def test_student_verification_sqlite_complete_model_schema_is_adopted(tmp_path):
+    from base import Base
+
+    engine = sa.create_engine(f"sqlite:///{(tmp_path / 'student-verification-adoption.db').as_posix()}")
+    try:
+        Base.metadata.create_all(bind=engine)
+        _stamp(engine, "e6f8c2d1a904")
+        _upgrade(engine)
+        with engine.connect() as connection:
+            command.check(_alembic_config(connection))
+        assert _current_revision(engine) == "f7a9d2c4e610"
+    finally:
+        engine.dispose()
+
+
+def test_student_verification_sqlite_partial_schema_fails_before_ddl(tmp_path):
+    engine = sa.create_engine(f"sqlite:///{(tmp_path / 'student-verification-partial.db').as_posix()}")
+    try:
+        _upgrade(engine, "e6f8c2d1a904")
+        with engine.begin() as connection:
+            connection.exec_driver_sql("CREATE TABLE student_verification_codes (id INTEGER PRIMARY KEY)")
+            old_audit_ddl = connection.exec_driver_sql(
+                "SELECT sql FROM sqlite_master WHERE name='operator_audit_events'"
+            ).scalar_one()
+        with pytest.raises(RuntimeError, match="partial SQLite schema for f7a9d2c4e610"):
+            _upgrade(engine)
+        assert _current_revision(engine) == "e6f8c2d1a904"
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql(
+                "SELECT sql FROM sqlite_master WHERE name='operator_audit_events'"
+            ).scalar_one() == old_audit_ddl
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("invalid_values", [{"attempts": -1}, {"attempts": 6}, {"code_digest": "short"}])
+def test_student_verification_migrated_constraints_reject_invalid_rows(tmp_path, invalid_values):
+    engine = sa.create_engine(f"sqlite:///{(tmp_path / 'student-verification-constraints.db').as_posix()}")
+    try:
+        _upgrade(engine)
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "INSERT INTO users (id, username, email, password, role) "
+                "VALUES (1, 'student', 'student@example.com', 'hash', 'STUDENT')"
+            )
+        values = {"attempts": 0, "code_digest": "a" * 64, **invalid_values}
+        with pytest.raises(sa.exc.IntegrityError):
+            with engine.begin() as connection:
+                connection.execute(sa.text(
+                    "INSERT INTO student_verification_codes (student_id, code_digest, attempts, expires_at) "
+                    "VALUES (1, :code_digest, :attempts, '2026-12-01 12:00:00')"
+                ), values)
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("retained_state", ["code", "STUDENT_VERIFICATION_CODE_CREATED", "STUDENT_VERIFICATION_CODE_CONSUMED"])
+def test_student_verification_downgrade_preserves_codes_and_audit_history(tmp_path, retained_state):
+    engine = sa.create_engine(f"sqlite:///{(tmp_path / 'student-verification-downgrade.db').as_posix()}")
+    try:
+        _upgrade(engine)
+        with engine.begin() as connection:
+            if retained_state == "code":
+                connection.exec_driver_sql(
+                    "INSERT INTO users (id, username, email, password, role) "
+                    "VALUES (1, 'student', 'student@example.com', 'hash', 'STUDENT')"
+                )
+                connection.exec_driver_sql(
+                    "INSERT INTO student_verification_codes (student_id, code_digest, expires_at) "
+                    "VALUES (1, :digest, '2026-12-01 12:00:00')", {"digest": "a" * 64},
+                )
+            else:
+                connection.execute(sa.text(
+                    "INSERT INTO operator_audit_events (actor_identifier, action, outcome, resource_digest) "
+                    "VALUES ('teacher-user:1', :action, 'SUCCEEDED', :digest)"
+                ), {"action": retained_state, "digest": "b" * 64})
+        with pytest.raises(RuntimeError, match="Cannot downgrade while student verification codes or their audit events exist"):
+            _downgrade(engine, "e6f8c2d1a904")
+        assert _current_revision(engine) == "f7a9d2c4e610"
+        with engine.connect() as connection:
+            if retained_state == "code":
+                assert connection.exec_driver_sql("SELECT code_digest FROM student_verification_codes").scalar_one() == "a" * 64
+            else:
+                assert connection.exec_driver_sql("SELECT action FROM operator_audit_events").scalar_one() == retained_state
+    finally:
+        engine.dispose()
+
+
 def test_assignment_archive_sqlite_partial_adoption_is_rejected_before_ddl(tmp_path):
     engine = sa.create_engine(
         f"sqlite:///{(tmp_path / 'assignment-archive-partial.db').as_posix()}"
@@ -1204,7 +1355,7 @@ def test_admin_audit_migration_preserves_new_history_on_refused_downgrade(tmp_pa
         engine.dispose()
 
 
-def _assert_runtime_manual_account_verification(runtime_engine, migrator_engine):
+def _assert_runtime_manual_account_verification(runtime_engine, migrator_engine, admin_engine):
     """The actual runtime grants must allow issuance, replacement and redemption."""
     from urllib.parse import parse_qs, urlsplit
 
@@ -1244,8 +1395,19 @@ def _assert_runtime_manual_account_verification(runtime_engine, migrator_engine)
                 "SELECT count(*) FROM operator_audit_events WHERE actor_identifier=:actor "
                 "AND action='ACCOUNT_VERIFICATION_LINK_CREATED'"
             ), {"actor": f"admin-user:{actor_id}"}).scalar_one() == 2
-        with pytest.raises(RuntimeError, match="Cannot downgrade while new administrator audit events exist"):
-            _downgrade(migrator_engine, "b64a9c2e7d31")
+        # The newer code revision also owns an operator-body transition. Satisfy
+        # its reviewed temporary membership before testing the older audit guard.
+        with admin_engine.begin() as connection:
+            connection.exec_driver_sql(
+                "GRANT litblog_identity_owner TO litblogs_migrator "
+                "WITH ADMIN FALSE, INHERIT TRUE, SET TRUE"
+            )
+        try:
+            with pytest.raises(RuntimeError, match="Cannot downgrade while new administrator audit events exist"):
+                _downgrade(migrator_engine, "b64a9c2e7d31")
+        finally:
+            with admin_engine.begin() as connection:
+                connection.exec_driver_sql("REVOKE litblog_identity_owner FROM litblogs_migrator")
         assert _current_revision(migrator_engine) == EXPECTED_REVISIONS[-1]
     finally:
         # Remove only this synthetic fixture's history before other downgrade tests.
@@ -1254,6 +1416,105 @@ def _assert_runtime_manual_account_verification(runtime_engine, migrator_engine)
                                {"actor": f"admin-user:{actor_id}"})
             connection.execute(sa.text("DELETE FROM users WHERE id IN (:actor,:target)"),
                                {"actor": actor_id, "target": target_id})
+
+
+def _assert_student_verification_runtime_grants_and_operator_invalidation(runtime_engine, migrator_engine, admin_engine):
+    """Real restricted roles can manage codes, and disabling never revives them."""
+    actor_identifier = "migration-student-code-test"
+    with runtime_engine.begin() as connection:
+        account_ids = connection.exec_driver_sql(
+            "INSERT INTO public.users (username, email, password, role, email_verified_at) VALUES "
+            "('code-teacher', 'code-teacher@example.com', 'hash', 'TEACHER', CURRENT_TIMESTAMP), "
+            "('code-student-a', 'code-student-a@example.com', 'hash', 'STUDENT', NULL), "
+            "('code-student-b', 'code-student-b@example.com', 'hash', 'STUDENT', NULL) RETURNING id"
+        ).scalars().all()
+        teacher_id, student_a, student_b = account_ids
+        for student_id in (student_a, student_b):
+            connection.execute(sa.text(
+                "INSERT INTO public.student_verification_codes (student_id, issuer_id, code_digest, expires_at) "
+                "VALUES (:student, :issuer, :digest, CURRENT_TIMESTAMP + INTERVAL '15 minutes')"
+            ), {"student": student_id, "issuer": teacher_id, "digest": "a" * 64})
+    try:
+        with pytest.raises(sa.exc.IntegrityError):
+            with runtime_engine.begin() as connection:
+                connection.execute(sa.text(
+                    "UPDATE public.student_verification_codes SET code_digest=:digest WHERE student_id=:student"
+                ), {"digest": "A" * 64, "student": student_a})
+
+        def set_disabled(email, disabled):
+            with admin_engine.begin() as connection:
+                connection.exec_driver_sql("SET LOCAL ROLE litblog_account_operator")
+                outcome = connection.execute(sa.text(
+                    "SELECT public.operator_set_account_status(CAST(:email AS VARCHAR), :disabled, "
+                    "CAST(:actor AS VARCHAR), CAST(:digest AS VARCHAR))"
+                ), {"email": email, "disabled": disabled, "actor": actor_identifier, "digest": "b" * 64}).scalar_one()
+                assert outcome == "SUCCEEDED"
+
+        set_disabled("code-student-a@example.com", True)
+        set_disabled("code-student-a@example.com", False)
+        with runtime_engine.begin() as connection:
+            codes = dict(connection.execute(sa.text(
+                "SELECT student_id, code_digest FROM public.student_verification_codes "
+                "WHERE student_id IN (:first, :second)"
+            ), {"first": student_a, "second": student_b}).all())
+            assert codes == {student_a: None, student_b: "a" * 64}
+            connection.execute(sa.text(
+                "UPDATE public.student_verification_codes SET code_digest=:digest WHERE student_id=:student"
+            ), {"digest": "c" * 64, "student": student_a})
+
+        set_disabled("code-teacher@example.com", True)
+        set_disabled("code-teacher@example.com", False)
+        with runtime_engine.connect() as connection:
+            assert connection.execute(sa.text(
+                "SELECT count(*) FROM public.student_verification_codes "
+                "WHERE student_id IN (:first, :second) AND code_digest IS NOT NULL"
+            ), {"first": student_a, "second": student_b}).scalar_one() == 0
+
+        # The identity owner can invalidate only; it cannot retrieve a code digest.
+        with pytest.raises(sa.exc.DBAPIError):
+            with admin_engine.begin() as connection:
+                connection.exec_driver_sql("SET LOCAL ROLE litblog_identity_owner")
+                connection.exec_driver_sql("SELECT code_digest FROM public.student_verification_codes")
+    finally:
+        with migrator_engine.begin() as connection:
+            connection.execute(sa.text("DELETE FROM public.operator_audit_events WHERE actor_identifier=:actor"),
+                               {"actor": actor_identifier})
+            connection.execute(sa.text("DELETE FROM public.users WHERE id IN (:teacher, :first, :second)"),
+                               {"teacher": teacher_id, "first": student_a, "second": student_b})
+
+
+def _assert_student_verification_restore_tampering_rejected(admin_engine):
+    mutations = (
+        (
+            "ALTER TABLE public.student_verification_codes DROP CONSTRAINT ck_student_verification_code_attempts",
+            "ALTER TABLE public.student_verification_codes ADD CONSTRAINT ck_student_verification_code_attempts "
+            "CHECK (attempts >= 0 AND attempts <= 9)",
+        ),
+        (
+            "ALTER TABLE public.student_verification_codes DROP CONSTRAINT ck_student_verification_code_digest_lower_hex",
+        ),
+        (
+            "DROP INDEX public.ix_student_verification_codes_student_id",
+            "CREATE INDEX ix_student_verification_codes_student_id ON public.student_verification_codes (student_id)",
+        ),
+        (
+            "ALTER TABLE public.student_verification_codes DROP CONSTRAINT fk_student_verification_code_issuer",
+            "ALTER TABLE public.student_verification_codes ADD CONSTRAINT fk_student_verification_code_issuer "
+            "FOREIGN KEY (issuer_id) REFERENCES public.users(id) ON DELETE CASCADE",
+        ),
+        (
+            "ALTER TABLE public.student_verification_codes ALTER COLUMN attempts SET DEFAULT 1",
+        ),
+    )
+    with admin_engine.begin() as connection:
+        assert connection.exec_driver_sql(restore_verify_postgres.SCHEMA_INTEGRITY_SQL).scalar_one() == "ok"
+        for statements in mutations:
+            with connection.begin_nested() as savepoint:
+                for statement in statements:
+                    connection.exec_driver_sql(statement)
+                assert connection.exec_driver_sql(restore_verify_postgres.SCHEMA_INTEGRITY_SQL).scalar_one() == "failed"
+                savepoint.rollback()
+            assert connection.exec_driver_sql(restore_verify_postgres.SCHEMA_INTEGRITY_SQL).scalar_one() == "ok"
 
 
 def _assert_runtime_invitation_issuance_and_concurrency(runtime_engine, migrator_engine):
@@ -1619,16 +1880,30 @@ def test_postgresql_upgrade_has_exact_schema_and_acl_when_available(
 
         database.check_database_readiness(runtime_engine)
         _assert_runtime_invitation_issuance_and_concurrency(runtime_engine, migrator_engine)
-        _assert_runtime_manual_account_verification(runtime_engine, migrator_engine)
+        _assert_runtime_manual_account_verification(runtime_engine, migrator_engine, admin_engine)
+        _assert_student_verification_runtime_grants_and_operator_invalidation(
+            runtime_engine, migrator_engine, admin_engine,
+        )
+        _assert_student_verification_restore_tampering_rejected(admin_engine)
 
-        # The additive grant is reversible without deleting any invitation.
-        _downgrade(migrator_engine, "a82f8f2b1d7c")
-        with runtime_engine.connect() as connection:
-            with pytest.raises(RuntimeError, match="privilege boundary"):
-                database.verify_runtime_database_identity(connection)
-        with migrator_engine.connect() as connection:
-            assert connection.exec_driver_sql("SELECT count(*) FROM teacher_invitations").scalar_one() == 1
-        _upgrade(migrator_engine)
+        # The additive grants are reversible without deleting any invitation.
+        # Crossing the latest operator-body revision needs the reviewed handoff.
+        with admin_engine.begin() as connection:
+            connection.exec_driver_sql(
+                "GRANT litblog_identity_owner TO litblogs_migrator "
+                "WITH ADMIN FALSE, INHERIT TRUE, SET TRUE"
+            )
+        try:
+            _downgrade(migrator_engine, "a82f8f2b1d7c")
+            with runtime_engine.connect() as connection:
+                with pytest.raises(RuntimeError, match="privilege boundary"):
+                    database.verify_runtime_database_identity(connection)
+            with migrator_engine.connect() as connection:
+                assert connection.exec_driver_sql("SELECT count(*) FROM teacher_invitations").scalar_one() == 1
+            _upgrade(migrator_engine)
+        finally:
+            with admin_engine.begin() as connection:
+                connection.exec_driver_sql("REVOKE litblog_identity_owner FROM litblogs_migrator")
         database.check_database_readiness(runtime_engine)
 
         for grant, revoke in (
@@ -1791,8 +2066,8 @@ def test_postgresql_upgrade_has_exact_schema_and_acl_when_available(
                 )
 
         revision_spec = importlib.util.spec_from_file_location(
-            "email_verification_revision_for_tamper",
-            VERSIONS_DIR / "a82f8f2b1d7c_email_verification.py",
+            "student_verification_revision_for_tamper",
+            VERSIONS_DIR / "f7a9d2c4e610_student_verification_codes.py",
         )
         assert revision_spec is not None and revision_spec.loader is not None
         revision_module = importlib.util.module_from_spec(revision_spec)

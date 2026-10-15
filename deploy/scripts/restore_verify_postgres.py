@@ -57,7 +57,7 @@ UTC_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
 IDENTITY_RESULT = re.compile(r"^ok:([0-9]+)$")
 PSQL_VARIABLE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 MAX_MANIFEST_BYTES = 16 * 1024
-EXPECTED_ALEMBIC_HEAD = "e6f8c2d1a904"
+EXPECTED_ALEMBIC_HEAD = "f7a9d2c4e610"
 BACKEND_ROOT = Path(__file__).resolve().parents[2] / "litblogs"
 OPERATOR_ROUTINE_MIGRATIONS = (
     (
@@ -71,7 +71,7 @@ OPERATOR_ROUTINE_MIGRATIONS = (
         ),
     ),
     (
-        "migrations/versions/a82f8f2b1d7c_email_verification.py",
+        "migrations/versions/f7a9d2c4e610_student_verification_codes.py",
         frozenset({"operator_set_account_status"}),
     ),
 )
@@ -357,6 +357,7 @@ WITH required_tables(name) AS (
         ('assignment_submissions'),
         ('comments'),
         ('email_verifications'),
+        ('student_verification_codes'),
         ('post_likes'),
         ('saved_posts'),
         ('assignment_submission_replies'),
@@ -379,7 +380,15 @@ required_columns(
         ('email_verifications', 'expires_at', 'timestamp with time zone', 'YES', NULL),
         ('email_verifications', 'delivery_status', 'character varying', 'NO', 16),
         ('email_verifications', 'delivery_attempted_at', 'timestamp with time zone', 'YES', NULL),
-        ('email_verifications', 'delivery_claim_digest', 'character varying', 'YES', 64)
+        ('email_verifications', 'delivery_claim_digest', 'character varying', 'YES', 64),
+        ('student_verification_codes', 'id', 'integer', 'NO', NULL),
+        ('student_verification_codes', 'student_id', 'integer', 'NO', NULL),
+        ('student_verification_codes', 'issuer_id', 'integer', 'YES', NULL),
+        ('student_verification_codes', 'code_digest', 'character varying', 'YES', 64),
+        ('student_verification_codes', 'created_at', 'timestamp with time zone', 'NO', NULL),
+        ('student_verification_codes', 'expires_at', 'timestamp with time zone', 'NO', NULL),
+        ('student_verification_codes', 'attempts', 'integer', 'NO', NULL),
+        ('student_verification_codes', 'consumed_at', 'timestamp with time zone', 'YES', NULL)
 ),
 actual_columns AS (
     SELECT
@@ -390,7 +399,7 @@ actual_columns AS (
         columns.character_maximum_length
     FROM information_schema.columns
     WHERE columns.table_schema = 'public'
-      AND columns.table_name IN ('users', 'email_verifications')
+      AND columns.table_name IN ('users', 'email_verifications', 'student_verification_codes')
 ),
 expected_foreign_keys(
     table_name,
@@ -401,6 +410,8 @@ expected_foreign_keys(
     VALUES
         ('password_resets', 'user_id', 'users', 'id'),
         ('email_verifications', 'user_id', 'users', 'id'),
+        ('student_verification_codes', 'student_id', 'users', 'id'),
+        ('student_verification_codes', 'issuer_id', 'users', 'id'),
         ('push_subscriptions', 'user_id', 'users', 'id'),
         ('teachers', 'user_id', 'users', 'id'),
         ('user_settings', 'user_id', 'users', 'id'),
@@ -685,12 +696,196 @@ actual_email_verification_indexes AS (
     ) AS index_keys
     WHERE index_record.indrelid =
           pg_catalog.to_regclass('public.email_verifications')
+),
+expected_student_verification_checks(constraint_name, definition, is_validated, no_inherit) AS (
+    VALUES
+        ('ck_student_verification_code_attempts',
+         $check$CHECK (((attempts >= 0) AND (attempts <= 5)))$check$, TRUE, FALSE),
+        ('ck_student_verification_code_digest_length',
+         $check$CHECK (((code_digest IS NULL) OR (length((code_digest)::text) = 64)))$check$, TRUE, FALSE),
+        ('ck_student_verification_code_digest_lower_hex',
+         $check$CHECK (((code_digest IS NULL) OR ((code_digest)::text ~ '^[0-9a-f]{64}$'::text)))$check$,
+         TRUE, FALSE)
+),
+actual_student_verification_checks AS (
+    SELECT constraint_record.conname::text,
+           pg_catalog.pg_get_constraintdef(constraint_record.oid, FALSE),
+           constraint_record.convalidated,
+           constraint_record.connoinherit
+    FROM pg_catalog.pg_constraint AS constraint_record
+    WHERE constraint_record.conrelid =
+          pg_catalog.to_regclass('public.student_verification_codes')
+      AND constraint_record.contype = 'c'
+),
+expected_student_verification_indexes(
+    index_name, key_columns, key_definitions, included_columns, is_unique,
+    is_primary, is_exclusion, predicate, access_method, key_attribute_count,
+    total_attribute_count, is_valid, is_ready, is_live, nulls_not_distinct
+) AS (
+    VALUES
+        ('student_verification_codes_pkey', ARRAY['id']::text[], ARRAY['id']::text[],
+         ARRAY[]::text[], TRUE, TRUE, FALSE, NULL::text, 'btree', 1, 1, TRUE, TRUE, TRUE, FALSE),
+        ('ix_student_verification_codes_id', ARRAY['id']::text[], ARRAY['id']::text[],
+         ARRAY[]::text[], FALSE, FALSE, FALSE, NULL::text, 'btree', 1, 1, TRUE, TRUE, TRUE, FALSE),
+        ('ix_student_verification_codes_student_id', ARRAY['student_id']::text[], ARRAY['student_id']::text[],
+         ARRAY[]::text[], TRUE, FALSE, FALSE, NULL::text, 'btree', 1, 1, TRUE, TRUE, TRUE, FALSE)
+),
+actual_student_verification_indexes AS (
+    SELECT
+        index_relation.relname::text,
+        index_keys.key_columns,
+        index_keys.key_definitions,
+        index_keys.included_columns,
+        index_record.indisunique,
+        index_record.indisprimary,
+        index_record.indisexclusion,
+        pg_catalog.pg_get_expr(
+            index_record.indpred,
+            index_record.indrelid,
+            FALSE
+        ),
+        access_method.amname::text,
+        index_record.indnkeyatts,
+        index_record.indnatts,
+        index_record.indisvalid,
+        index_record.indisready,
+        index_record.indislive,
+        index_record.indnullsnotdistinct
+    FROM pg_catalog.pg_index AS index_record
+    JOIN pg_catalog.pg_class AS index_relation
+      ON index_relation.oid = index_record.indexrelid
+    JOIN pg_catalog.pg_am AS access_method
+      ON access_method.oid = index_relation.relam
+    CROSS JOIN LATERAL (
+        SELECT
+            COALESCE(
+                pg_catalog.array_agg(
+                    COALESCE(
+                        attribute.attname::text,
+                        pg_catalog.pg_get_indexdef(
+                            index_record.indexrelid,
+                            index_key.ordinality::integer,
+                            FALSE
+                        )
+                    )
+                    ORDER BY index_key.ordinality
+                ) FILTER (
+                    WHERE index_key.ordinality <= index_record.indnkeyatts
+                ),
+                ARRAY[]::text[]
+            ) AS key_columns,
+            COALESCE(
+                pg_catalog.array_agg(
+                    pg_catalog.pg_get_indexdef(
+                        index_record.indexrelid,
+                        index_key.ordinality::integer,
+                        FALSE
+                    )
+                    ORDER BY index_key.ordinality
+                ) FILTER (
+                    WHERE index_key.ordinality <= index_record.indnkeyatts
+                ),
+                ARRAY[]::text[]
+            ) AS key_definitions,
+            COALESCE(
+                pg_catalog.array_agg(
+                    COALESCE(
+                        attribute.attname::text,
+                        pg_catalog.pg_get_indexdef(
+                            index_record.indexrelid,
+                            index_key.ordinality::integer,
+                            FALSE
+                        )
+                    )
+                    ORDER BY index_key.ordinality
+                ) FILTER (
+                    WHERE index_key.ordinality > index_record.indnkeyatts
+                ),
+                ARRAY[]::text[]
+            ) AS included_columns
+        FROM pg_catalog.unnest(index_record.indkey) WITH ORDINALITY
+             AS index_key(attnum, ordinality)
+        LEFT JOIN pg_catalog.pg_attribute AS attribute
+          ON attribute.attrelid = index_record.indrelid
+         AND attribute.attnum = index_key.attnum
+         AND NOT attribute.attisdropped
+    ) AS index_keys
+    WHERE index_record.indrelid =
+          pg_catalog.to_regclass('public.student_verification_codes')
 )
 SELECT CASE WHEN COUNT(to_regclass('public.' || name)) = COUNT(*)
                  AND BOOL_AND(to_regclass('public.' || name) IS NOT NULL)
                  AND to_regclass(
                      'public.email_verifications_id_seq'
                  ) IS NOT NULL
+                 AND pg_catalog.pg_get_serial_sequence(
+                     'public.student_verification_codes', 'id'
+                 ) = 'public.student_verification_codes_id_seq'
+                 AND EXISTS (
+                     SELECT 1 FROM information_schema.columns
+                     WHERE table_schema = 'public' AND table_name = 'student_verification_codes'
+                       AND column_name = 'created_at' AND column_default IN ('now()', 'CURRENT_TIMESTAMP')
+                 )
+                 AND EXISTS (
+                     SELECT 1 FROM information_schema.columns
+                     WHERE table_schema = 'public' AND table_name = 'student_verification_codes'
+                       AND column_name = 'attempts' AND column_default = '0'
+                 )
+                 AND EXISTS (
+                     SELECT 1 FROM pg_catalog.pg_constraint AS student_fk
+                     WHERE student_fk.conrelid = to_regclass('public.student_verification_codes')
+                       AND student_fk.conname = 'fk_student_verification_code_student'
+                       AND student_fk.contype = 'f' AND student_fk.confdeltype = 'c'
+                       AND student_fk.confrelid = to_regclass('public.users')
+                       AND student_fk.conkey = ARRAY[(
+                           SELECT attnum FROM pg_catalog.pg_attribute
+                           WHERE attrelid = to_regclass('public.student_verification_codes')
+                             AND attname = 'student_id' AND NOT attisdropped
+                       )]::smallint[]
+                       AND student_fk.confkey = ARRAY[(
+                           SELECT attnum FROM pg_catalog.pg_attribute
+                           WHERE attrelid = to_regclass('public.users')
+                             AND attname = 'id' AND NOT attisdropped
+                       )]::smallint[]
+                 )
+                 AND EXISTS (
+                     SELECT 1 FROM pg_catalog.pg_constraint AS issuer_fk
+                     WHERE issuer_fk.conrelid = to_regclass('public.student_verification_codes')
+                       AND issuer_fk.conname = 'fk_student_verification_code_issuer'
+                       AND issuer_fk.contype = 'f' AND issuer_fk.confdeltype = 'n'
+                       AND issuer_fk.confrelid = to_regclass('public.users')
+                       AND issuer_fk.conkey = ARRAY[(
+                           SELECT attnum FROM pg_catalog.pg_attribute
+                           WHERE attrelid = to_regclass('public.student_verification_codes')
+                             AND attname = 'issuer_id' AND NOT attisdropped
+                       )]::smallint[]
+                       AND issuer_fk.confkey = ARRAY[(
+                           SELECT attnum FROM pg_catalog.pg_attribute
+                           WHERE attrelid = to_regclass('public.users')
+                             AND attname = 'id' AND NOT attisdropped
+                       )]::smallint[]
+                 )
+                 AND (
+                     SELECT COUNT(*) FROM pg_catalog.pg_constraint AS code_fk
+                     WHERE code_fk.conrelid = to_regclass('public.student_verification_codes')
+                       AND code_fk.contype = 'f'
+                 ) = 2
+                 AND NOT EXISTS (
+                     SELECT * FROM expected_student_verification_checks
+                     EXCEPT SELECT * FROM actual_student_verification_checks
+                 )
+                 AND NOT EXISTS (
+                     SELECT * FROM actual_student_verification_checks
+                     EXCEPT SELECT * FROM expected_student_verification_checks
+                 )
+                 AND NOT EXISTS (
+                     SELECT * FROM expected_student_verification_indexes
+                     EXCEPT SELECT * FROM actual_student_verification_indexes
+                 )
+                 AND NOT EXISTS (
+                     SELECT * FROM actual_student_verification_indexes
+                     EXCEPT SELECT * FROM expected_student_verification_indexes
+                 )
                  AND NOT EXISTS (
                      SELECT * FROM required_columns
                      EXCEPT
@@ -699,11 +894,11 @@ SELECT CASE WHEN COUNT(to_regclass('public.' || name)) = COUNT(*)
                  AND NOT EXISTS (
                      SELECT *
                      FROM actual_columns
-                     WHERE table_name = 'email_verifications'
+                     WHERE table_name IN ('email_verifications', 'student_verification_codes')
                      EXCEPT
                      SELECT *
                      FROM required_columns
-                     WHERE table_name = 'email_verifications'
+                     WHERE table_name IN ('email_verifications', 'student_verification_codes')
                  )
                  AND NOT EXISTS (
                      SELECT 1
@@ -839,6 +1034,7 @@ SELECT CASE WHEN
     (SELECT COUNT(*) FROM public.users) >= 0
     AND (SELECT COUNT(*) FROM public.password_resets) >= 0
     AND (SELECT COUNT(*) FROM public.email_verifications) >= 0
+    AND (SELECT COUNT(*) FROM public.student_verification_codes) >= 0
     AND (SELECT COUNT(*) FROM public.push_subscriptions) >= 0
     AND (SELECT COUNT(*) FROM public.teachers) >= 0
     AND (SELECT COUNT(*) FROM public.user_settings) >= 0
@@ -855,6 +1051,18 @@ SELECT CASE WHEN
     AND (SELECT COUNT(*) FROM public.assignment_submission_replies) >= 0
     AND (SELECT COUNT(*) FROM public.comment_likes) >= 0
     AND (SELECT COUNT(*) FROM public.upload_assets) >= 0
+    AND NOT EXISTS (
+        SELECT 1 FROM public.student_verification_codes AS verification
+        LEFT JOIN public.users AS student ON student.id = verification.student_id
+        LEFT JOIN public.users AS issuer ON issuer.id = verification.issuer_id
+        WHERE student.id IS NULL
+           OR (verification.issuer_id IS NOT NULL AND issuer.id IS NULL)
+           OR verification.attempts < 0 OR verification.attempts > 5
+           OR (verification.code_digest IS NOT NULL AND verification.code_digest !~ '^[0-9a-f]{64}$')
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM public.student_verification_codes GROUP BY student_id HAVING COUNT(*) > 1
+    )
     AND NOT EXISTS (
         SELECT 1
         FROM public.email_verifications AS verification
@@ -931,6 +1139,7 @@ runtime_crud_tables(table_name) AS (
         ('post_likes'),
         ('push_subscriptions'),
         ('saved_posts'),
+        ('student_verification_codes'),
         ('teachers'),
         ('upload_assets'),
         ('user_settings'),
@@ -956,6 +1165,7 @@ runtime_sequences(sequence_name) AS (
         ('post_likes_id_seq'),
         ('push_subscriptions_id_seq'),
         ('saved_posts_id_seq'),
+        ('student_verification_codes_id_seq'),
         ('teachers_id_seq'),
         ('upload_assets_id_seq'),
         ('user_settings_id_seq'),
@@ -1055,6 +1265,9 @@ expected_column_acl(
         ('litblog_identity_owner', 'password_resets', 'delivery_status', 'UPDATE', FALSE),
         ('litblog_identity_owner', 'password_resets', 'delivery_attempted_at', 'UPDATE', FALSE),
         ('litblog_identity_owner', 'password_resets', 'delivery_claim_digest', 'UPDATE', FALSE),
+        ('litblog_identity_owner', 'student_verification_codes', 'student_id', 'SELECT', FALSE),
+        ('litblog_identity_owner', 'student_verification_codes', 'issuer_id', 'SELECT', FALSE),
+        ('litblog_identity_owner', 'student_verification_codes', 'code_digest', 'UPDATE', FALSE),
         ('litblog_identity_owner', 'email_verifications', 'user_id', 'SELECT', FALSE),
         ('litblog_identity_owner', 'email_verifications', 'token_digest', 'UPDATE', FALSE),
         ('litblog_identity_owner', 'email_verifications', 'expires_at', 'UPDATE', FALSE),

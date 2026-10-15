@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import axios from 'axios';
 import Navbar from './components/Navbar';
 import ClassDetails from './components/ClassDetails';
+import TeacherStudentVerificationDialog from './components/TeacherStudentVerificationDialog';
 import { toast } from 'react-hot-toast';
 import Footer from './components/Footer';
 import { logoutBrowserSession } from './utils/auth';
@@ -29,6 +30,7 @@ const TeacherDashboard = () => {
   const [classesTab, setClassesTab] = useState('active'); // 'active' or 'archived'
   const [menuOpen, setMenuOpen] = useState(null);
   const [analytics, setAnalytics] = useState(null);
+  const [showStudentVerification, setShowStudentVerification] = useState(false);
 
   // Apply dark mode class to document
   useEffect(() => {
@@ -661,7 +663,19 @@ const TeacherDashboard = () => {
                 animate={{ opacity: 1 }}
                 className="px-6 py-4"
               >
-                <h2 className="text-2xl font-bold mb-6">All Students</h2>
+                <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+                  <h2 className="text-2xl font-bold">All Students</h2>
+                  <button
+                    type="button"
+                    onClick={() => setShowStudentVerification(true)}
+                    className="rounded-lg bg-blue-700 px-4 py-2 font-semibold text-white hover:bg-blue-800 dark:bg-cyan-700 dark:hover:bg-cyan-600"
+                  >
+                    Verify students
+                  </button>
+                </div>
+                <p className="mb-6 text-sm text-gray-600 dark:text-gray-300">
+                  If a student cannot receive their verification email, create a private code to help them finish signing up.
+                </p>
                 
                 {allStudents.length > 0 ? (
                   <div className="overflow-x-auto">
@@ -954,6 +968,12 @@ const TeacherDashboard = () => {
           </motion.div>
         )}
       </AnimatePresence>
+      {showStudentVerification && (
+        <TeacherStudentVerificationDialog
+          darkMode={darkMode}
+          onClose={() => setShowStudentVerification(false)}
+        />
+      )}
       <div className="ml-64">
         <Footer darkMode={darkMode} />
       </div>

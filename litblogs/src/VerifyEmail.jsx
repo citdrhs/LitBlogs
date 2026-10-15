@@ -4,6 +4,8 @@ import { Link, useSearchParams } from "react-router-dom";
 import axios from "axios";
 
 import Footer from "./components/Footer";
+import TeacherCodeVerification from "./components/TeacherCodeVerification";
+import { clearPendingVerification, getPendingVerification } from "./utils/pendingVerification";
 import { resolveAppAsset } from "./utils/urlUtils";
 import { getLocalUserSettings } from "./utils/userSettings";
 import {
@@ -47,7 +49,7 @@ const StatusIcon = ({ status }) => {
     );
   }
 
-  if (status === "resend") {
+  if (status === "resend" || status === "pending") {
     return (
       <svg
         aria-hidden="true"
@@ -80,12 +82,16 @@ const StatusIcon = ({ status }) => {
 
 const VerifyEmail = () => {
   const [searchParams] = useSearchParams();
-  const resendOnly = (
-    searchParams.get("resend") === "1"
+  const pendingOnly = (
+    searchParams.get("pending") === "1"
     && !hasBootstrappedEmailVerificationToken()
   );
-  const [status, setStatus] = useState(resendOnly ? "resend" : "verifying");
-  const [email, setEmail] = useState("");
+  const resendOnly = (
+    (searchParams.get("resend") === "1" || pendingOnly)
+    && !hasBootstrappedEmailVerificationToken()
+  );
+  const [status, setStatus] = useState(pendingOnly ? "pending" : resendOnly ? "resend" : "verifying");
+  const [email, setEmail] = useState(() => pendingOnly ? getPendingVerification()?.email || "" : "");
   const [isResending, setIsResending] = useState(false);
   const [resendResult, setResendResult] = useState(null);
   const headingRef = useRef(null);
@@ -104,7 +110,10 @@ const VerifyEmail = () => {
       axios.post("/auth/verify-email", { token })
     )).then(
       () => {
-        if (active) setStatus("success");
+        if (active) {
+          clearPendingVerification();
+          setStatus("success");
+        }
       },
       () => {
         if (active) setStatus("error");
@@ -140,7 +149,7 @@ const VerifyEmail = () => {
       if (response?.status !== 202) {
         throw new Error("Unexpected verification response");
       }
-      setEmail("");
+      if (status !== "pending") setEmail("");
       setResendResult({ type: "success", message: GENERIC_RESEND_MESSAGE });
     } catch {
       setResendResult({ type: "error", message: RESEND_ERROR_MESSAGE });
@@ -166,9 +175,13 @@ const VerifyEmail = () => {
       title: "Request another verification email",
       description: "Enter your school email. For privacy, the response is the same for every address.",
     },
+    pending: {
+      title: "Check your school email",
+      description: "Verify your email before signing in. Open the link sent when you registered, request another email, or ask your teacher for a code.",
+    },
   }[status];
 
-  const showResend = status === "error" || status === "resend";
+  const showResend = status === "error" || status === "resend" || status === "pending";
   const resendAccepted = resendResult?.type === "success";
 
   return (
@@ -247,9 +260,9 @@ const VerifyEmail = () => {
                   </h2>
                 )}
                 <p className="mb-5 text-sm leading-6 text-slate-600 dark:text-slate-300">
-                  We use the same confirmation message whether or not the address can receive a link.
-                  Delivery may take a few minutes. Check your spam folder, and wait at least five
-                  minutes before requesting another email.
+                  {status === "pending"
+                    ? "Check your inbox and spam folder. Delivery may take a few minutes; wait at least five minutes before requesting another email."
+                    : "We use the same confirmation message whether or not the address can receive a link. Delivery may take a few minutes. Check your spam folder, and wait at least five minutes before requesting another email."}
                 </p>
                 <label htmlFor="verification-email" className="mb-2 block text-sm font-semibold text-slate-800 dark:text-slate-100">
                   School email address
@@ -276,7 +289,7 @@ const VerifyEmail = () => {
                     ? "Sending…"
                     : resendAccepted
                       ? "Request received"
-                      : "Send verification email"}
+                      : status === "pending" ? "Resend email" : "Send verification email"}
                 </button>
                 {resendResult && (
                   <p
@@ -293,6 +306,14 @@ const VerifyEmail = () => {
                   </p>
                 )}
               </form>
+            )}
+            {showResend && (
+              <>
+                <TeacherCodeVerification onVerified={() => setStatus("success")} />
+                <Link to="/sign-in" className="mt-6 block text-center text-sm font-semibold text-blue-700 underline underline-offset-4 dark:text-cyan-300">
+                  Back to sign in
+                </Link>
+              </>
             )}
           </div>
         </motion.section>

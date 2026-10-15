@@ -22,11 +22,14 @@ const GENERIC_RESEND =
 const renderAt = async ({
   strict = true,
   url = "/verify-email#token=private-verification-token",
+  pending = null,
 } = {}) => {
   vi.resetModules();
   window.history.replaceState({ navigationId: 17 }, "", url);
   const tokenApi = await import("./utils/verificationToken.js");
   tokenApi.captureEmailVerificationTokenAtBootstrap(window);
+  const pendingApi = await import("./utils/pendingVerification.js");
+  if (pending) pendingApi.rememberPendingVerification(pending);
   const { default: VerifyEmail } = await import("./VerifyEmail.jsx");
   const page = (
     <MemoryRouter initialEntries={[`${window.location.pathname}${window.location.search}`]}>
@@ -37,6 +40,7 @@ const renderAt = async ({
     ...render(strict ? <StrictMode>{page}</StrictMode> : page),
     tokenApi,
     VerifyEmail,
+    pendingApi,
   };
 };
 
@@ -232,5 +236,47 @@ describe("generic verification resend", () => {
       await screen.findByRole("alert"),
     ).toHaveTextContent("We couldn't submit that request. Please try again.");
     expect(document.body).not.toHaveTextContent(/SMTP|network detail/i);
+  });
+});
+
+describe("pending account verification", () => {
+  const pending = () => ({
+    code: "email_verification_required",
+    email: "student@example.com",
+    verification_challenge: "private-pending-challenge",
+    expires_at: new Date(Date.now() + 900_000).toISOString(),
+    teacher_code_allowed: true,
+  });
+
+  it("offers resend and teacher code after a password-authenticated pending login", async () => {
+    await renderAt({ url: "/verify-email?pending=1", pending: pending() });
+    expect(screen.getByRole("heading", { name: "Check your school email" })).toBeInTheDocument();
+    expect(screen.getByLabelText("School email address")).toHaveValue("student@example.com");
+    expect(screen.getByRole("button", { name: "Resend email" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Enter a teacher code" }));
+    expect(screen.getByLabelText("Six-digit teacher code")).toBeInTheDocument();
+    expect(doubles.post).not.toHaveBeenCalled();
+    expect(document.body).not.toHaveTextContent("private-pending-challenge");
+    expect(window.location.href).not.toContain("private-pending-challenge");
+  });
+
+  it("verifies a teacher code without requesting or sending another email", async () => {
+    doubles.post.mockResolvedValue({ status: 200, data: {} });
+    const view = await renderAt({ url: "/verify-email?pending=1", pending: pending() });
+    fireEvent.click(screen.getByRole("button", { name: "Enter a teacher code" }));
+    fireEvent.change(screen.getByLabelText("Six-digit teacher code"), { target: { value: "012345" } });
+    fireEvent.click(screen.getByRole("button", { name: "Verify my account" }));
+    expect(await screen.findByRole("heading", { name: "Email verified" })).toHaveFocus();
+    expect(doubles.post).toHaveBeenCalledTimes(1);
+    expect(doubles.post.mock.calls[0][0]).toBe("/auth/verify-student-code");
+    expect(view.pendingApi.getPendingVerification()).toBeNull();
+    expect(screen.queryByLabelText("Six-digit teacher code")).not.toBeInTheDocument();
+  });
+
+  it("still gives an email link precedence over the pending page", async () => {
+    doubles.post.mockResolvedValue({ status: 200, data: {} });
+    await renderAt({ url: "/verify-email?pending=1#token=email-link-token", pending: pending() });
+    expect(await screen.findByRole("heading", { name: "Email verified" })).toBeInTheDocument();
+    expect(doubles.post).toHaveBeenCalledWith("/auth/verify-email", { token: "email-link-token" });
   });
 });
