@@ -46,7 +46,7 @@ jobs:
           cache: pip
           cache-dependency-path: litblogs/requirements-dev.txt
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
           cache: npm
@@ -76,7 +76,7 @@ jobs:
         run: npm run test:e2e
       - name: Upload sanitized browser failure report
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-e2e-sanitized-${{ github.run_id }}-${{ github.run_attempt }}
           path: litblogs/test-results/e2e/sanitized-failures/*.json
@@ -128,7 +128,7 @@ jobs:
             litblogs/requirements-dev.txt
             litblogs/requirements-lock.txt
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
           cache: npm
@@ -338,7 +338,7 @@ jobs:
           echo "file=$archive_file" >> "$GITHUB_OUTPUT"
           echo "name=litblogs-${short_sha}" >> "$GITHUB_OUTPUT"
       - name: Upload reviewed artifact and manifests
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.package.outputs.name }}
           path: ${{ runner.temp }}/litblogs-release-output/
@@ -359,21 +359,21 @@ jobs:
       artifact-metadata: write
     steps:
       - name: Download the immutable reviewed bundle
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.build-release.outputs.bundle-name }}
           path: release
       - name: Attest build provenance
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: release/${{ needs.build-release.outputs.archive-file }}
       - name: Attest Python dependency SBOM
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: release/${{ needs.build-release.outputs.archive-file }}
           sbom-path: release/python-sbom.cdx.json
       - name: Attest frontend dependency SBOM
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: release/${{ needs.build-release.outputs.archive-file }}
           sbom-path: release/frontend-sbom.cdx.json
