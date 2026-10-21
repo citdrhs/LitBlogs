@@ -1,5 +1,7 @@
 alembic==1.19.1
 bleach[css]==6.4.0
+# Pin the trust-store update for PYSEC-2026-4320.
+certifi==2026.10.19
 # Click requires this only on Windows; pin it explicitly so the Linux-generated lock is portable.
 colorama==0.4.6
 fastapi==0.141.1
