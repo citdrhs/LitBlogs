@@ -1,5 +1,5 @@
 import { storageKey } from "./utils/browserStorage";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import axios from 'axios';
@@ -88,6 +88,12 @@ const createEmptyPostContent = () => ({
   codeSnippets: [],
   files: []
 });
+
+const isCanceledAssignmentRequest = (error) => (
+  error?.code === 'ERR_CANCELED'
+  || error?.name === 'CanceledError'
+  || error?.name === 'AbortError'
+);
 
 const normalizePostContentForEditor = (content = '') => {
   return sanitizeRichText(content, { mode: 'editor' });
@@ -201,6 +207,8 @@ const ClassFeed = () => {
   const postComposerWasOpenRef = useRef(false);
   const assignmentDraftRequestRef = useRef(0);
   const assignmentDraftAbortRef = useRef(null);
+  const assignmentDraftSaveRef = useRef(null);
+  const latestAssignmentDraftRef = useRef(null);
   const assignmentDraftStatusRef = useRef('idle');
   const latestAssignmentContextRef = useRef(null);
   const previousDraftContextRef = useRef(null);
@@ -260,6 +268,31 @@ const ClassFeed = () => {
       ? null
       : String(activeAssignmentId),
   };
+  latestAssignmentDraftRef.current = {
+    content: assignmentSubmission,
+    contentFormat: assignmentContentFormat,
+    revision: assignmentDraftRevision,
+    savedAt: assignmentDraftSavedAt,
+    rememberDraftsEnabled,
+  };
+  const isCurrentAssignmentClass = useCallback((context, requestVersion) => {
+    const current = latestAssignmentContextRef.current;
+    return (
+      requestVersion === assignmentDraftRequestRef.current
+      && current?.classId === context.classId
+      && current?.userId === context.userId
+    );
+  }, []);
+  const isCurrentAssignmentRequest = useCallback((context, requestVersion) => (
+    isCurrentAssignmentClass(context, requestVersion)
+    && latestAssignmentContextRef.current?.assignmentId === context.assignmentId
+  ), [isCurrentAssignmentClass]);
+
+  useEffect(() => () => {
+    assignmentDraftRequestRef.current += 1;
+    assignmentDraftAbortRef.current?.abort();
+    assignmentDraftSaveRef.current = null;
+  }, []);
 
   useEffect(() => {
     if (showNewPostForm) {
@@ -348,16 +381,13 @@ const ClassFeed = () => {
       || assignmentEditorTooLong
       || assignmentSubmitting
       || assignmentDraftClosing
+      || assignmentDraftSaveRef.current
       || assignmentDraftStatusRef.current === 'error'
     ) {
       return;
     }
 
-    const requestVersion = ++assignmentDraftRequestRef.current;
     const expectedRevision = assignmentDraftRevision;
-    const abortController = new AbortController();
-    assignmentDraftAbortRef.current?.abort();
-    assignmentDraftAbortRef.current = abortController;
     setAssignmentDraftStatus('pending');
     saveAssignmentMemory(
       {
@@ -376,6 +406,19 @@ const ClassFeed = () => {
     );
 
     const autosaveTimer = setTimeout(() => {
+      // Once sent, a write may commit even if the browser cancels its response.
+      // Keep that acknowledgement and revision before saving newer edits.
+      if (assignmentDraftSaveRef.current) return;
+      const requestVersion = ++assignmentDraftRequestRef.current;
+      const requestContext = {
+        userId: String(assignmentDraftUserId),
+        classId: String(classId),
+        assignmentId: String(activeAssignmentId),
+      };
+      const abortController = new AbortController();
+      assignmentDraftAbortRef.current = abortController;
+      const operation = { promise: null };
+      assignmentDraftSaveRef.current = operation;
       const syncDraft = async () => {
         setAssignmentDraftStatus('saving');
         saveAssignmentMemory(
@@ -403,12 +446,20 @@ const ClassFeed = () => {
             assignmentContentFormat,
           );
 
-          if (requestVersion !== assignmentDraftRequestRef.current) return;
+          if (!isCurrentAssignmentRequest(requestContext, requestVersion)) return;
 
+          const latest = latestAssignmentDraftRef.current;
+          const hasNewerEdits = latest.content !== assignmentSubmission
+            || latest.contentFormat !== assignmentContentFormat;
+          const nextStatus = !latest.rememberDraftsEnabled ? 'memory-only'
+            : hasNewerEdits ? 'pending' : 'saved';
+          latestAssignmentDraftRef.current = {
+            ...latest, revision: serverDraft.revision, savedAt: serverDraft.savedAt,
+          };
           setAssignmentDraftSavedAt(serverDraft.savedAt);
           setAssignmentDraftRevision(serverDraft.revision);
-          setAssignmentDraftStatus('saved');
-          setAssignmentDraftDirty(false);
+          setAssignmentDraftStatus(nextStatus);
+          setAssignmentDraftDirty(hasNewerEdits);
           saveAssignmentMemory(
             {
               userId: assignmentDraftUserId,
@@ -416,12 +467,12 @@ const ClassFeed = () => {
               assignmentId: activeAssignmentId,
             },
             {
-              content: serverDraft.content,
-              contentFormat: serverDraft.contentFormat,
+              content: hasNewerEdits ? latest.content : serverDraft.content,
+              contentFormat: hasNewerEdits ? latest.contentFormat : serverDraft.contentFormat,
               revision: serverDraft.revision,
               savedAt: serverDraft.savedAt,
-              dirty: false,
-              status: 'saved',
+              dirty: hasNewerEdits,
+              status: nextStatus,
             },
           );
           const nextDraft = serverDraft.hasDraft
@@ -451,8 +502,9 @@ const ClassFeed = () => {
               : prev
           ));
         } catch (error) {
-          const wasCanceled = error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError';
-          if (!wasCanceled && requestVersion === assignmentDraftRequestRef.current) {
+          const wasCanceled = isCanceledAssignmentRequest(error);
+          if (!wasCanceled && isCurrentAssignmentRequest(requestContext, requestVersion)) {
+            const latest = latestAssignmentDraftRef.current;
             setAssignmentDraftStatus('error');
             saveAssignmentMemory(
               {
@@ -461,8 +513,8 @@ const ClassFeed = () => {
                 assignmentId: activeAssignmentId,
               },
               {
-                content: assignmentSubmission,
-                contentFormat: assignmentContentFormat,
+                content: latest.content,
+                contentFormat: latest.contentFormat,
                 revision: expectedRevision,
                 savedAt: assignmentDraftSavedAt,
                 dirty: true,
@@ -474,15 +526,17 @@ const ClassFeed = () => {
           if (assignmentDraftAbortRef.current === abortController) {
             assignmentDraftAbortRef.current = null;
           }
+          if (assignmentDraftSaveRef.current === operation) {
+            assignmentDraftSaveRef.current = null;
+          }
         }
       };
 
-      syncDraft();
+      operation.promise = syncDraft();
     }, 500);
 
     return () => {
       clearTimeout(autosaveTimer);
-      abortController.abort();
     };
   }, [
     assignmentSubmission,
@@ -501,6 +555,7 @@ const ClassFeed = () => {
     assignmentDraftSavedAt,
     classId,
     saveAssignmentMemory,
+    isCurrentAssignmentRequest,
   ]);
 
   useEffect(() => {
@@ -590,6 +645,7 @@ const ClassFeed = () => {
       assignmentDraftRequestRef.current += 1;
       assignmentDraftAbortRef.current?.abort();
       assignmentDraftAbortRef.current = null;
+      assignmentDraftSaveRef.current = null;
       setShowAssignmentModal(false);
       setActiveAssignment(null);
       setAssignmentSubmission('');
@@ -795,6 +851,10 @@ const ClassFeed = () => {
   };
 
   const handleAssignmentSubmissionChange = (nextContent, nextFormat = assignmentContentFormat) => {
+    const latest = latestAssignmentDraftRef.current;
+    latestAssignmentDraftRef.current = {
+      ...latest, content: nextContent, contentFormat: nextFormat,
+    };
     setAssignmentSubmission(nextContent);
     setAssignmentContentFormat(nextFormat);
     setAssignmentDraftDirty(true);
@@ -804,8 +864,8 @@ const ClassFeed = () => {
       saveAssignmentMemory(activeAssignmentMemoryContext, {
         content: nextContent,
         contentFormat: nextFormat,
-        revision: assignmentDraftRevision,
-        savedAt: assignmentDraftSavedAt,
+        revision: latest.revision,
+        savedAt: latest.savedAt,
         dirty: true,
         status: nextStatus,
       });
@@ -817,26 +877,6 @@ const ClassFeed = () => {
     userId: String(assignmentDraftUserId ?? ''),
     assignmentId: String(assignmentId),
   });
-
-  const isCurrentAssignmentClass = (context, requestVersion) => {
-    const current = latestAssignmentContextRef.current;
-    return (
-      requestVersion === assignmentDraftRequestRef.current
-      && current?.classId === context.classId
-      && current?.userId === context.userId
-    );
-  };
-
-  const isCurrentAssignmentRequest = (context, requestVersion) => (
-    isCurrentAssignmentClass(context, requestVersion)
-    && latestAssignmentContextRef.current?.assignmentId === context.assignmentId
-  );
-
-  const isCanceledAssignmentRequest = (error) => (
-    error?.code === 'ERR_CANCELED'
-    || error?.name === 'CanceledError'
-    || error?.name === 'AbortError'
-  );
 
   const resetAssignmentModalState = () => {
     setShowAssignmentModal(false);
@@ -858,6 +898,7 @@ const ClassFeed = () => {
     assignmentDraftRequestRef.current += 1;
     assignmentDraftAbortRef.current?.abort();
     assignmentDraftAbortRef.current = null;
+    assignmentDraftSaveRef.current = null;
     resetAssignmentModalState();
   };
 
@@ -880,19 +921,23 @@ const ClassFeed = () => {
       return;
     }
 
+    const requestContext = assignmentRequestContext(activeAssignmentId);
+    const pendingVersion = assignmentDraftRequestRef.current;
+    setAssignmentDraftClosing(true);
+    await assignmentDraftSaveRef.current?.promise;
+    if (!isCurrentAssignmentRequest(requestContext, pendingVersion)) return;
+    const expectedRevision = latestAssignmentDraftRef.current.revision;
     assignmentDraftAbortRef.current?.abort();
     const requestVersion = ++assignmentDraftRequestRef.current;
-    const requestContext = assignmentRequestContext(activeAssignmentId);
     const abortController = new AbortController();
     assignmentDraftAbortRef.current = abortController;
-    setAssignmentDraftClosing(true);
     setAssignmentDraftStatus('saving');
     try {
       const serverDraft = await saveAssignmentDraft(
         axios,
         activeAssignmentId,
         assignmentSubmission,
-        assignmentDraftRevision,
+        expectedRevision,
         { signal: abortController.signal },
         assignmentContentFormat,
       );
@@ -923,7 +968,7 @@ const ClassFeed = () => {
       saveAssignmentMemory(requestContext, {
         content: assignmentSubmission,
         contentFormat: assignmentContentFormat,
-        revision: assignmentDraftRevision,
+        revision: expectedRevision,
         savedAt: assignmentDraftSavedAt,
         dirty: true,
         status: 'error',
@@ -952,6 +997,7 @@ const ClassFeed = () => {
   const openAssignmentModal = async (assignment) => {
     assignmentDraftAbortRef.current?.abort();
     assignmentDraftAbortRef.current = null;
+    assignmentDraftSaveRef.current = null;
     const requestVersion = ++assignmentDraftRequestRef.current;
     const fallbackContent = assignment.my_draft?.content || assignment.my_submission?.content || '';
     const fallbackFormat = assignment.my_draft?.content_format
@@ -1081,12 +1127,16 @@ const ClassFeed = () => {
       || assignmentEditorTooLong
       || !hasSubmittableAssignmentResponse
     ) return;
+    const requestContext = assignmentRequestContext(activeAssignment.id);
+    const pendingVersion = assignmentDraftRequestRef.current;
+    setAssignmentSubmitting(true);
+    await assignmentDraftSaveRef.current?.promise;
+    if (!isCurrentAssignmentRequest(requestContext, pendingVersion)) return;
+    const expectedRevision = latestAssignmentDraftRef.current.revision;
     assignmentDraftAbortRef.current?.abort();
     const requestVersion = ++assignmentDraftRequestRef.current;
-    const requestContext = assignmentRequestContext(activeAssignment.id);
     const abortController = new AbortController();
     assignmentDraftAbortRef.current = abortController;
-    setAssignmentSubmitting(true);
 
     let submitted;
     try {
@@ -1094,7 +1144,7 @@ const ClassFeed = () => {
         axios,
         activeAssignment.id,
         assignmentSubmission,
-        assignmentDraftRevision,
+        expectedRevision,
         { signal: abortController.signal },
         assignmentContentFormat,
       );
@@ -1118,7 +1168,7 @@ const ClassFeed = () => {
       saveAssignmentMemory(requestContext, {
         content: assignmentSubmission,
         contentFormat: assignmentContentFormat,
-        revision: assignmentDraftRevision,
+        revision: expectedRevision,
         savedAt: assignmentDraftSavedAt,
         dirty: true,
         status: 'error',
