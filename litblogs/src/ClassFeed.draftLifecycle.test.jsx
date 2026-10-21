@@ -735,6 +735,168 @@ describe("ClassFeed private draft lifecycle", () => {
     expect(storageWrite.mock.calls.flat().join(" ")).not.toContain(PRIVATE_CANARY);
   });
 
+  it("serializes caption edits while an accepted autosave response is delayed", async () => {
+    let resolveFirstSave;
+    const firstCaption = `<p><img src="${ASSIGNMENT_IMAGE_URL}" alt="Fi"></p>`;
+    const fullCaption = `<p><img src="${ASSIGNMENT_IMAGE_URL}" alt="First image with the complete caption"></p>`;
+    mocks.axios.put.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveFirstSave = resolve;
+    })).mockImplementation(async (_url, payload) => ({
+      data: assignmentServerPayload(payload.content, payload.expected_revision + 1),
+    }));
+    renderFeed();
+    await flushPromises();
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    await flushPromises();
+    vi.useFakeTimers();
+    fireEvent.change(screen.getByLabelText("Assignment response"), { target: { value: firstCaption } });
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    await flushPromises();
+    const firstSignal = mocks.axios.put.mock.calls[0][2].signal;
+    fireEvent.change(screen.getByLabelText("Assignment response"), { target: { value: fullCaption } });
+    await act(async () => vi.advanceTimersByTimeAsync(750));
+    expect(firstSignal.aborted).toBe(false);
+    expect(mocks.axios.put).toHaveBeenCalledTimes(1);
+    await act(async () => resolveFirstSave({ data: assignmentServerPayload(firstCaption, 1) }));
+    await flushPromises();
+    expect(screen.getByDisplayValue(fullCaption)).toBeInTheDocument();
+    expect(screen.getByTestId("assignment-draft-probe")).toHaveTextContent(fullCaption);
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    await flushPromises();
+    expect(mocks.axios.put).toHaveBeenLastCalledWith(
+      "/assignments/17/draft",
+      { content: fullCaption, content_format: "rich", expected_revision: 1 },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(screen.queryByText(/Autosave failed/)).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue(fullCaption)).toBeInTheDocument();
+  });
+
+  it.each(["Cancel", "Submit"])("waits for an accepted autosave before %s", async (action) => {
+    let resolveSave;
+    mocks.axios.put.mockImplementationOnce(() => new Promise((resolve) => { resolveSave = resolve; }))
+      .mockImplementation(async (_url, payload) => ({ data: assignmentServerPayload(payload.content, payload.expected_revision + 1) }));
+    mocks.axios.post.mockResolvedValue({ data: { id: 501, content: PRIVATE_CANARY, draft_revision: 2 } });
+    renderFeed();
+    await flushPromises();
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    await flushPromises();
+    vi.useFakeTimers();
+    fireEvent.change(screen.getByLabelText("Assignment response"), { target: { value: PRIVATE_CANARY } });
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    await flushPromises();
+    const signal = mocks.axios.put.mock.calls[0][2].signal;
+    fireEvent.click(screen.getAllByRole("button", { name: action, exact: true }).at(-1));
+    await flushPromises();
+    expect(signal.aborted).toBe(false);
+    expect(mocks.axios.put).toHaveBeenCalledTimes(1);
+    expect(mocks.axios.post).not.toHaveBeenCalled();
+    await act(async () => resolveSave({ data: assignmentServerPayload(PRIVATE_CANARY, 1) }));
+    await flushPromises();
+    if (action === "Submit") {
+      expect(mocks.axios.post).toHaveBeenCalledWith("/assignments/17/submit", {
+        content: PRIVATE_CANARY, content_format: "rich", expected_draft_revision: 1,
+      }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    } else {
+      expect(mocks.axios.put).toHaveBeenLastCalledWith("/assignments/17/draft", {
+        content: PRIVATE_CANARY, content_format: "rich", expected_revision: 1,
+      }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    }
+    expect(screen.queryByLabelText("Assignment response")).not.toBeInTheDocument();
+  });
+
+  it.each(["Cancel", "Submit"])("keeps newer caption edits while waiting to %s", async (action) => {
+    let resolveFirstSave;
+    const firstCaption = `<p><img src="${ASSIGNMENT_IMAGE_URL}" alt="First"></p>`;
+    const fullCaption = `<p><img src="${ASSIGNMENT_IMAGE_URL}" alt="First image with my completed caption"></p>`;
+    mocks.axios.put.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveFirstSave = resolve;
+    })).mockImplementation(async (_url, payload) => ({
+      data: assignmentServerPayload(payload.content, payload.expected_revision + 1),
+    }));
+    mocks.axios.post.mockResolvedValue({ data: { id: 501, content: fullCaption, draft_revision: 2 } });
+    renderFeed();
+    await flushPromises();
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    await flushPromises();
+    vi.useFakeTimers();
+    fireEvent.change(screen.getByLabelText("Assignment response"), { target: { value: firstCaption } });
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    await flushPromises();
+    const signal = mocks.axios.put.mock.calls[0][2].signal;
+    fireEvent.change(screen.getByLabelText("Assignment response"), { target: { value: fullCaption } });
+    fireEvent.click(screen.getAllByRole("button", { name: action, exact: true }).at(-1));
+    await flushPromises();
+    expect(signal.aborted).toBe(false);
+    expect(mocks.axios.put).toHaveBeenCalledTimes(1);
+    expect(mocks.axios.post).not.toHaveBeenCalled();
+    expect(screen.getByDisplayValue(fullCaption)).toBeInTheDocument();
+    await act(async () => resolveFirstSave({ data: assignmentServerPayload(firstCaption, 1) }));
+    await flushPromises();
+    if (action === "Submit") {
+      expect(mocks.axios.post).toHaveBeenCalledWith("/assignments/17/submit", {
+        content: fullCaption, content_format: "rich", expected_draft_revision: 1,
+      }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    } else {
+      expect(mocks.axios.put).toHaveBeenLastCalledWith("/assignments/17/draft", {
+        content: fullCaption, content_format: "rich", expected_revision: 1,
+      }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    }
+    expect(screen.queryByLabelText("Assignment response")).not.toBeInTheDocument();
+  });
+
+  it("keeps an editor update dirty when the earlier save settles in the same React batch", async () => {
+    let resolveFirstSave;
+    const firstCaption = `<p><img src="${ASSIGNMENT_IMAGE_URL}" alt="First"></p>`;
+    const fullCaption = `<p><img src="${ASSIGNMENT_IMAGE_URL}" alt="First image with my completed caption"></p>`;
+    mocks.axios.put.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveFirstSave = resolve;
+    })).mockImplementation(async (_url, payload) => ({
+      data: assignmentServerPayload(payload.content, payload.expected_revision + 1),
+    }));
+    renderFeed();
+    await flushPromises();
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    await flushPromises();
+    vi.useFakeTimers();
+    fireEvent.change(screen.getByLabelText("Assignment response"), { target: { value: firstCaption } });
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    await flushPromises();
+    await act(async () => {
+      // Tiptap calls onChange outside React's discrete event handler. A save
+      // acknowledgement can arrive before React commits this newer content.
+      mocks.editorProps.onChange(fullCaption);
+      resolveFirstSave({ data: assignmentServerPayload(firstCaption, 1) });
+      await Promise.resolve();
+    });
+    await flushPromises();
+    expect(screen.getByDisplayValue(fullCaption)).toBeInTheDocument();
+    expect(screen.getByTestId("assignment-draft-probe")).toHaveTextContent(fullCaption);
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    await flushPromises();
+    expect(mocks.axios.put).toHaveBeenLastCalledWith("/assignments/17/draft", {
+      content: fullCaption, content_format: "rich", expected_revision: 1,
+    }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(screen.queryByText(/Autosave failed/)).not.toBeInTheDocument();
+  });
+
+  it("preserves local edits on a genuine other-session version conflict", async () => {
+    mocks.axios.put.mockRejectedValue({ response: { status: 409, data: { detail: "Assignment draft changed in another session" } } });
+    renderFeed();
+    await flushPromises();
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    await flushPromises();
+    vi.useFakeTimers();
+    fireEvent.change(screen.getByLabelText("Assignment response"), { target: { value: PRIVATE_CANARY } });
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    await flushPromises();
+    await act(async () => vi.advanceTimersByTimeAsync(3000));
+    expect(mocks.axios.put).toHaveBeenCalledTimes(1);
+    expect(screen.getByDisplayValue(PRIVATE_CANARY)).toBeInTheDocument();
+    expect(screen.getByText(/Autosave failed/)).toBeInTheDocument();
+    expect(screen.getByTestId("assignment-draft-probe")).toHaveTextContent(PRIVATE_CANARY);
+  });
+
   it("keeps a failed close controlled and offers explicit discard without recreating the draft", async () => {
     let rejectClose;
     mocks.axios.put.mockImplementation(() => new Promise((_resolve, reject) => {
@@ -765,7 +927,7 @@ describe("ClassFeed private draft lifecycle", () => {
     expect(mocks.axios.put).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps content after a delayed accepted save makes submission revision stale", async () => {
+  it("keeps content if another session changes the draft after this tab's accepted save", async () => {
     let resolveDelayedSave;
     mocks.axios.put.mockImplementation(() => new Promise((resolve) => {
       resolveDelayedSave = resolve;
@@ -792,18 +954,19 @@ describe("ClassFeed private draft lifecycle", () => {
 
     fireEvent.click(screen.getAllByRole("button", { name: "Submit" }).at(-1));
     await flushPromises();
-    expect(mocks.axios.post).toHaveBeenCalledWith("/assignments/17/submit", {
-      content: PRIVATE_CANARY,
-      content_format: "rich",
-      expected_draft_revision: 0,
-    }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
-    expect(screen.getByDisplayValue(PRIVATE_CANARY)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Discard unsaved changes" })).toBeEnabled();
-
+    expect(mocks.axios.post).not.toHaveBeenCalled();
     await act(async () => resolveDelayedSave({
       data: assignmentServerPayload(PRIVATE_CANARY, 1),
     }));
     await flushPromises();
+    expect(mocks.axios.post).toHaveBeenCalledWith("/assignments/17/submit", {
+      content: PRIVATE_CANARY,
+      content_format: "rich",
+      expected_draft_revision: 1,
+    }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(screen.getByDisplayValue(PRIVATE_CANARY)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Discard unsaved changes" })).toBeEnabled();
+
     expect(screen.getByDisplayValue(PRIVATE_CANARY)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Discard unsaved changes" })).toBeEnabled();
   });
