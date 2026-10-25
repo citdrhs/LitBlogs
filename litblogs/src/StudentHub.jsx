@@ -1,5 +1,5 @@
 import { storageKey } from "./utils/browserStorage";
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import axios from 'axios';
@@ -17,7 +17,10 @@ const StudentHub = () => {
   const [showJoinForm, setShowJoinForm] = useState(false);
   const [classCode, setClassCode] = useState('');
   const [loading, setLoading] = useState(true);
-  const [, setError] = useState(null);
+  const [error, setError] = useState(null);
+  const [classListsLoading, setClassListsLoading] = useState(false);
+  const [classesLoaded, setClassesLoaded] = useState(false);
+  const [archivedClassesLoaded, setArchivedClassesLoaded] = useState(false);
   const [activeTab, setActiveTab] = useState('current');
   const [posts, setPosts] = useState([]);
   const [postsLoading, setPostsLoading] = useState(false);
@@ -43,28 +46,37 @@ const StudentHub = () => {
     }
   };
 
-  useEffect(() => {
-    const fetchClasses = async () => {
-      try {
-        setLoading(true);
-        // Fetch active classes
-        const activeResponse = await axios.get('/student/classes?status=active');
-        
-        // Fetch archived classes
-        const archivedResponse = await axios.get('/student/classes?status=archived');
-        
-        setClasses(activeResponse.data);
-        setArchivedClasses(archivedResponse.data);
-        setLoading(false);
-      } catch (error) {
-        console.error('Error fetching classes:', error);
-        setError(error.response?.data?.detail || 'Failed to load classes');
-        setLoading(false);
-      }
-    };
-    
-    fetchClasses();
+  const fetchClasses = useCallback(async ({ justJoined = false } = {}) => {
+    setClassListsLoading(true);
+    const [active, archived] = await Promise.allSettled([
+      axios.get('/student/classes?status=active'),
+      axios.get('/student/classes?status=archived'),
+    ]);
+    if (active.status === 'fulfilled') {
+      setClasses(active.value.data);
+      setClassesLoaded(true);
+    } else {
+      setClassesLoaded(false);
+    }
+    if (archived.status === 'fulfilled') {
+      setArchivedClasses(archived.value.data);
+      setArchivedClassesLoaded(true);
+    } else {
+      setArchivedClassesLoaded(false);
+    }
+    const failed = active.status === 'rejected' || archived.status === 'rejected';
+    setError(failed
+      ? justJoined
+        ? 'You joined the class, but some class information could not be loaded. Retry loading your classes; you do not need to join again.'
+        : 'Some class information could not be loaded. Retry loading your classes.'
+      : null);
+    setClassListsLoading(false);
+    setLoading(false);
   }, []);
+
+  useEffect(() => {
+    fetchClasses();
+  }, [fetchClasses]);
 
   const fetchUserPosts = async () => {
     try {
@@ -91,25 +103,20 @@ const StudentHub = () => {
 
   const joinClass = async (e) => {
     e.preventDefault();
+    setLoading(true);
     try {
-      setLoading(true);
       await axios.post('/student/join-class',
         { access_code: classCode }
       );
-      
-      // Fetch the updated list of classes
-      const activeResponse = await axios.get('/student/classes?status=active');
-      
-      setClasses(activeResponse.data);
-      setShowJoinForm(false);
-      setClassCode('');
-      setLoading(false);
-      toast.success('Successfully joined class!');
     } catch {
       setLoading(false);
-      setError('Failed to join class');
       toast.error('Failed to join class. Please check the class code.');
+      return;
     }
+    setShowJoinForm(false);
+    setClassCode('');
+    toast.success('Successfully joined class!');
+    await fetchClasses({ justJoined: true });
   };
 
   if (loading) {
@@ -179,6 +186,19 @@ const StudentHub = () => {
 
         {/* Main Content */}
         <div className="flex-1 p-8">
+          {error && (
+            <div role="alert" className="mb-6 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+              <p>{error}</p>
+              <button
+                type="button"
+                onClick={() => fetchClasses()}
+                disabled={classListsLoading}
+                className="mt-3 rounded-lg border border-amber-500 px-3 py-2 font-medium hover:bg-amber-100 disabled:opacity-60"
+              >
+                {classListsLoading ? 'Loading classes…' : 'Retry loading classes'}
+              </button>
+            </div>
+          )}
           {activeTab === 'current' && (
             <div>
               <div className="flex justify-between items-center mb-6">
@@ -215,13 +235,13 @@ const StudentHub = () => {
                       </div>
                     </motion.div>
                   ))
-                ) : (
+                ) : classesLoaded ? (
                   <div className="col-span-full text-center py-12">
                     <div className="text-gray-500 dark:text-gray-400">
                       You're not enrolled in any classes yet.
                     </div>
                   </div>
-                )}
+                ) : null}
               </div>
             </div>
           )}
@@ -251,13 +271,13 @@ const StudentHub = () => {
                     </motion.div>
                   ))}
                 </div>
-              ) : (
+              ) : archivedClassesLoaded ? (
                 <div className="text-center py-12">
                   <div className="text-gray-500 dark:text-gray-400">
                     You don't have any previous classes.
                   </div>
                 </div>
-              )}
+              ) : null}
             </div>
           )}
 

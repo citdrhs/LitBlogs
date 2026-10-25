@@ -21,6 +21,38 @@ afterEach(() => {
 });
 
 describe("ProtectedRoute", () => {
+  it.each([503, 429, undefined])("preserves the tab's work and offers retry when checking the session fails (%s)", async (status) => {
+    sessionStorage.setItem("user_info", JSON.stringify({ userId: 42, username: "synthetic-student" }));
+    const cleared = vi.fn();
+    window.addEventListener("litblogs:clear-private-draft-memory", cleared);
+    let attempts = 0;
+    axios.defaults.adapter = async (config) => {
+      attempts += 1;
+      if (attempts === 1) throw Object.assign(new Error("temporarily unavailable"), status ? { response: { status } } : {});
+      return { config, data: { user_id: 42, username: "synthetic-student", role: "STUDENT" }, headers: {}, status: 200, statusText: "OK" };
+    };
+    try {
+      render(
+        <MemoryRouter initialEntries={["/protected"]}>
+          <Routes>
+            <Route path="/protected" element={<ProtectedRoute><p>Protected session content</p></ProtectedRoute>} />
+            <Route path="/sign-in" element={<p>Sign in route</p>} />
+          </Routes>
+        </MemoryRouter>,
+      );
+      expect(await screen.findByRole("alert")).toHaveTextContent(/try again/i);
+      expect(screen.queryByText("Protected session content")).not.toBeInTheDocument();
+      expect(screen.queryByText("Sign in route")).not.toBeInTheDocument();
+      expect(JSON.parse(sessionStorage.getItem("user_info"))).toMatchObject({ userId: 42 });
+      expect(cleared).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      expect(await screen.findByText("Protected session content")).toBeInTheDocument();
+      expect(attempts).toBe(2);
+    } finally {
+      window.removeEventListener("litblogs:clear-private-draft-memory", cleared);
+    }
+  });
+
   it("authorizes from the HttpOnly cookie session endpoint without a browser JWT", async () => {
     axios.defaults.adapter = async (config) => ({
       config,

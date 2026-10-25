@@ -21,6 +21,7 @@ import {
   purgeLegacyPersistentAuth,
 } from './utils/auth'
 import { clearBootstrappedEmailVerificationToken } from './utils/verificationToken'
+import { handleUnauthorizedResponse } from './utils/unauthorizedResponse'
 
 // Set base URL for all axios requests
 axios.defaults.baseURL = API_BASE_PATH;
@@ -28,22 +29,12 @@ purgeLegacyPersistentAuth();
 
 axios.interceptors.response.use(
   (response) => response,
-  (error) => {
-    const isUnauthorized = error?.response?.status === 401;
-
-    if (isUnauthorized) {
-      clearStoredAuth();
-
-      if (typeof window !== "undefined") {
-        const signInPath = `${APP_BASE_PATH || ""}/sign-in`;
-        if (window.location.pathname !== signInPath) {
-          window.location.replace(signInPath);
-        }
-      }
-    }
-
-    return Promise.reject(error);
-  }
+  (error) => handleUnauthorizedResponse(error, {
+    clearAuth: clearStoredAuth,
+    redirect: (path) => window.location.replace(path),
+    signInPath: `${APP_BASE_PATH || ""}/sign-in`,
+    currentPath: window.location.pathname,
+  })
 );
 
 const renderApplication = (msalInstance) => {

@@ -229,6 +229,7 @@ const renderFeed = () => render(
       <Routes>
         <Route path="/class-feed/:classId" element={<ClassFeed />} />
         <Route path="/elsewhere" element={<div>Elsewhere route</div>} />
+        <Route path="/sign-in" element={<div>Sign in route</div>} />
       </Routes>
     </PrivateDraftProvider>
   </MemoryRouter>,
@@ -340,6 +341,98 @@ describe("ClassFeed private draft lifecycle", () => {
       title: "Formatted post",
       content: RICH_POST_HTML,
     });
+  });
+
+  it("keeps a post private during session recovery and restores its images without automatically publishing", async () => {
+    renderFeed();
+    await flushPromises();
+    fireEvent.click(screen.getByRole("button", { name: "Create New Post" }));
+    await flushPromises();
+    const draftHtml = `<p>${PRIVATE_CANARY}</p><img src="${ASSIGNMENT_IMAGE_URL}" alt="Saved drawing">`;
+    fireEvent.change(screen.getByLabelText("Post Title (Required)"), { target: { value: "Recovery post" } });
+    fireEvent.change(screen.getByLabelText("Post content"), { target: { value: draftHtml } });
+
+    let handled;
+    act(() => {
+      handled = !window.dispatchEvent(new Event("litblogs:draft-session-expired", { cancelable: true }));
+    });
+    expect(handled).toBe(true);
+    expect(screen.queryByLabelText("Post content")).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(PRIVATE_CANARY);
+    expect(screen.queryByRole("button", { name: "Publish" })).not.toBeInTheDocument();
+    const previousGet = mocks.axios.get.getMockImplementation();
+    mocks.axios.get.mockImplementation((url, ...args) => url === "/auth/session"
+      ? Promise.resolve({ status: 200, data: { user_id: 7, username: "draft-student", role: "STUDENT" } })
+      : previousGet(url, ...args));
+    mocks.axios.post.mockImplementation(async (url) => ({ status: 200, data: url === "/auth/login"
+      ? { user_id: 7, username: "draft-student", role: "STUDENT" }
+      : { ...BASELINE_POST, id: 100, title: "Recovery post", content: draftHtml } }));
+    fireEvent.change(screen.getByLabelText("School email"), { target: { value: "student@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "Synthetic-password-Aa1!" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in and return to draft" }));
+    await flushPromises();
+    expect(screen.getByLabelText("Post Title (Required)")).toHaveValue("Recovery post");
+    expect(screen.getByLabelText("Post content")).toHaveValue(draftHtml);
+    expect(mocks.axios.post.mock.calls.filter(([url]) => url === "/classes/1/posts")).toHaveLength(0);
+    expect(JSON.stringify({ ...localStorage, ...sessionStorage })).not.toContain(PRIVATE_CANARY);
+    fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+    await flushPromises();
+    expect(mocks.axios.post).toHaveBeenCalledWith("/classes/1/posts", { title: "Recovery post", content: draftHtml });
+  });
+
+  it("does not intercept an expired session when no post composer is open", async () => {
+    renderFeed();
+    await flushPromises();
+    expect(window.dispatchEvent(new Event("litblogs:draft-session-expired", { cancelable: true }))).toBe(true);
+    expect(screen.queryByLabelText("School email")).not.toBeInTheDocument();
+  });
+
+  it("discards retained post content before leaving recovery for a different account", async () => {
+    renderFeed();
+    await flushPromises();
+    fireEvent.click(screen.getByRole("button", { name: "Create New Post" }));
+    await flushPromises();
+    fireEvent.change(screen.getByLabelText("Post Title (Required)"), { target: { value: PRIVATE_CANARY } });
+    fireEvent.change(screen.getByLabelText("Post content"), { target: { value: `<p>${PRIVATE_CANARY}</p>` } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Draft" }));
+    await flushPromises();
+    expect(screen.getByTestId("post-draft-probe")).toHaveTextContent(PRIVATE_CANARY);
+    act(() => window.dispatchEvent(new Event("litblogs:draft-session-expired", { cancelable: true })));
+    mocks.axios.post.mockImplementation(async (url) => ({ status: url === "/auth/logout" ? 204 : 200, data: { user_id: 8 } }));
+    fireEvent.change(screen.getByLabelText("School email"), { target: { value: "different@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "Different-account-Aa1!" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in and return to draft" }));
+    await flushPromises();
+    expect(screen.getByText("Sign in route")).toBeInTheDocument();
+    expect(screen.getByTestId("post-draft-probe")).toHaveTextContent("none");
+    expect(document.body.textContent).not.toContain(PRIVATE_CANARY);
+    expect(mocks.axios.post.mock.calls.filter(([url]) => url === "/classes/1/posts")).toHaveLength(0);
+  });
+
+  it("cannot resave discarded content while logout is delayed or the recovery screen unmounts", async () => {
+    renderFeed();
+    await flushPromises();
+    fireEvent.click(screen.getByRole("button", { name: "Create New Post" }));
+    await flushPromises();
+    vi.useFakeTimers();
+    fireEvent.change(screen.getByLabelText("Post Title (Required)"), { target: { value: PRIVATE_CANARY } });
+    fireEvent.change(screen.getByLabelText("Post content"), { target: { value: `<p>${PRIVATE_CANARY}</p>` } });
+    act(() => window.dispatchEvent(new Event("litblogs:draft-session-expired", { cancelable: true })));
+    let finishLogout;
+    mocks.axios.post.mockImplementation(() => new Promise((resolve) => { finishLogout = resolve; }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard draft and sign out" }));
+    await flushPromises();
+    let staysLocked;
+    act(() => { staysLocked = !window.dispatchEvent(new Event("litblogs:draft-session-expired", { cancelable: true })); });
+    expect(staysLocked).toBe(true);
+    await act(async () => { vi.advanceTimersByTime(1000); });
+    expect(screen.getByTestId("post-draft-probe")).toHaveTextContent("none");
+    fireEvent.click(screen.getByRole("button", { name: "Go elsewhere" }));
+    await flushPromises();
+    expect(screen.getByTestId("post-draft-probe")).toHaveTextContent("none");
+    await act(async () => { finishLogout({ status: 204 }); });
+    expect(screen.getByText("Elsewhere route")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(PRIVATE_CANARY);
   });
 
   it("blocks publishing and composer teardown until an editor upload finishes", async () => {
