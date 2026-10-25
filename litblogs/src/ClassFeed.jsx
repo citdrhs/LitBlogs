@@ -22,7 +22,9 @@ import { IoMdHeart, IoMdHeartEmpty } from 'react-icons/io';
 import CommentThread from './components/CommentThread';
 import { formatRelativeTime, setupTimeUpdater } from './utils/timeUtils';
 import { mediaPath } from './utils/urlUtils';
-import { logoutBrowserSession } from './utils/auth';
+import { clearStoredAuth, logoutBrowserSession } from './utils/auth';
+import { DRAFT_SESSION_EXPIRED_EVENT } from './utils/unauthorizedResponse';
+import DraftSessionRecovery from './components/DraftSessionRecovery';
 import {
   buildPostRequestPayload,
   MAX_POST_HTML_LENGTH,
@@ -166,6 +168,7 @@ const ClassFeed = () => {
     return JSON.parse(localStorage.getItem(storageKey('darkMode'))) ?? false;
   });
   const [showNewPostForm, setShowNewPostForm] = useState(false);
+  const [draftSessionOwner, setDraftSessionOwner] = useState(null);
   const [postTitle, setPostTitle] = useState("");
   const [content, setContent] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -231,6 +234,18 @@ const ClassFeed = () => {
   const activeAssignmentId = activeAssignment?.id;
   const assignmentDraftUserId = userInfo?.userId || userInfo?.id;
   const postDraftUserId = userInfo?.userId || userInfo?.id;
+
+  useEffect(() => {
+    if (!showNewPostForm || !Number.isSafeInteger(Number(postDraftUserId)) || Number(postDraftUserId) <= 0) {
+      return undefined;
+    }
+    const retainPostForReauthentication = (event) => {
+      event.preventDefault();
+      setDraftSessionOwner(Number(postDraftUserId));
+    };
+    window.addEventListener(DRAFT_SESSION_EXPIRED_EVENT, retainPostForReauthentication);
+    return () => window.removeEventListener(DRAFT_SESSION_EXPIRED_EVENT, retainPostForReauthentication);
+  }, [showNewPostForm, postDraftUserId]);
   const activeAssignmentMemoryContext = activeAssignmentId && assignmentDraftUserId
     ? {
         userId: assignmentDraftUserId,
@@ -660,6 +675,7 @@ const ClassFeed = () => {
       setAssignmentDraftClosing(false);
       setAssignmentSubmitting(false);
       setShowNewPostForm(false);
+      setDraftSessionOwner(null);
       setPostTitle('');
       setContent('');
       setPostContent(createEmptyPostContent());
@@ -1796,6 +1812,34 @@ const ClassFeed = () => {
       toast.error('Failed to post comment');
     }
   };
+
+  if (draftSessionOwner !== null) {
+    return (
+      <DraftSessionRecovery
+        ownerId={draftSessionOwner}
+        onRecovered={(metadata) => {
+          setUserInfo(metadata);
+          setDraftSessionOwner(null);
+          toast.success('Signed in again. Review your draft and click Publish when you are ready.');
+        }}
+        onDiscardStart={() => {
+          // Prevent unmount cleanup from putting discarded content back in memory.
+          latestPostComposerRef.current = null;
+          assignmentDraftRequestRef.current += 1;
+          assignmentDraftAbortRef.current?.abort();
+          clearPrivateDraftMemory();
+          setShowNewPostForm(false);
+          resetPostComposer();
+        }}
+        onDiscard={() => {
+          clearStoredAuth();
+          setUserInfo(null);
+          setDraftSessionOwner(null);
+          navigate('/sign-in', { replace: true });
+        }}
+      />
+    );
+  }
 
   return (
     <div className={`min-h-screen flex flex-col transition-all duration-500 ${darkMode ? 'bg-gradient-to-r from-slate-800 to-gray-950 text-gray-200' : 'bg-gradient-to-r from-indigo-100 to-pink-100 text-gray-900'}`}>

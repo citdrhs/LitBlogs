@@ -1,4 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
+import axios from "axios";
+import { clearStoredAuth } from "./utils/auth";
 
 const doubles = vi.hoisted(() => ({
   createRoot: vi.fn(),
@@ -58,6 +60,28 @@ beforeEach(() => {
     return { initialize: doubles.initialize };
   });
   document.body.innerHTML = '<div id="root"></div>';
+});
+
+it("passes an expired request to an open draft before clearing authentication or navigating", async () => {
+  doubles.loadPublicRuntimeConfig.mockResolvedValue({
+    csrfCookieName: "litblogs-csrf",
+    googleOauthEnabled: false,
+    microsoftOauthEnabled: false,
+    localPasswordRegistrationEnabled: true,
+  });
+  const retain = vi.fn((event) => event.preventDefault());
+  window.addEventListener("litblogs:draft-session-expired", retain);
+  try {
+    await import("./main.jsx");
+    await vi.waitFor(() => expect(doubles.render).toHaveBeenCalledOnce());
+    const reject = axios.interceptors.response.use.mock.calls[0][1];
+    const expired = { response: { status: 401 }, config: { method: "post", url: "/classes/1/posts" } };
+    await expect(reject(expired)).rejects.toBe(expired);
+    expect(retain).toHaveBeenCalledOnce();
+    expect(clearStoredAuth).not.toHaveBeenCalled();
+  } finally {
+    window.removeEventListener("litblogs:draft-session-expired", retain);
+  }
 });
 
 it("never constructs Microsoft authentication when runtime disables stale valid IDs", async () => {
