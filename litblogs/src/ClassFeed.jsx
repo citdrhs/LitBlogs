@@ -236,7 +236,7 @@ const ClassFeed = () => {
   const postDraftUserId = userInfo?.userId || userInfo?.id;
 
   useEffect(() => {
-    if (!showNewPostForm || !Number.isSafeInteger(Number(postDraftUserId)) || Number(postDraftUserId) <= 0) {
+    if ((!showNewPostForm && draftSessionOwner === null) || !Number.isSafeInteger(Number(postDraftUserId)) || Number(postDraftUserId) <= 0) {
       return undefined;
     }
     const retainPostForReauthentication = (event) => {
@@ -245,7 +245,7 @@ const ClassFeed = () => {
     };
     window.addEventListener(DRAFT_SESSION_EXPIRED_EVENT, retainPostForReauthentication);
     return () => window.removeEventListener(DRAFT_SESSION_EXPIRED_EVENT, retainPostForReauthentication);
-  }, [showNewPostForm, postDraftUserId]);
+  }, [showNewPostForm, postDraftUserId, draftSessionOwner]);
   const activeAssignmentMemoryContext = activeAssignmentId && assignmentDraftUserId
     ? {
         userId: assignmentDraftUserId,

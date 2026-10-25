@@ -422,6 +422,9 @@ describe("ClassFeed private draft lifecycle", () => {
     mocks.axios.post.mockImplementation(() => new Promise((resolve) => { finishLogout = resolve; }));
     fireEvent.click(screen.getByRole("button", { name: "Discard draft and sign out" }));
     await flushPromises();
+    let staysLocked;
+    act(() => { staysLocked = !window.dispatchEvent(new Event("litblogs:draft-session-expired", { cancelable: true })); });
+    expect(staysLocked).toBe(true);
     await act(async () => { vi.advanceTimersByTime(1000); });
     expect(screen.getByTestId("post-draft-probe")).toHaveTextContent("none");
     fireEvent.click(screen.getByRole("button", { name: "Go elsewhere" }));
