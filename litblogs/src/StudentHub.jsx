@@ -55,10 +55,14 @@ const StudentHub = () => {
     if (active.status === 'fulfilled') {
       setClasses(active.value.data);
       setClassesLoaded(true);
+    } else {
+      setClassesLoaded(false);
     }
     if (archived.status === 'fulfilled') {
       setArchivedClasses(archived.value.data);
       setArchivedClassesLoaded(true);
+    } else {
+      setArchivedClassesLoaded(false);
     }
     const failed = active.status === 'rejected' || archived.status === 'rejected';
     setError(failed

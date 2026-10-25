@@ -110,6 +110,7 @@ describe("StudentHub class loading", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(/could not be loaded/i);
     expect(doubles.error).not.toHaveBeenCalled();
     expect(document.body).not.toHaveTextContent("check the class code");
+    expect(screen.queryByText(/not enrolled in any classes/i)).not.toBeInTheDocument();
     refreshAvailable = true;
     fireEvent.click(screen.getByRole("button", { name: "Retry loading classes" }));
     expect(await screen.findByRole("heading", { name: "COW English" })).toBeInTheDocument();
