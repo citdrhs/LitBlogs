@@ -302,6 +302,60 @@ describe("administrator account lifecycle controls", () => {
   });
 });
 
+describe("administrator class inspection", () => {
+  it("opens class details with posts and archived classes available in the list", async () => {
+    const classData = {
+      id: 8,
+      name: "Literature",
+      description: "Class description",
+      access_code: "READ42",
+      status: "active",
+      enrollment_count: 1,
+      post_count: 1,
+    };
+    doubles.get.mockImplementation(async (path, config) => {
+      if (path === "/users") return { data: initialUsers };
+      if (path === "/classes" && config?.params?.status === "archived") {
+        return { data: [{ ...classData, id: 9, name: "Archived Literature", status: "archived", enrollment_count: 0 }] };
+      }
+      if (path === "/classes") return { data: [classData] };
+      if (path === "/classes/8/details") return { data: classData };
+      if (path === "/classes/8/students") {
+        return { data: [{ id: 2, username: "student-user", first_name: "Student", last_name: "User", email: "student@example.test" }] };
+      }
+      if (path === "/classes/8/posts") {
+        return { data: [{
+          id: 21,
+          title: "A Class Post",
+          content: "<p>Post content visible to administrators.</p>",
+          author: "Student User",
+          created_at: "2026-10-28T12:00:00Z",
+          likes: 1,
+          comments: 0,
+        }] };
+      }
+      if (path === "/classes/8/assignments?include_archived=true") return { data: [] };
+      if (path === "/classes/8/analytics") return { data: {} };
+      throw new Error(`Unexpected GET ${path}`);
+    });
+
+    renderDashboard();
+
+    expect(await screen.findByRole("button", { name: "View class data for Literature" })).toBeInTheDocument();
+    expect(screen.getByText("Students: 1")).toBeInTheDocument();
+    expect(screen.getByText("Archived Literature")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "View class data for Literature" }));
+
+    expect(await screen.findByRole("heading", { name: "Literature" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Blogs" }));
+    expect(await screen.findByText("A Class Post")).toBeInTheDocument();
+    expect(screen.getByText("Post content visible to administrators.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Assignments" }));
+    expect(screen.queryByRole("button", { name: "Create Assignment" })).not.toBeInTheDocument();
+    expect(doubles.get).toHaveBeenCalledWith("/classes", { params: { status: "archived" } });
+  });
+});
+
 const recovery = {
   email: "student@example.test",
   reset_url: "https://school.example/dren/reset-password?token=synthetic-private-recovery-code",
@@ -601,7 +655,7 @@ describe("administrator account deletion", () => {
     expect(screen.queryByRole("button", { name: "Delete account student-user" })).not.toBeInTheDocument();
     await waitFor(() => {
       expect(doubles.get.mock.calls.filter(([path]) => path === "/users")).toHaveLength(2);
-      expect(doubles.get.mock.calls.filter(([path]) => path === "/classes")).toHaveLength(2);
+      expect(doubles.get.mock.calls.filter(([path]) => path === "/classes")).toHaveLength(4);
     });
   });
 
