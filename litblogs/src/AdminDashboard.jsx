@@ -1,22 +1,36 @@
 import { storageKey } from "./utils/browserStorage";
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import axios from 'axios';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
+import ClassDetails from './components/ClassDetails';
 import TeacherInvitationDialog from './components/TeacherInvitationDialog';
 import AdminAccountActionDialog from './components/AdminAccountActionDialog';
 import { getStoredSessionMetadata, logoutBrowserSession } from './utils/auth';
 import { assetPath } from './utils/urlUtils';
 
+const fetchAdminClasses = async () => {
+  const [activeResponse, archivedResponse] = await Promise.all([
+    axios.get('/classes'),
+    axios.get('/classes', { params: { status: 'archived' } }),
+  ]);
+  return [...activeResponse.data, ...archivedResponse.data];
+};
+
 const AdminDashboard = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const [darkMode] = useState(() => {
     return JSON.parse(localStorage.getItem(storageKey('darkMode'))) ?? false;
   });
   const [users, setUsers] = useState([]);
   const [classes, setClasses] = useState([]);
+  const [selectedClass, setSelectedClass] = useState(() => location.state?.selectedClass || null);
+  const [selectedClassInitialTab, setSelectedClassInitialTab] = useState(
+    () => location.state?.classDetailsTab || 'Overview',
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [userInfo, setUserInfo] = useState(() => getStoredSessionMetadata());
@@ -33,14 +47,13 @@ const AdminDashboard = () => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        // Fetch all users and classes
-        const [usersResponse, classesResponse] = await Promise.all([
+        const [usersResponse, allClasses] = await Promise.all([
           axios.get('/users'),
-          axios.get('/classes')
+          fetchAdminClasses(),
         ]);
 
         setUsers(usersResponse.data);
-        setClasses(classesResponse.data);
+        setClasses(allClasses);
         setLastUpdated(new Date());
         setLoading(false);
       } catch {
@@ -107,12 +120,12 @@ const AdminDashboard = () => {
     setStatusMessage(`${deletedUser.username} has been deleted.`);
     setStatusError('');
     try {
-      const [usersResponse, classesResponse] = await Promise.all([
+      const [usersResponse, allClasses] = await Promise.all([
         axios.get('/users'),
-        axios.get('/classes'),
+        fetchAdminClasses(),
       ]);
       setUsers(usersResponse.data);
-      setClasses(classesResponse.data);
+      setClasses(allClasses);
       setLastUpdated(new Date());
     } catch {
       setStatusError('The account was deleted, but dashboard data could not be refreshed. Reload the page.');
@@ -171,6 +184,20 @@ const AdminDashboard = () => {
       logo="./logo.png"
       />
       <div className="container mx-auto px-4 py-8">
+        {selectedClass ? (
+          <ClassDetails
+            classData={selectedClass}
+            darkMode={darkMode}
+            onBack={() => setSelectedClass(null)}
+            initialTab={selectedClassInitialTab}
+            adminReturnContext={{
+              selectedClass,
+              classDetailsTab: selectedClassInitialTab,
+            }}
+            readOnly
+          />
+        ) : (
+          <>
         <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between mb-8">
           <div>
             <h1 className="text-3xl font-bold">Admin Dashboard</h1>
@@ -446,12 +473,31 @@ const AdminDashboard = () => {
                   Code: {class_.access_code}
                 </p>
                 <p className="text-sm text-gray-500 dark:text-gray-400">
-                  Students: {class_.student_count}
+                  Students: {class_.enrollment_count}
                 </p>
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  Status: {class_.status}
+                </p>
+                <button
+                  type="button"
+                  aria-label={`View class data for ${class_.name}`}
+                  onClick={() => {
+                    setSelectedClass(class_);
+                    setSelectedClassInitialTab('Overview');
+                  }}
+                  className="mt-4 w-full rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
+                >
+                  View class data
+                </button>
               </motion.div>
             ))}
+            {classes.length === 0 && (
+              <div className="text-sm text-gray-500 dark:text-gray-400">No classes found.</div>
+            )}
           </div>
         </section>
+          </>
+        )}
       </div>
       {invitationOpen && (
         <TeacherInvitationDialog darkMode={darkMode} onClose={() => setInvitationOpen(false)} />

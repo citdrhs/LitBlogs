@@ -69,7 +69,14 @@ const serializeAssignmentDueDate = (dateValue) => {
   return parsed.toISOString();
 };
 
-const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) => {
+const ClassDetails = ({
+  classData,
+  darkMode,
+  onBack,
+  initialTab = 'Overview',
+  readOnly = false,
+  adminReturnContext = null,
+}) => {
   const [, setUserInfo] = useState(null);
   const [activeTab, setActiveTab] = useState(initialTab);
   const [loading, setLoading] = useState(true);
@@ -258,6 +265,13 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
           backLabel: 'Back to Blog List',
           classDetailsTab: 'Blogs',
           selectedClass: classData,
+          ...(adminReturnContext ? {
+            adminReturnContext: {
+              ...adminReturnContext,
+              selectedClass: classData,
+              classDetailsTab: 'Blogs',
+            },
+          } : {}),
           postSequence: posts.map(({ id, title }) => ({ id, title })),
         },
       },
@@ -400,7 +414,16 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm">
                             <button 
-                              onClick={() => navigate(`/class/${classData.id}/student/${student.id}`)}
+                              onClick={() => navigate(
+                                `/class/${classData.id}/student/${student.id}`,
+                                adminReturnContext
+                                  ? { state: { adminReturnContext: {
+                                    ...adminReturnContext,
+                                    selectedClass: classData,
+                                    classDetailsTab: activeTab,
+                                  } } }
+                                  : undefined,
+                              )}
                               className="text-indigo-600 hover:text-indigo-900 dark:text-indigo-400 dark:hover:text-indigo-300"
                             >
                               View Details
@@ -512,15 +535,17 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
                       Track submissions, due dates, and late work.
                     </p>
                   </div>
-                  <button
-                    onClick={openCreateAssignmentForm}
-                    className="px-4 py-2 rounded-lg text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500"
-                  >
-                    Create Assignment
-                  </button>
+                  {!readOnly && (
+                    <button
+                      onClick={openCreateAssignmentForm}
+                      className="px-4 py-2 rounded-lg text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500"
+                    >
+                      Create Assignment
+                    </button>
+                  )}
                 </div>
 
-                {showAssignmentForm && (
+                {!readOnly && showAssignmentForm && (
                   <div className={`p-6 rounded-lg border ${panelCardClasses} shadow-lg`}>
                     <h4 className="text-lg font-semibold mb-4">
                       {editingAssignmentId ? 'Edit Assignment' : 'New Assignment'}
@@ -634,23 +659,27 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
                           </p>
                         </div>
                         <div className="flex flex-wrap gap-2">
-                          <button
-                            onClick={() => openEditAssignmentForm(assignment)}
-                            className={`px-4 py-2 rounded-lg text-sm font-medium ${
-                              darkMode ? 'bg-blue-900/40 text-blue-200' : 'bg-blue-50 text-blue-700'
-                            }`}
-                          >
-                            Edit Assignment
-                          </button>
-                          <button
-                            onClick={() => handleArchiveAssignment(assignment)}
-                            disabled={changingAssignmentId === assignment.id}
-                            className={`px-4 py-2 rounded-lg text-sm font-medium ${
-                              darkMode ? 'bg-rose-900/40 text-rose-200' : 'bg-rose-50 text-rose-700'
-                            }`}
-                          >
-                            Hide Assignment
-                          </button>
+                          {!readOnly && (
+                            <>
+                              <button
+                                onClick={() => openEditAssignmentForm(assignment)}
+                                className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                                  darkMode ? 'bg-blue-900/40 text-blue-200' : 'bg-blue-50 text-blue-700'
+                                }`}
+                              >
+                                Edit Assignment
+                              </button>
+                              <button
+                                onClick={() => handleArchiveAssignment(assignment)}
+                                disabled={changingAssignmentId === assignment.id}
+                                className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                                  darkMode ? 'bg-rose-900/40 text-rose-200' : 'bg-rose-50 text-rose-700'
+                                }`}
+                              >
+                                Hide Assignment
+                              </button>
+                            </>
+                          )}
                           <button
                             onClick={() => {
                               const nextId = expandedAssignmentId === assignment.id ? null : assignment.id;
@@ -773,7 +802,17 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
                           <div className="flex flex-wrap gap-2">
                             <button
                               onClick={() => navigate(`/class/${classData.id}/assignment/${assignment.id}/submissions`, {
-                                state: { selectedClass: classData, classDetailsTab: 'Assignments' },
+                                state: {
+                                  selectedClass: classData,
+                                  classDetailsTab: 'Assignments',
+                                  ...(adminReturnContext ? {
+                                    adminReturnContext: {
+                                      ...adminReturnContext,
+                                      selectedClass: classData,
+                                      classDetailsTab: 'Assignments',
+                                    },
+                                  } : {}),
+                                },
                               })}
                               className={`px-4 py-2 rounded-lg text-sm font-medium ${
                                 darkMode ? 'bg-gray-700 text-gray-200' : 'bg-gray-100 text-gray-700'
@@ -781,13 +820,15 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview' }) 
                             >
                               View Submissions
                             </button>
-                            <button
-                              onClick={() => handleRestoreAssignment(assignment)}
-                              disabled={changingAssignmentId === assignment.id}
-                              className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-blue-600 hover:bg-blue-500"
-                            >
-                              Restore Assignment
-                            </button>
+                            {!readOnly && (
+                              <button
+                                onClick={() => handleRestoreAssignment(assignment)}
+                                disabled={changingAssignmentId === assignment.id}
+                                className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-blue-600 hover:bg-blue-500"
+                              >
+                                Restore Assignment
+                              </button>
+                            )}
                           </div>
                         </div>
                       </div>

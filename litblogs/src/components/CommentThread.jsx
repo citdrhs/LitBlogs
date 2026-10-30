@@ -12,7 +12,8 @@ const CommentThread = ({
   onReply, 
   onLike, 
   depth = 0, 
-  maxDepth = 3 
+  maxDepth = 3,
+  readOnly = false,
 }) => {
   const [expanded, setExpanded] = useState(true);
   const [showReplies, setShowReplies] = useState(depth < 2);
@@ -194,7 +195,12 @@ const CommentThread = ({
               <div className="text-sm mb-3">{comment.content}</div>
               
               {/* Comment Actions */}
-              <div className="flex items-center gap-4 text-xs">
+              {readOnly ? (
+                <span className="text-xs text-gray-500 dark:text-gray-400">
+                  {likeCount} {likeCount === 1 ? 'like' : 'likes'}
+                </span>
+              ) : (
+                <div className="flex items-center gap-4 text-xs">
                 <button 
                   onClick={handleLike}
                   className="flex items-center gap-1 text-gray-500 hover:text-red-500 dark:text-gray-400 dark:hover:text-red-400 transition-colors"
@@ -237,11 +243,12 @@ const CommentThread = ({
                   </svg>
                   Reply
                 </button>
-              </div>
+                </div>
+              )}
               
               {/* Reply Form */}
               <AnimatePresence>
-                {replyFormVisible && (
+                {!readOnly && replyFormVisible && (
                   <motion.div
                     initial={{ height: 0, opacity: 0 }}
                     animate={{ height: 'auto', opacity: 1 }}
@@ -316,6 +323,7 @@ const CommentThread = ({
                           onLike={onLike}
                           depth={depth + 1}
                           maxDepth={maxDepth}
+                          readOnly={readOnly}
                         />
                       ))}
                     </div>
