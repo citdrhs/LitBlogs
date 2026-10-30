@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import axios from 'axios';
 import Loader from './Loader';
@@ -7,10 +7,14 @@ import { formatRelativeTime } from '../utils/timeUtils';
 import { toast } from 'react-hot-toast';
 import Footer from './Footer';
 import RichTextContent from './RichTextContent';
+import { getStoredSessionMetadata } from '../utils/auth';
 
 const StudentDetails = ({ darkMode }) => {
   const { classId, studentId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const adminReturnContext = location.state?.adminReturnContext || null;
+  const isAdminViewer = getStoredSessionMetadata()?.role?.toUpperCase() === 'ADMIN';
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [student, setStudent] = useState(null);
@@ -97,10 +101,19 @@ const StudentDetails = ({ darkMode }) => {
         postViewerContext: {
           backLabel: 'Back to Student Details',
           returnPath: `/class/${classId}/student/${studentId}`,
+          ...(adminReturnContext ? { adminReturnContext } : {}),
           postSequence: posts.map(({ id, title }) => ({ id, title })),
         },
       },
     });
+  };
+
+  const handleBack = () => {
+    if (adminReturnContext) {
+      navigate('/admin-dashboard', { state: adminReturnContext });
+      return;
+    }
+    navigate('/teacher-dashboard');
   };
 
   if (loading) {
@@ -123,13 +136,13 @@ const StudentDetails = ({ darkMode }) => {
     <div className={`p-6 rounded-lg ${darkMode ? 'bg-gradient-to-br from-gray-900 to-gray-800' : 'bg-gradient-to-br from-white to-gray-100'}`}>
       {/* Back button */}
       <button 
-        onClick={() => navigate('/teacher-dashboard')}
+        onClick={handleBack}
         className="mb-6 flex items-center text-blue-500 hover:text-blue-700"
       >
         <svg className="w-5 h-5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
         </svg>
-        Back to Dashboard
+        {adminReturnContext ? 'Back to Class' : 'Back to Dashboard'}
       </button>
       
       {/* Student header */}
@@ -254,28 +267,36 @@ const StudentDetails = ({ darkMode }) => {
               darkMode ? 'bg-gray-800/50' : 'bg-white/50'
             } shadow-sm backdrop-blur-sm`}>
               <h3 className="text-xl font-semibold mb-4 dark:text-white">Teacher Notes</h3>
-              <textarea
-                value={teacherNotes}
-                onChange={(e) => setTeacherNotes(e.target.value)}
-                className={`w-full p-3 rounded-lg border ${
-                  darkMode 
-                    ? 'bg-gray-700 border-gray-600 text-white' 
-                    : 'bg-white border-gray-300'
-                } focus:ring-2 focus:ring-blue-500 focus:border-transparent`}
-                rows="4"
-                placeholder="Add notes about this student..."
-              />
-              <div className="flex justify-end mt-2">
-                <button 
-                  onClick={saveTeacherNotes}
-                  disabled={savingNotes}
-                  className={`px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 ${
-                    savingNotes ? 'opacity-50 cursor-not-allowed' : ''
-                  }`}
-                >
-                  {savingNotes ? 'Saving...' : 'Save Notes'}
-                </button>
-              </div>
+              {isAdminViewer ? (
+                <p className="whitespace-pre-wrap text-gray-700 dark:text-gray-300">
+                  {teacherNotes || 'No teacher notes.'}
+                </p>
+              ) : (
+                <>
+                  <textarea
+                    value={teacherNotes}
+                    onChange={(e) => setTeacherNotes(e.target.value)}
+                    className={`w-full p-3 rounded-lg border ${
+                      darkMode
+                        ? 'bg-gray-700 border-gray-600 text-white'
+                        : 'bg-white border-gray-300'
+                    } focus:ring-2 focus:ring-blue-500 focus:border-transparent`}
+                    rows="4"
+                    placeholder="Add notes about this student..."
+                  />
+                  <div className="flex justify-end mt-2">
+                    <button
+                      onClick={saveTeacherNotes}
+                      disabled={savingNotes}
+                      className={`px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 ${
+                        savingNotes ? 'opacity-50 cursor-not-allowed' : ''
+                      }`}
+                    >
+                      {savingNotes ? 'Saving...' : 'Save Notes'}
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </motion.div>
         )}

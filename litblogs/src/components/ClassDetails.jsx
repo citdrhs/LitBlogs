@@ -69,7 +69,14 @@ const serializeAssignmentDueDate = (dateValue) => {
   return parsed.toISOString();
 };
 
-const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview', readOnly = false }) => {
+const ClassDetails = ({
+  classData,
+  darkMode,
+  onBack,
+  initialTab = 'Overview',
+  readOnly = false,
+  adminReturnContext = null,
+}) => {
   const [, setUserInfo] = useState(null);
   const [activeTab, setActiveTab] = useState(initialTab);
   const [loading, setLoading] = useState(true);
@@ -258,6 +265,13 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview', re
           backLabel: 'Back to Blog List',
           classDetailsTab: 'Blogs',
           selectedClass: classData,
+          ...(adminReturnContext ? {
+            adminReturnContext: {
+              ...adminReturnContext,
+              selectedClass: classData,
+              classDetailsTab: 'Blogs',
+            },
+          } : {}),
           postSequence: posts.map(({ id, title }) => ({ id, title })),
         },
       },
@@ -400,7 +414,16 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview', re
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm">
                             <button 
-                              onClick={() => navigate(`/class/${classData.id}/student/${student.id}`)}
+                              onClick={() => navigate(
+                                `/class/${classData.id}/student/${student.id}`,
+                                adminReturnContext
+                                  ? { state: { adminReturnContext: {
+                                    ...adminReturnContext,
+                                    selectedClass: classData,
+                                    classDetailsTab: activeTab,
+                                  } } }
+                                  : undefined,
+                              )}
                               className="text-indigo-600 hover:text-indigo-900 dark:text-indigo-400 dark:hover:text-indigo-300"
                             >
                               View Details
@@ -779,7 +802,17 @@ const ClassDetails = ({ classData, darkMode, onBack, initialTab = 'Overview', re
                           <div className="flex flex-wrap gap-2">
                             <button
                               onClick={() => navigate(`/class/${classData.id}/assignment/${assignment.id}/submissions`, {
-                                state: { selectedClass: classData, classDetailsTab: 'Assignments' },
+                                state: {
+                                  selectedClass: classData,
+                                  classDetailsTab: 'Assignments',
+                                  ...(adminReturnContext ? {
+                                    adminReturnContext: {
+                                      ...adminReturnContext,
+                                      selectedClass: classData,
+                                      classDetailsTab: 'Assignments',
+                                    },
+                                  } : {}),
+                                },
                               })}
                               className={`px-4 py-2 rounded-lg text-sm font-medium ${
                                 darkMode ? 'bg-gray-700 text-gray-200' : 'bg-gray-100 text-gray-700'

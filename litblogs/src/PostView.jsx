@@ -9,8 +9,11 @@ import { IoMdHeart, IoMdHeartEmpty } from 'react-icons/io';
 import toast from 'react-hot-toast';
 import CommentThread from './components/CommentThread';
 import RichTextContent from './components/RichTextContent';
+import LitBlogsEditor from './components/LitBlogsEditor';
 import { formatRelativeTime, setupTimeUpdater } from './utils/timeUtils';
 import { mediaPath } from './utils/urlUtils';
+import { getStoredSessionMetadata } from './utils/auth';
+import { buildPostRequestPayload, MAX_POST_HTML_LENGTH } from './utils/postRequestContract';
 import Footer from './components/Footer';
 
 const PostView = () => {
@@ -29,7 +32,7 @@ const PostView = () => {
   const [post, setPost] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [userInfo, setUserInfo] = useState(null);
+  const [userInfo] = useState(() => getStoredSessionMetadata());
   const [darkMode, setDarkMode] = useState(false);
   const [liked, setLiked] = useState(false);
   const [likeCount, setLikeCount] = useState(0);
@@ -44,6 +47,10 @@ const PostView = () => {
   const [commentsExpanded, setCommentsExpanded] = useState(false);
   const [newComment, setNewComment] = useState('');
   const [commentSubmitting, setCommentSubmitting] = useState(false);
+  const [editingPost, setEditingPost] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editContent, setEditContent] = useState('');
+  const [moderationLoading, setModerationLoading] = useState(false);
 
   const getInitialFromUser = (value) => {
     if (!value) return '?';
@@ -94,12 +101,6 @@ const PostView = () => {
   }, [postId]);
 
   useEffect(() => {
-    // Load user info
-    const storedUserInfo = sessionStorage.getItem(storageKey('user_info'));
-    if (storedUserInfo) {
-      setUserInfo(JSON.parse(storedUserInfo));
-    }
-
     const fetchPost = async () => {
       try {
         setLoading(true);
@@ -175,7 +176,13 @@ const PostView = () => {
   };
 
   const handleBack = () => {
-    if (viewerContext?.selectedClass) {
+    if (viewerContext?.adminReturnContext && viewerContext?.returnPath) {
+      navigate(viewerContext.returnPath, {
+        state: { adminReturnContext: viewerContext.adminReturnContext },
+      });
+    } else if (viewerContext?.adminReturnContext) {
+      navigate('/admin-dashboard', { state: viewerContext.adminReturnContext });
+    } else if (viewerContext?.selectedClass) {
       navigate('/teacher-dashboard', {
         state: {
           selectedClass: viewerContext.selectedClass,
@@ -329,6 +336,64 @@ const PostView = () => {
     }
   };
 
+  const handleEditPost = () => {
+    setEditTitle(post.title || '');
+    setEditContent(post.content || '');
+    setEditingPost(true);
+  };
+
+  const handleSavePost = async (event) => {
+    event.preventDefault();
+    if (!editTitle.trim()) {
+      toast.error('Please enter a post title');
+      return;
+    }
+    if (editContent.length > MAX_POST_HTML_LENGTH) {
+      toast.error('This post is too large to save.');
+      return;
+    }
+
+    setModerationLoading(true);
+    try {
+      const payload = buildPostRequestPayload({
+        title: editTitle.trim(),
+        content: editContent,
+        postContent: { media: [], files: [], codeSnippets: [] },
+      });
+      const response = await axios.put(
+        `/classes/${classId}/posts/${postId}`,
+        payload,
+      );
+      setPost((currentPost) => ({ ...currentPost, ...response.data }));
+      setEditingPost(false);
+      toast.success('Post updated successfully');
+    } catch (error) {
+      console.error('Error updating post:', error);
+      toast.error('Failed to update post');
+    } finally {
+      setModerationLoading(false);
+    }
+  };
+
+  const handleDeletePost = async () => {
+    if (!window.confirm('Are you sure you want to delete this post?')) return;
+
+    setModerationLoading(true);
+    try {
+      await axios.delete(`/classes/${classId}/posts/${postId}`);
+      toast.success('Post deleted successfully');
+      handleBack();
+    } catch (error) {
+      console.error('Error deleting post:', error);
+      toast.error('Failed to delete post');
+    } finally {
+      setModerationLoading(false);
+    }
+  };
+
+  const isAdminViewer = String(userInfo?.role || '').toUpperCase() === 'ADMIN';
+  const isTeacherViewer = String(userInfo?.role || '').toUpperCase() === 'TEACHER';
+
   useEffect(() => {
     const timeUpdateInterval = setupTimeUpdater();
     return () => clearInterval(timeUpdateInterval);
@@ -370,6 +435,26 @@ const PostView = () => {
               </svg>
               {viewerContext?.backLabel || (userInfo?.role === 'TEACHER' ? 'Back to Dashboard' : 'Back to Class')}
             </motion.button>
+
+            {isTeacherViewer && (
+              <div className="flex items-center gap-2 self-start sm:self-auto">
+                <button
+                  type="button"
+                  onClick={handleEditPost}
+                  className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
+                >
+                  Edit Post
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDeletePost}
+                  disabled={moderationLoading}
+                  className="rounded-lg border border-red-300 px-3 py-1.5 text-sm text-red-700 hover:bg-red-50 disabled:opacity-50"
+                >
+                  Delete Post
+                </button>
+              </div>
+            )}
 
             {currentReviewIndex >= 0 && reviewSequence.length > 1 && (
               <div className="flex items-center gap-2 self-start sm:self-auto">
@@ -438,7 +523,8 @@ const PostView = () => {
 
             {/* Interactions */}
             <div className="mt-8 pt-6 border-t border-gray-200">
-              <div className="flex items-center space-x-6">
+              {!isAdminViewer && (
+                <div className="flex items-center space-x-6">
                 <button 
                   onClick={handleLike}
                   className="flex items-center space-x-2 text-gray-700 hover:text-red-500 transition-colors"
@@ -489,7 +575,8 @@ const PostView = () => {
                   </svg>
                   <span>{saved ? 'Saved' : 'Save'}</span>
                 </button>
-              </div>
+                </div>
+              )}
             </div>
 
             {/* Comments Section */}
@@ -515,8 +602,9 @@ const PostView = () => {
               </div>
               
               {/* New Comment Form */}
-              <form onSubmit={handleCommentSubmit} className="mb-6">
-                <div className="flex items-start gap-3">
+              {!isAdminViewer && (
+                <form onSubmit={handleCommentSubmit} className="mb-6">
+                  <div className="flex items-start gap-3">
                   <div className="w-10 h-10 rounded-full bg-gray-300 flex items-center justify-center flex-shrink-0">
                     {userInfo?.profile_image ? (
                       <img
@@ -551,8 +639,9 @@ const PostView = () => {
                       </button>
                     </div>
                   </div>
-                </div>
-              </form>
+                  </div>
+                </form>
+              )}
               
               {/* Comments List */}
               <AnimatePresence>
@@ -578,6 +667,7 @@ const PostView = () => {
                             postId={postId}
                             onReply={handleCommentReply}
                             onLike={handleCommentLike}
+                            readOnly={isAdminViewer}
                           />
                         ))}
                         
@@ -605,10 +695,57 @@ const PostView = () => {
           </div>
         </motion.div>
       </div>
+
+      {editingPost && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-post-title"
+            onSubmit={handleSavePost}
+            className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-xl bg-white p-6 text-gray-900 shadow-xl"
+          >
+            <h2 id="edit-post-title" className="mb-4 text-xl font-semibold">Edit Post</h2>
+            <label htmlFor="edit-post-heading" className="mb-2 block text-sm font-medium">
+              Post title
+            </label>
+            <input
+              id="edit-post-heading"
+              value={editTitle}
+              onChange={(event) => setEditTitle(event.target.value)}
+              maxLength={200}
+              required
+              className="mb-4 w-full rounded-lg border border-gray-300 p-3"
+            />
+            <LitBlogsEditor
+              value={editContent}
+              onChange={setEditContent}
+              ariaLabel="Post content"
+            />
+            <div className="mt-5 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setEditingPost(false)}
+                disabled={moderationLoading}
+                className="rounded-lg border border-gray-300 px-4 py-2"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={moderationLoading}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-white disabled:opacity-50"
+              >
+                {moderationLoading ? 'Saving…' : 'Save Changes'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       <Footer darkMode={darkMode} />
     </div>
   );
 };
 
 export default PostView; 
-

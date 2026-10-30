@@ -291,7 +291,42 @@ def test_other_teacher_cannot_create_post_or_write_notes_in_class_a(client, auth
     _assert_denied(notes_response)
 
 
-def test_admin_class_override_uses_central_owner_policy(client, authorization_scenario):
+def test_owning_teacher_can_moderate_posts_but_admin_and_other_teachers_cannot(
+    client,
+    authorization_scenario,
+):
+    scenario = authorization_scenario
+    post_url = f"/api/classes/{scenario['class_a']}/posts/{scenario['post_a']}"
+    payload = {"title": "Teacher-moderated post", "content": "<p>Updated</p>"}
+
+    non_owner_update = client.put(
+        post_url,
+        headers=scenario["teacher_b_headers"],
+        json=payload,
+    )
+    admin_update = client.put(
+        post_url,
+        headers=scenario["admin_headers"],
+        json=payload,
+    )
+    owner_update = client.put(
+        post_url,
+        headers=scenario["teacher_a_headers"],
+        json=payload,
+    )
+    non_owner_delete = client.delete(post_url, headers=scenario["teacher_b_headers"])
+    admin_delete = client.delete(post_url, headers=scenario["admin_headers"])
+    owner_delete = client.delete(post_url, headers=scenario["teacher_a_headers"])
+
+    _assert_denied(non_owner_update)
+    assert admin_update.status_code == 403
+    assert owner_update.status_code == 200
+    _assert_denied(non_owner_delete)
+    assert admin_delete.status_code == 403
+    assert owner_delete.status_code == 200
+
+
+def test_admin_can_read_class_data_but_cannot_mutate_it(client, authorization_scenario):
     scenario = authorization_scenario
     archive_response = client.put(
         f"/api/classes/{scenario['class_a']}/archive",
@@ -310,10 +345,330 @@ def test_admin_class_override_uses_central_owner_policy(client, authorization_sc
         headers=scenario["admin_headers"],
     )
 
-    assert archive_response.status_code == 200
-    assert restore_response.status_code == 200
+    assert archive_response.status_code == 403
+    assert restore_response.status_code == 403
+    assert client.get(
+        f"/api/classes/{scenario['class_a']}/details",
+        headers=scenario["admin_headers"],
+    ).json()["status"] == "active"
     assert details_response.status_code == 200
     assert posts_response.status_code == 200
+
+
+def test_admin_reads_active_and_archived_classes_and_private_work_across_teachers(
+    client,
+    authorization_scenario,
+):
+    scenario = authorization_scenario
+    archive_class = client.put(
+        f"/api/classes/{scenario['class_b']}/archive",
+        headers=scenario["teacher_b_headers"],
+    )
+    assert archive_class.status_code == 200
+
+    with SessionLocal() as db:
+        private_assignment = db.get(models.Assignment, scenario["assignment_a"])
+        archived_assignment = db.get(models.Assignment, scenario["assignment_b"])
+        private_assignment.visibility = "private"
+        archived_assignment.visibility = "private"
+        archived_assignment.archived_at = datetime.now(UTC)
+        db.add(
+            models.AssignmentSubmission(
+                assignment_id=archived_assignment.id,
+                student_id=scenario["student_b"],
+                content="Archived class submission",
+            )
+        )
+        db.flush()
+        archived_submission = (
+            db.query(models.AssignmentSubmission)
+            .filter(
+                models.AssignmentSubmission.assignment_id == archived_assignment.id,
+                models.AssignmentSubmission.student_id == scenario["student_b"],
+            )
+            .one()
+        )
+        db.add(
+            models.AssignmentSubmissionReply(
+                submission_id=archived_submission.id,
+                user_id=scenario["teacher_b"],
+                content="Archived class feedback",
+            )
+        )
+        db.commit()
+        archived_submission_id = archived_submission.id
+
+    admin_headers = scenario["admin_headers"]
+    admin_a = client.get(
+        f"/api/classes/{scenario['class_a']}/details",
+        headers=admin_headers,
+    )
+    admin_b = client.get(
+        f"/api/classes/{scenario['class_b']}/details",
+        headers=admin_headers,
+    )
+    roster_a = client.get(
+        f"/api/classes/{scenario['class_a']}/students",
+        headers=admin_headers,
+    )
+    roster_b = client.get(
+        f"/api/classes/{scenario['class_b']}/students",
+        headers=admin_headers,
+    )
+    posts_a = client.get(
+        f"/api/classes/{scenario['class_a']}/posts",
+        headers=admin_headers,
+    )
+    posts_b = client.get(
+        f"/api/classes/{scenario['class_b']}/posts",
+        headers=admin_headers,
+    )
+    private_assignments = client.get(
+        f"/api/classes/{scenario['class_a']}/assignments",
+        headers=admin_headers,
+    )
+    archived_assignments = client.get(
+        f"/api/classes/{scenario['class_b']}/assignments?include_archived=true",
+        headers=admin_headers,
+    )
+    private_submissions = client.get(
+        f"/api/classes/{scenario['class_a']}/assignments/"
+        f"{scenario['assignment_a']}/submissions",
+        headers=admin_headers,
+    )
+    archived_submissions = client.get(
+        f"/api/classes/{scenario['class_b']}/assignments/"
+        f"{scenario['assignment_b']}/submissions",
+        headers=admin_headers,
+    )
+    archived_replies = client.get(
+        f"/api/classes/{scenario['class_b']}/assignments/"
+        f"{scenario['assignment_b']}/submissions/{archived_submission_id}/replies",
+        headers=admin_headers,
+    )
+
+    assert admin_a.status_code == admin_b.status_code == 200
+    assert admin_a.json()["status"] == "active"
+    assert admin_b.json()["status"] == "archived"
+    assert roster_a.status_code == roster_b.status_code == 200
+    assert {student["email"] for student in roster_a.json()} == {
+        "student-a@example.com",
+        "student-b@example.com",
+    }
+    assert {student["email"] for student in roster_b.json()} == {"student-b@example.com"}
+    assert {post["id"] for post in posts_a.json()} == {scenario["post_a"]}
+    assert {post["id"] for post in posts_b.json()} == {scenario["post_b"]}
+    assert scenario["assignment_a"] in {
+        assignment["id"] for assignment in private_assignments.json()
+    }
+    assert scenario["assignment_b"] in {
+        assignment["id"] for assignment in archived_assignments.json()
+    }
+    assert {item["id"] for item in private_submissions.json()} == {
+        scenario["submission_a"],
+        scenario["submission_b"],
+    }
+    assert archived_submissions.status_code == archived_replies.status_code == 200
+    assert archived_submission_id in {
+        item["id"] for item in archived_submissions.json()
+    }
+    assert archived_replies.json()[0]["content"] == "Archived class feedback"
+
+    non_enrolled_student = client.get(
+        f"/api/classes/{scenario['class_b']}/students",
+        headers=scenario["student_a_headers"],
+    )
+    non_owning_teacher = client.get(
+        f"/api/classes/{scenario['class_a']}/students",
+        headers=scenario["teacher_b_headers"],
+    )
+    unauthenticated = client.get(f"/api/classes/{scenario['class_a']}/details")
+    assert non_enrolled_student.status_code in {403, 404}
+    assert non_owning_teacher.status_code in {403, 404}
+    assert unauthenticated.status_code == 401
+
+
+def test_admin_content_mutations_are_rejected_without_changing_data(
+    client,
+    authorization_scenario,
+):
+    scenario = authorization_scenario
+    with SessionLocal() as db:
+        archived_assignment = db.get(models.Assignment, scenario["assignment_b"])
+        archived_assignment.archived_at = datetime.now(UTC)
+        db.commit()
+
+    post_url = f"/api/classes/{scenario['class_a']}/posts/{scenario['post_a']}"
+    assignment_url = (
+        f"/api/classes/{scenario['class_a']}/assignments/{scenario['assignment_a']}"
+    )
+    replies_url = (
+        f"/api/classes/{scenario['class_a']}/assignments/{scenario['assignment_a']}"
+        f"/submissions/{scenario['submission_a']}/replies"
+    )
+    headers = scenario["admin_headers"]
+    responses = [
+        client.post(
+            "/api/classes",
+            headers=headers,
+            json={"name": "Admin class", "description": "not allowed"},
+        ),
+        client.post(
+            f"/api/classes/{scenario['class_a']}/posts",
+            headers=headers,
+            json={"title": "Admin post", "content": "not allowed"},
+        ),
+        client.put(
+            post_url,
+            headers=headers,
+            json={"title": "Admin edit", "content": "not allowed"},
+        ),
+        client.delete(post_url, headers=headers),
+        client.post(
+            f"{post_url}/comments",
+            headers=headers,
+            json={"content": "Admin comment"},
+        ),
+        client.post(f"{post_url}/like", headers=headers),
+        client.post(f"{post_url}/save", headers=headers),
+        client.post(
+            f"/api/comments/{scenario['comment_a']}/like",
+            headers=headers,
+        ),
+        client.put(
+            f"/api/classes/{scenario['class_a']}/students/"
+            f"{scenario['student_a']}/notes",
+            headers=headers,
+            json={"notes": "Admin notes"},
+        ),
+        client.post(replies_url, headers=headers, json={"content": "Admin reply"}),
+        client.post(
+            f"/api/classes/{scenario['class_a']}/assignments",
+            headers=headers,
+            json={
+                "title": "Admin assignment",
+                "description": "not allowed",
+                "due_date": "2030-01-01T00:00:00Z",
+            },
+        ),
+        client.put(
+            assignment_url,
+            headers=headers,
+            json={
+                "title": "Admin assignment edit",
+                "description": "not allowed",
+                "due_date": "2030-01-01T00:00:00Z",
+            },
+        ),
+        client.delete(assignment_url, headers=headers),
+        client.post(
+            f"/api/classes/{scenario['class_b']}/assignments/"
+            f"{scenario['assignment_b']}/restore",
+            headers=headers,
+        ),
+        client.put(
+            f"/api/classes/{scenario['class_a']}/archive",
+            headers=headers,
+        ),
+        client.put(
+            f"/api/classes/{scenario['class_a']}/restore",
+            headers=headers,
+        ),
+        client.delete(f"/api/classes/{scenario['class_a']}", headers=headers),
+    ]
+
+    assert [response.status_code for response in responses] == [403] * len(responses)
+    with SessionLocal() as db:
+        assert db.get(models.Class, scenario["class_a"]).status == "active"
+        assert db.get(models.Class, scenario["class_b"]).status == "active"
+        assert db.get(models.Assignment, scenario["assignment_a"]).title == "Alpha assignment"
+        assert db.get(models.Assignment, scenario["assignment_b"]).archived_at is not None
+        assert db.get(models.Blog, scenario["post_a"]).title == "Alpha post"
+        assert db.query(models.Blog).filter_by(title="Admin post").count() == 0
+        assert db.query(models.Comment).filter_by(content="Admin comment").count() == 0
+        assert db.query(models.AssignmentSubmissionReply).filter_by(
+            content="Admin reply",
+        ).count() == 0
+        assert db.query(models.ClassEnrollment).filter_by(
+            class_id=scenario["class_a"],
+            student_id=scenario["student_a"],
+        ).one().notes is None
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        ("get", "/api/classes/{class_a}/details", None),
+        ("get", "/api/classes/{class_a}/students", None),
+        ("get", "/api/classes/{class_a}/assignments?include_archived=true", None),
+        (
+            "get",
+            "/api/classes/{class_a}/assignments/{assignment_a}/submissions",
+            None,
+        ),
+        (
+            "get",
+            "/api/classes/{class_a}/posts/{post_a}",
+            None,
+        ),
+        (
+            "put",
+            "/api/classes/{class_a}/students/{student_a}/notes",
+            {"notes": "unauthenticated"},
+        ),
+        (
+            "post",
+            "/api/classes/{class_a}/posts/{post_a}/comments",
+            {"content": "unauthenticated"},
+        ),
+    ],
+)
+def test_class_and_submission_resources_require_authentication(
+    client,
+    authorization_scenario,
+    method,
+    path,
+    payload,
+):
+    scenario = authorization_scenario
+    kwargs = {}
+    if payload is not None:
+        kwargs["json"] = payload
+
+    response = getattr(client, method)(path.format(**scenario), **kwargs)
+
+    assert response.status_code == 401
+
+
+def test_admin_resource_ids_must_match_their_parent_class_and_assignment(
+    client,
+    authorization_scenario,
+):
+    scenario = authorization_scenario
+    mismatched_responses = [
+        client.get(
+            f"/api/classes/{scenario['class_a']}/posts/{scenario['post_b']}",
+            headers=scenario["admin_headers"],
+        ),
+        client.get(
+            f"/api/classes/{scenario['class_a']}/assignments/"
+            f"{scenario['assignment_b']}/submissions",
+            headers=scenario["admin_headers"],
+        ),
+        client.get(
+            f"/api/classes/{scenario['class_b']}/assignments/"
+            f"{scenario['assignment_a']}/submissions/"
+            f"{scenario['submission_a']}/replies",
+            headers=scenario["admin_headers"],
+        ),
+        client.get(
+            f"/api/classes/{scenario['class_b']}/students/"
+            f"{scenario['student_a']}",
+            headers=scenario["admin_headers"],
+        ),
+    ]
+
+    assert [response.status_code for response in mismatched_responses] == [404] * 4
 
 
 def test_teacher_cannot_query_non_enrolled_user_as_class_student(client, authorization_scenario):
@@ -785,6 +1140,33 @@ def test_archived_class_rejects_content_mutations(client, authorization_scenario
     ]
 
     assert [response.status_code for response in responses] == [409] * len(responses)
+
+    admin_archived_responses = [
+        client.post(
+            f"/api/classes/{scenario['class_a']}/posts/{scenario['post_a']}/like",
+            headers=scenario["admin_headers"],
+        ),
+        client.post(
+            f"/api/classes/{scenario['class_a']}/assignments",
+            headers=scenario["admin_headers"],
+            json={
+                "title": "Archived class admin assignment",
+                "description": "must not persist",
+                "due_date": "2030-01-01T00:00:00Z",
+            },
+        ),
+        client.put(
+            f"/api/classes/{scenario['class_a']}/students/"
+            f"{scenario['student_a']}/notes",
+            headers=scenario["admin_headers"],
+            json={"notes": "must not persist"},
+        ),
+    ]
+    assert [response.status_code for response in admin_archived_responses] == [
+        409,
+        403,
+        403,
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1731,7 +2113,7 @@ def test_teacher_can_hide_and_restore_assignment_without_erasing_student_work(
     assert recovered_draft.json()["content"] == "Unsubmitted private schoolwork"
 
 
-def test_only_class_owner_or_admin_can_remove_assignment(client, authorization_scenario):
+def test_only_owning_teacher_can_remove_assignment(client, authorization_scenario):
     scenario = authorization_scenario
     url = (
         f"/api/classes/{scenario['class_a']}/assignments/"
@@ -1742,13 +2124,15 @@ def test_only_class_owner_or_admin_can_remove_assignment(client, authorization_s
         assert response.status_code in {403, 404}
 
     wrong_class = client.delete(
-        f"/api/classes/{scenario['class_b']}/assignments/{scenario['assignment_a']}",
-        headers=scenario["admin_headers"],
+        f"/api/classes/{scenario['class_a']}/assignments/{scenario['assignment_b']}",
+        headers=scenario["teacher_a_headers"],
     )
     assert wrong_class.status_code == 404
 
     admin = client.delete(url, headers=scenario["admin_headers"])
-    assert admin.status_code == 200
+    assert admin.status_code == 403
+    owner = client.delete(url, headers=scenario["teacher_a_headers"])
+    assert owner.status_code == 200
 
 
 def _create_private_assignment(client, scenario):

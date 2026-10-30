@@ -4,7 +4,7 @@ bleach[css]==6.4.0
 certifi==2026.10.19
 # Click requires this only on Windows; pin it explicitly so the Linux-generated lock is portable.
 colorama==0.4.6
-# dnspython 2.8.0 is vulnerable to CVE-2026-114605; pin to the fixed release.
+# Pin the dnspython update for CVE-2026-114605
 dnspython==2.9.0
 fastapi==0.141.1
 google-auth[requests]==2.56.3

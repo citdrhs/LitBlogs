@@ -1,6 +1,6 @@
 import { storageKey } from "./utils/browserStorage";
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import axios from 'axios';
 import Navbar from './components/Navbar';
@@ -21,12 +21,16 @@ const fetchAdminClasses = async () => {
 
 const AdminDashboard = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const [darkMode] = useState(() => {
     return JSON.parse(localStorage.getItem(storageKey('darkMode'))) ?? false;
   });
   const [users, setUsers] = useState([]);
   const [classes, setClasses] = useState([]);
-  const [selectedClass, setSelectedClass] = useState(null);
+  const [selectedClass, setSelectedClass] = useState(() => location.state?.selectedClass || null);
+  const [selectedClassInitialTab, setSelectedClassInitialTab] = useState(
+    () => location.state?.classDetailsTab || 'Overview',
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [userInfo, setUserInfo] = useState(() => getStoredSessionMetadata());
@@ -185,6 +189,11 @@ const AdminDashboard = () => {
             classData={selectedClass}
             darkMode={darkMode}
             onBack={() => setSelectedClass(null)}
+            initialTab={selectedClassInitialTab}
+            adminReturnContext={{
+              selectedClass,
+              classDetailsTab: selectedClassInitialTab,
+            }}
             readOnly
           />
         ) : (
@@ -472,7 +481,10 @@ const AdminDashboard = () => {
                 <button
                   type="button"
                   aria-label={`View class data for ${class_.name}`}
-                  onClick={() => setSelectedClass(class_)}
+                  onClick={() => {
+                    setSelectedClass(class_);
+                    setSelectedClassInitialTab('Overview');
+                  }}
                   className="mt-4 w-full rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
                 >
                   View class data
