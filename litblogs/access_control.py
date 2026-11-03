@@ -43,6 +43,11 @@ def require_admin(user: models.User) -> None:
         raise _forbidden()
 
 
+def require_not_admin(user: models.User) -> None:
+    if _role_value(user) == models.UserRole.ADMIN.value:
+        raise _forbidden()
+
+
 def get_teacher_record(db: Session, user: models.User) -> models.Teacher | None:
     if _role_value(user) != models.UserRole.TEACHER.value:
         return None
@@ -109,8 +114,23 @@ def require_class_owner(db: Session, user: models.User, class_id: int) -> models
     return db_class
 
 
+def require_class_teacher_owner(db: Session, user: models.User, class_id: int) -> models.Class:
+    db_class = get_class_or_404(db, class_id)
+    if not teacher_owns_class(db, user, db_class):
+        raise _forbidden()
+    return db_class
+
+
 def require_active_class_owner(db: Session, user: models.User, class_id: int) -> models.Class:
     return require_active_class(require_class_owner(db, user, class_id))
+
+
+def require_active_class_teacher_owner(
+    db: Session,
+    user: models.User,
+    class_id: int,
+) -> models.Class:
+    return require_active_class(require_class_teacher_owner(db, user, class_id))
 
 
 def require_enrolled_student(

@@ -6,7 +6,7 @@ import Navbar from './components/Navbar';
 import Footer from './components/Footer';
 import Loader from './components/Loader';
 import AssignmentResponseContent from './components/AssignmentResponseContent';
-import { logoutBrowserSession } from './utils/auth';
+import { getStoredSessionMetadata, logoutBrowserSession } from './utils/auth';
 
 const AssignmentSubmissions = () => {
   const { classId, assignmentId } = useParams();
@@ -14,6 +14,10 @@ const AssignmentSubmissions = () => {
   const location = useLocation();
 
   const handleBack = () => {
+    if (location.state?.adminReturnContext) {
+      navigate('/admin-dashboard', { state: location.state.adminReturnContext });
+      return;
+    }
     if (location.state?.selectedClass) {
       navigate('/teacher-dashboard', {
         state: {
@@ -29,7 +33,7 @@ const AssignmentSubmissions = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [darkMode] = useState(() => JSON.parse(localStorage.getItem(storageKey('darkMode'))) ?? false);
-  const [userInfo, setUserInfo] = useState(null);
+  const [userInfo] = useState(() => getStoredSessionMetadata());
   const [assignment, setAssignment] = useState(null);
   const [submissions, setSubmissions] = useState([]);
   const [replyDrafts, setReplyDrafts] = useState({});
@@ -39,11 +43,6 @@ const AssignmentSubmissions = () => {
     try {
       setLoading(true);
       setError(null);
-
-      const storedUserInfo = sessionStorage.getItem(storageKey('user_info'));
-      if (storedUserInfo) {
-        setUserInfo(JSON.parse(storedUserInfo));
-      }
 
       const [assignmentsResponse, submissionsResponse] = await Promise.all([
         axios.get(`/classes/${classId}/assignments?include_archived=true`),
@@ -104,6 +103,7 @@ const AssignmentSubmissions = () => {
       setReplyLoading((prev) => ({ ...prev, [submissionId]: false }));
     }
   };
+  const isAdminViewer = String(userInfo?.role || '').toUpperCase() === 'ADMIN';
 
   if (loading) {
     return (
@@ -191,24 +191,26 @@ const AssignmentSubmissions = () => {
                   ))}
                 </div>
 
-                <div className="flex flex-col gap-2">
-                  <textarea
-                    value={replyDrafts[submission.id] || ''}
-                    onChange={(e) => setReplyDrafts((prev) => ({ ...prev, [submission.id]: e.target.value }))}
-                    rows={2}
-                    placeholder="Write a reply..."
-                    className={`w-full rounded-lg p-3 border ${darkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`}
-                  />
-                  <div className="flex justify-end">
-                    <button
-                      onClick={() => submitReply(submission.id)}
-                      disabled={replyLoading[submission.id]}
-                      className="px-4 py-2 rounded-lg text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-60"
-                    >
-                      {replyLoading[submission.id] ? 'Posting...' : 'Reply'}
-                    </button>
+                {!isAdminViewer && (
+                  <div className="flex flex-col gap-2">
+                    <textarea
+                      value={replyDrafts[submission.id] || ''}
+                      onChange={(e) => setReplyDrafts((prev) => ({ ...prev, [submission.id]: e.target.value }))}
+                      rows={2}
+                      placeholder="Write a reply..."
+                      className={`w-full rounded-lg p-3 border ${darkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'}`}
+                    />
+                    <div className="flex justify-end">
+                      <button
+                        onClick={() => submitReply(submission.id)}
+                        disabled={replyLoading[submission.id]}
+                        className="px-4 py-2 rounded-lg text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-60"
+                      >
+                        {replyLoading[submission.id] ? 'Posting...' : 'Reply'}
+                      </button>
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             ))}
           </div>
@@ -221,4 +223,3 @@ const AssignmentSubmissions = () => {
 };
 
 export default AssignmentSubmissions;
-

@@ -63,7 +63,7 @@ from access_control import (
     require_active_class_access as _ensure_active_class_access,
 )
 from access_control import (
-    require_active_class_owner as _ensure_active_class_owner,
+    require_active_class_teacher_owner as _ensure_active_class_teacher_owner,
 )
 from access_control import (
     require_admin as _require_admin,
@@ -78,10 +78,16 @@ from access_control import (
     require_class_owner as _ensure_class_owner,
 )
 from access_control import (
+    require_class_teacher_owner as _ensure_class_teacher_owner,
+)
+from access_control import (
     require_comment_access as _ensure_comment_access,
 )
 from access_control import (
     require_enrolled_student as _ensure_enrolled_student,
+)
+from access_control import (
+    require_not_admin as _ensure_not_admin,
 )
 from access_control import (
     require_post_access as _ensure_post_access,
@@ -2753,6 +2759,7 @@ async def create_class_post(
     try:
         _lock_upload_owner(db, current_user.id)
         db_class = _ensure_active_class_access(db, current_user, class_id)
+        _ensure_not_admin(current_user)
         validate_structured_upload_references(post)
         content = _build_post_content(post)
         asset_keys = post_asset_keys(content)
@@ -3384,7 +3391,7 @@ async def create_assignment(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    _ensure_active_class_owner(db, current_user, class_id)
+    _ensure_active_class_teacher_owner(db, current_user, class_id)
 
     visibility = assignment.visibility or "class"
     if visibility not in ["class", "private"]:
@@ -3423,7 +3430,7 @@ async def update_assignment(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    _ensure_active_class_owner(db, current_user, class_id)
+    _ensure_active_class_teacher_owner(db, current_user, class_id)
 
     db_assignment = db.query(models.Assignment).filter(
         models.Assignment.id == assignment_id,
@@ -3467,7 +3474,7 @@ async def archive_assignment(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    _ensure_active_class_owner(db, current_user, class_id)
+    _ensure_active_class_teacher_owner(db, current_user, class_id)
     db_assignment = db.query(models.Assignment).filter(
         models.Assignment.id == assignment_id,
         models.Assignment.class_id == class_id,
@@ -3487,7 +3494,7 @@ async def restore_assignment(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    _ensure_active_class_owner(db, current_user, class_id)
+    _ensure_active_class_teacher_owner(db, current_user, class_id)
     db_assignment = db.query(models.Assignment).filter(
         models.Assignment.id == assignment_id,
         models.Assignment.class_id == class_id,
@@ -4028,6 +4035,7 @@ async def create_assignment_submission_reply(
         assignment_id,
         submission_id,
     )
+    _ensure_not_admin(current_user)
     _ensure_class_is_active(db_class)
 
     reply = models.AssignmentSubmissionReply(
@@ -4290,6 +4298,7 @@ async def update_class_post(
     try:
         db_class, db_post = _ensure_post_access(db, current_user, class_id, post_id)
         _ensure_class_is_active(db_class)
+        _ensure_not_admin(current_user)
         if not _can_moderate_post(db, current_user, db_class, db_post):
             raise HTTPException(status_code=403, detail="Not authorized to edit this post")
 
@@ -4340,6 +4349,7 @@ async def delete_class_post(
     try:
         db_class, post = _ensure_post_access(db, current_user, class_id, post_id)
         _ensure_class_is_active(db_class)
+        _ensure_not_admin(current_user)
         if not _can_moderate_post(db, current_user, db_class, post):
             raise HTTPException(status_code=403, detail="Not authorized to delete this post")
         _lock_upload_owner(db, post.owner_id)
@@ -5137,6 +5147,7 @@ async def toggle_save_post(
     ).first()
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
+    _ensure_not_admin(current_user)
 
     existing_saved = db.query(models.SavedPost).filter(
         models.SavedPost.post_id == post_id,
@@ -5206,6 +5217,7 @@ async def like_post(
     db_class, post = _ensure_post_access(db, current_user, class_id, post_id)
     if db_class.status != "active":
         raise HTTPException(status_code=409, detail="This class is not active")
+    _ensure_not_admin(current_user)
     
     # Check if the user already liked this post
     existing_like = db.query(models.PostLike).filter(
@@ -5433,6 +5445,7 @@ async def create_comment(
     db_class, post = _ensure_post_access(db, current_user, class_id, post_id)
     if db_class.status != "active":
         raise HTTPException(status_code=409, detail="This class is not active")
+    _ensure_not_admin(current_user)
     
     # Check if this is a reply to another comment
     parent_id = comment_data.parent_id
@@ -5489,6 +5502,7 @@ async def like_comment(
     db_class, _post, comment = _ensure_comment_access(db, current_user, comment_id)
     if db_class.status != "active":
         raise HTTPException(status_code=409, detail="This class is not active")
+    _ensure_not_admin(current_user)
     
     # Check if the user already liked this comment
     existing_like = db.query(models.CommentLike).filter(
@@ -5731,7 +5745,7 @@ async def archive_class(
     current_user: models.User = Depends(get_current_user)
 ):
     """Archive a class (for teachers)"""
-    db_class = _ensure_class_owner(db, current_user, class_id)
+    db_class = _ensure_class_teacher_owner(db, current_user, class_id)
     
     # Update the class status
     db_class.status = "archived"
@@ -5746,7 +5760,7 @@ async def restore_class(
     current_user: models.User = Depends(get_current_user)
 ):
     """Restore an archived class (for teachers)"""
-    db_class = _ensure_class_owner(db, current_user, class_id)
+    db_class = _ensure_class_teacher_owner(db, current_user, class_id)
     
     # Update the class status
     db_class.status = "active"
@@ -5763,7 +5777,7 @@ async def delete_class(
     """Delete a class (for teachers)"""
     try:
         _lock_upload_owner(db, current_user.id)
-        _ensure_class_owner(db, current_user, class_id)
+        _ensure_class_teacher_owner(db, current_user, class_id)
         _delete_classes_with_dependencies(db, [class_id])
         db.commit()
     except Exception:
@@ -5952,7 +5966,7 @@ async def update_student_notes(
     current_user: models.User = Depends(get_current_user)
 ):
     """Update teacher notes for a student"""
-    _ensure_class_owner(db, current_user, class_id)
+    _ensure_class_teacher_owner(db, current_user, class_id)
     _student, enrollment = _ensure_enrolled_student(db, class_id, student_id)
     
     enrollment.notes = notes_data.notes
