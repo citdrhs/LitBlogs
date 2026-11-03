@@ -14,12 +14,16 @@ vi.mock('./components/Navbar', () => ({ default: () => null }));
 vi.mock('./components/Footer', () => ({ default: () => null }));
 vi.mock('./components/Loader', () => ({ default: () => <p>Loading</p> }));
 vi.mock('./components/LitBlogsEditor', () => ({
-  default: ({ value, onChange }) => (
+  default: ({ value, onChange, onUploadStateChange }) => (
+    <>
+    <button type="button" onClick={() => onUploadStateChange?.(true)}>Start image upload</button>
+    <button type="button" onClick={() => onUploadStateChange?.(false)}>Finish image upload</button>
     <textarea
       aria-label="Post content"
       value={value}
       onChange={(event) => onChange(event.target.value)}
     />
+    </>
   ),
 }));
 
@@ -214,6 +218,20 @@ beforeEach(() => {
 });
 
 describe('administrator read-only class view journeys', () => {
+  it('waits for teacher media uploads before saving or closing the editor', async () => {
+    sessionStorage.setItem('user_info', JSON.stringify({ userId: 2, role: 'TEACHER' }));
+    renderTeacherPost();
+    await screen.findByTestId('post-view-content');
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Post' }));
+    const dialog = screen.getByRole('dialog', { name: 'Edit Post' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Start image upload' }));
+    expect(within(dialog).getByRole('button', { name: 'Save Changes' })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    fireEvent.submit(dialog);
+    expect(mocks.axios.put).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Finish image upload' }));
+    expect(within(dialog).getByRole('button', { name: 'Save Changes' })).toBeEnabled();
+  });
   it('returns from a class post to the selected class and Blogs tab', async () => {
     renderRoutes();
     await openSelectedClass('Blogs');
