@@ -13,6 +13,8 @@ import LitBlogsEditor from './components/LitBlogsEditor';
 import { formatRelativeTime, setupTimeUpdater } from './utils/timeUtils';
 import { mediaPath } from './utils/urlUtils';
 import { getStoredSessionMetadata } from './utils/auth';
+import DraftSessionRecovery from './components/DraftSessionRecovery';
+import { DRAFT_SESSION_EXPIRED_EVENT } from './utils/unauthorizedResponse';
 import { buildPostRequestPayload, MAX_POST_HTML_LENGTH } from './utils/postRequestContract';
 import Footer from './components/Footer';
 
@@ -52,6 +54,17 @@ const PostView = () => {
   const [editContent, setEditContent] = useState('');
   const [moderationLoading, setModerationLoading] = useState(false);
   const [editUploadBusy, setEditUploadBusy] = useState(false);
+  const [recoveringEdit, setRecoveringEdit] = useState(false);
+  const editOwnerId = userInfo?.userId;
+  useEffect(() => {
+    if ((!editingPost && !recoveringEdit) || !editOwnerId) return undefined;
+    const lockEdit = (event) => {
+      event.preventDefault();
+      setRecoveringEdit(true);
+    };
+    window.addEventListener(DRAFT_SESSION_EXPIRED_EVENT, lockEdit);
+    return () => window.removeEventListener(DRAFT_SESSION_EXPIRED_EVENT, lockEdit);
+  }, [editingPost, recoveringEdit, editOwnerId]);
 
   const getInitialFromUser = (value) => {
     if (!value) return '?';
@@ -401,6 +414,17 @@ const PostView = () => {
     const timeUpdateInterval = setupTimeUpdater();
     return () => clearInterval(timeUpdateInterval);
   }, []);
+
+  if (recoveringEdit) {
+    return (
+      <DraftSessionRecovery
+        ownerId={editOwnerId}
+        onRecovered={() => { setEditUploadBusy(false); setRecoveringEdit(false); }}
+        onDiscardStart={() => { setEditTitle(''); setEditContent(''); setEditingPost(false); }}
+        onDiscard={() => navigate('/sign-in', { replace: true })}
+      />
+    );
+  }
 
   if (loading) {
     return (

@@ -218,6 +218,26 @@ beforeEach(() => {
 });
 
 describe('administrator read-only class view journeys', () => {
+  it('locks teacher edits on session expiry without discarding their in-tab content', async () => {
+    sessionStorage.setItem('user_info', JSON.stringify({ userId: 2, role: 'TEACHER' }));
+    renderTeacherPost();
+    await screen.findByTestId('post-view-content');
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Post' }));
+    fireEvent.change(screen.getByLabelText('Post title'), { target: { value: 'Private teacher correction' } });
+    fireEvent(window, new Event('litblogs:draft-session-expired', { cancelable: true }));
+    expect(await screen.findByText('Sign in to recover your draft')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Post title')).not.toBeInTheDocument();
+    expect(mocks.axios.put).not.toHaveBeenCalled();
+    const get = mocks.axios.get.getMockImplementation();
+    mocks.axios.get.mockImplementation((url, config) => url === '/auth/session'
+      ? Promise.resolve({ status: 200, data: { user_id: 2, role: 'TEACHER' } }) : get(url, config));
+    mocks.axios.post.mockResolvedValue({ status: 200, data: { user_id: 2, role: 'TEACHER' } });
+    fireEvent.change(screen.getByLabelText('School email'), { target: { value: 'teacher@example.test' } });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'Synthetic-password-Aa1!' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in and return to draft' }));
+    expect(await screen.findByLabelText('Post title')).toHaveValue('Private teacher correction');
+    expect(mocks.axios.put).not.toHaveBeenCalled();
+  });
   it('waits for teacher media uploads before saving or closing the editor', async () => {
     sessionStorage.setItem('user_info', JSON.stringify({ userId: 2, role: 'TEACHER' }));
     renderTeacherPost();
