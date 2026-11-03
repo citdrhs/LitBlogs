@@ -291,18 +291,24 @@ const ClassDetails = ({
       </button>
 
       {/* Class Title and Code */}
-      <div className="flex justify-between items-center">
-        <h2 className="text-3xl font-bold">{classData.name}</h2>
+      <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center">
+        <h2 className="min-w-0 break-words text-2xl sm:text-3xl font-bold">{classData.name}</h2>
         <span className={`px-4 py-2 rounded-full ${classCodeBadgeClasses}`}>
           Code: {classDetails.access_code}
         </span>
       </div>
+      {readOnly && (
+        <p className="mt-3 mb-4 text-sm text-gray-600 dark:text-gray-300">
+          Read-only administrator view. Class content can be changed by its teacher.
+        </p>
+      )}
 
       {/* Tabs */}
-      <div className="flex gap-4 border-b border-gray-200 dark:border-gray-700/80">
+      <div className="flex flex-wrap gap-2 sm:gap-4 border-b border-gray-200 dark:border-gray-700/80">
         {tabs.map((tab) => (
           <button
             key={tab}
+            aria-pressed={activeTab === tab}
             onClick={() => setActiveTab(tab)}
             className={`px-4 py-2 -mb-px ${
               activeTab === tab

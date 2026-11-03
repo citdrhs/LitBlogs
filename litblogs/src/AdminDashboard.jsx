@@ -32,6 +32,7 @@ const AdminDashboard = () => {
     () => location.state?.classDetailsTab || 'Overview',
   );
   const [loading, setLoading] = useState(true);
+  useEffect(() => { window.scrollTo({ top: 0, behavior: 'instant' }); }, [selectedClass?.id]);
   const [error, setError] = useState(null);
   const [userInfo, setUserInfo] = useState(() => getStoredSessionMetadata());
   const [lastUpdated, setLastUpdated] = useState(null);
@@ -183,7 +184,7 @@ const AdminDashboard = () => {
       darkMode={darkMode}
       logo="./logo.png"
       />
-      <div className="container mx-auto px-4 py-8">
+      <div className="container mx-auto px-4 pb-8 pt-28">
         {selectedClass ? (
           <ClassDetails
             classData={selectedClass}
