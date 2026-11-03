@@ -61,6 +61,7 @@ const renderDashboard = () => render(
 );
 
 beforeEach(() => {
+  vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
   vi.clearAllMocks();
   localStorage.clear();
   sessionStorage.clear();
